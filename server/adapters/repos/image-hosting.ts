@@ -1,0 +1,318 @@
+import { and, asc, eq, gt, isNotNull, isNull, like, or, sql } from 'drizzle-orm'
+import { generateId, generateImageToken, generateToken } from '../../../shared/ids'
+import { imageHostingConfigs, imageHostings } from '../../db/schema'
+import { type AtomicQuery, executeWriteTransaction, executeWriteTransactionWithResults } from '../../db/transaction'
+import { mimeToExt } from '../../lib/mime-utils'
+import { buildImageStorageKey } from '../../lib/path-template'
+import type { Database } from '../../platform/interface'
+import type {
+  CreateImageHostingInput,
+  ImageHostingRecord,
+  ImageHostingRepo,
+  ImageResolution,
+} from '../../usecases/ports'
+import { resourceChangeQuery } from './resource-change'
+import {
+  imageActivationLedgerQuery,
+  imagePurgeLedgerQuery,
+  storageUsageOpeningBalanceQuery,
+} from './storage-usage-ledger'
+import { imageAddedProjectionQueries, imageRemovedProjectionQueries } from './storage-usage-projection-mutations'
+
+type ImageHostingRow = typeof imageHostings.$inferSelect
+
+const MAX_COLLISION_RETRIES = 5
+function toRecord(row: ImageHostingRow): ImageHostingRecord {
+  return row as unknown as ImageHostingRecord
+}
+
+function parseRefererAllowlist(value: string | null): string[] {
+  return value ? (JSON.parse(value) as string[]) : []
+}
+
+function splitStemExt(filename: string): { stem: string; ext: string } {
+  const dot = filename.lastIndexOf('.')
+  if (dot <= 0) return { stem: filename, ext: '' }
+  return { stem: filename.slice(0, dot), ext: filename.slice(dot) }
+}
+
+function randomHex4(): string {
+  return Math.floor(Math.random() * 0x10000)
+    .toString(16)
+    .padStart(4, '0')
+}
+
+export function createImageHostingRepo(db: Database): ImageHostingRepo {
+  async function resolveUniquePath(orgId: string, requestedPath: string): Promise<string> {
+    const rows = await db
+      .select({ path: imageHostings.path })
+      .from(imageHostings)
+      .where(and(eq(imageHostings.orgId, orgId), eq(imageHostings.path, requestedPath), isNull(imageHostings.purgedAt)))
+
+    if (rows.length === 0) return requestedPath
+
+    const slashIdx = requestedPath.lastIndexOf('/')
+    const basename = slashIdx >= 0 ? requestedPath.slice(slashIdx + 1) : requestedPath
+    const prefix = slashIdx >= 0 ? requestedPath.slice(0, slashIdx + 1) : ''
+    const { stem, ext } = splitStemExt(basename)
+
+    for (let i = 0; i < MAX_COLLISION_RETRIES; i++) {
+      const candidate = `${prefix}${stem}-${randomHex4()}${ext}`
+      const conflict = await db
+        .select({ path: imageHostings.path })
+        .from(imageHostings)
+        .where(and(eq(imageHostings.orgId, orgId), eq(imageHostings.path, candidate), isNull(imageHostings.purgedAt)))
+      if (conflict.length === 0) return candidate
+    }
+
+    return `${prefix}${stem}-${generateToken(5)}${ext}`
+  }
+
+  return {
+    async resolveActiveByToken(token): Promise<ImageResolution | null> {
+      const rows = await db
+        .select()
+        .from(imageHostings)
+        .where(and(eq(imageHostings.token, token), isNull(imageHostings.purgedAt)))
+        .limit(1)
+      const row = rows[0]
+      if (!row || row.status !== 'active') return null
+
+      const configRows = await db
+        .select()
+        .from(imageHostingConfigs)
+        .where(eq(imageHostingConfigs.orgId, row.orgId))
+        .limit(1)
+
+      return {
+        image: toRecord(row),
+        refererAllowlist: parseRefererAllowlist(configRows[0]?.refererAllowlist ?? null),
+      }
+    },
+
+    async resolveCustomDomain(host) {
+      const rows = await db
+        .select({ orgId: imageHostingConfigs.orgId })
+        .from(imageHostingConfigs)
+        .where(and(eq(imageHostingConfigs.customDomain, host), isNotNull(imageHostingConfigs.domainVerifiedAt)))
+        .limit(1)
+      return rows[0]?.orgId ?? null
+    },
+
+    async resolveActiveByOrgPath(orgId, path): Promise<ImageResolution | null> {
+      const rows = await db
+        .select()
+        .from(imageHostings)
+        .where(
+          and(
+            eq(imageHostings.orgId, orgId),
+            eq(imageHostings.path, path),
+            eq(imageHostings.status, 'active'),
+            isNull(imageHostings.purgedAt),
+          ),
+        )
+        .limit(1)
+      if (!rows[0]) return null
+
+      const configRows = await db
+        .select()
+        .from(imageHostingConfigs)
+        .where(eq(imageHostingConfigs.orgId, orgId))
+        .limit(1)
+      if (configRows.length === 0) return null
+
+      return {
+        image: toRecord(rows[0]),
+        refererAllowlist: parseRefererAllowlist(configRows[0].refererAllowlist),
+      }
+    },
+
+    async incrementAccessCount(id) {
+      await db.run(
+        sql`UPDATE image_hostings SET access_count = access_count + 1, last_accessed_at = ${Date.now()} WHERE id = ${id} AND purged_at IS NULL`,
+      )
+    },
+
+    async create(input: CreateImageHostingInput) {
+      const id = generateId(13)
+      const token = generateImageToken()
+      const ext = mimeToExt(input.mime)
+      const storageKey = buildImageStorageKey(input.orgId, id, ext)
+      const now = new Date()
+
+      const resolvedPath = await resolveUniquePath(input.orgId, input.path)
+
+      const row: ImageHostingRow = {
+        id,
+        orgId: input.orgId,
+        token,
+        path: resolvedPath,
+        storageId: input.storageId,
+        storageKey,
+        size: input.size,
+        mime: input.mime,
+        width: null,
+        height: null,
+        status: input.status,
+        purgedAt: null,
+        accessCount: 0,
+        lastAccessedAt: null,
+        createdAt: now,
+      }
+
+      await executeWriteTransaction(db, [
+        db.insert(imageHostings).values(row),
+        ...(row.status === 'active'
+          ? [
+              resourceChangeQuery(db, {
+                scopeType: 'organization',
+                scopeId: row.orgId,
+                resourceType: 'image_hosting',
+                resourceId: row.id,
+                changeType: 'upsert',
+                action: 'created',
+                occurredAt: now,
+              }),
+            ]
+          : []),
+      ])
+      return toRecord(row)
+    },
+
+    async get(id, orgId) {
+      const rows = await db
+        .select()
+        .from(imageHostings)
+        .where(and(eq(imageHostings.id, id), eq(imageHostings.orgId, orgId), isNull(imageHostings.purgedAt)))
+      return rows[0] ? toRecord(rows[0]) : null
+    },
+
+    async list(orgId, opts) {
+      const conditions = [
+        eq(imageHostings.orgId, orgId),
+        eq(imageHostings.status, 'active'),
+        isNull(imageHostings.purgedAt),
+      ]
+
+      if (opts.pathPrefix) {
+        conditions.push(like(imageHostings.path, `${opts.pathPrefix}%`))
+      }
+
+      if (opts.after) {
+        conditions.push(
+          or(
+            gt(imageHostings.createdAt, opts.after.createdAt),
+            and(eq(imageHostings.createdAt, opts.after.createdAt), gt(imageHostings.id, opts.after.id)),
+          )!,
+        )
+      }
+
+      const items = await db
+        .select()
+        .from(imageHostings)
+        .where(and(...conditions))
+        .orderBy(asc(imageHostings.createdAt), asc(imageHostings.id))
+        .limit(opts.limit + 1)
+
+      const hasMore = items.length > opts.limit
+      const page = hasMore ? items.slice(0, opts.limit) : items
+
+      const last = page.at(-1)
+      return {
+        items: page.map(toRecord),
+        nextBoundary: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null,
+      }
+    },
+
+    async setActive(id, orgId) {
+      const existing = await db
+        .select()
+        .from(imageHostings)
+        .where(
+          and(
+            eq(imageHostings.id, id),
+            eq(imageHostings.orgId, orgId),
+            eq(imageHostings.status, 'draft'),
+            isNull(imageHostings.purgedAt),
+          ),
+        )
+        .limit(1)
+      const row = existing[0]
+      if (!row) return false
+      const now = new Date()
+      await executeWriteTransaction(db, [storageUsageOpeningBalanceQuery(db, orgId, row.storageId, now)])
+      const activateQuery = db
+        .update(imageHostings)
+        .set({ status: 'active' })
+        .where(
+          and(
+            eq(imageHostings.id, id),
+            eq(imageHostings.orgId, orgId),
+            eq(imageHostings.status, 'draft'),
+            isNull(imageHostings.purgedAt),
+          ),
+        )
+        .returning({ id: imageHostings.id })
+      const writes: AtomicQuery[] = [
+        activateQuery,
+        imageActivationLedgerQuery(db, orgId, id, now),
+        ...imageAddedProjectionQueries(db, orgId, id),
+        resourceChangeQuery(db, {
+          scopeType: 'organization',
+          scopeId: orgId,
+          resourceType: 'image_hosting',
+          resourceId: id,
+          changeType: 'upsert',
+          action: 'activated',
+          occurredAt: now,
+        }),
+      ]
+      const results = await executeWriteTransactionWithResults(db, writes, [0])
+      const updated = results[0] as { id: string }[]
+      return updated.length > 0
+    },
+
+    async delete(id, orgId) {
+      const existing = await db
+        .select()
+        .from(imageHostings)
+        .where(and(eq(imageHostings.id, id), eq(imageHostings.orgId, orgId), isNull(imageHostings.purgedAt)))
+        .limit(1)
+      const row = existing[0]
+      if (!row) return
+      if (row.status === 'draft') {
+        await db
+          .delete(imageHostings)
+          .where(
+            and(
+              eq(imageHostings.id, id),
+              eq(imageHostings.orgId, orgId),
+              eq(imageHostings.status, 'draft'),
+              isNull(imageHostings.purgedAt),
+            ),
+          )
+        return
+      }
+
+      const now = new Date()
+      await executeWriteTransaction(db, [
+        storageUsageOpeningBalanceQuery(db, orgId, row.storageId, now),
+        ...imageRemovedProjectionQueries(db, orgId, id),
+        imagePurgeLedgerQuery(db, orgId, id, now),
+        db
+          .update(imageHostings)
+          .set({ purgedAt: now.getTime() })
+          .where(and(eq(imageHostings.id, id), eq(imageHostings.orgId, orgId), isNull(imageHostings.purgedAt))),
+        resourceChangeQuery(db, {
+          scopeType: 'organization',
+          scopeId: orgId,
+          resourceType: 'image_hosting',
+          resourceId: id,
+          changeType: 'delete',
+          action: 'deleted',
+          occurredAt: now,
+        }),
+      ])
+    },
+  }
+}

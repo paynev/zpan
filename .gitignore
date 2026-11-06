@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-server/
+api/
+dist-lambda/
+dist-lambda-pkg/
+.aws-sam/
+.wrangler/
+
+# Environment
+.env
+.env.local
+.dev.vars
+
+# Database
+*.db
+*.db-journal
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage/
+test-results/
+
+# Playwright
+/playwright-report/
+
+# Database (dev)
+zpan.db
+zpan.db-shm
+zpan.db-wal
+
+# pnpm
+*.tsbuildinfo
+
+# Generated (routeTree.gen.ts is committed for CI typecheck)
+
+#playwright
+.playwright-mcp/
+.playwright-cli/
+
+# claude code & tanstack
+.claude/
+.tanstack/
+
+# agent skills (managed by daemon)
+.agents/
+skills-lock.json
+
+# agent skills (managed by daemon)
+.claude/skills/
+
+# e2e throwaway database
+.e2e/
+
+# Explicit Node runtime state; Workers use .wrangler/state instead.
+.local/

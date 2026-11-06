@@ -1,0 +1,335 @@
+## v2.9.0 — 2026-08-30 · Aplicaciones OAuth externas y acceso de Agents
+
+### Funcionalidades
+- **Aplicaciones OAuth externas** — ZPan ahora es un recurso OAuth 2.1 detectable, con metadatos del recurso protegido y del servidor de autorización, registro dinámico de clientes, PKCE, Rich Authorization Requests, consentimiento por espacio de trabajo, tokens de acceso vinculados a DPoP, intercambio de tokens y revocación de JWT.
+- **Gestión de aplicaciones y permisos** — los administradores pueden inspeccionar todas las aplicaciones registradas dinámicamente en una instancia. Los usuarios pueden consultar nombres y Client IDs, ver todos los scopes y la última utilización real, y revocar permisos individuales de cada espacio de trabajo.
+- **API autodescriptiva para Agents** — el documento OpenAPI canónico publica scopes OAuth y operation IDs estables; Arazzo describe el ciclo de subida y las respuestas de creación proporcionan instrucciones autoritativas para cargas simples y multipart a controladores genéricos.
+- **Integración con Realmroot** — Agent Skills Discovery publica el Skill opcional `use-zpan` fijado por digest, con Contexts de espacio de trabajo y acceso delegado de mínimo privilegio. Los archivos y descargas creados por Agents conservan la identidad del actor para atribución y auditoría.
+- **Autorización unificada** — las sesiones del navegador, claves API, downloaders y principales OAuth delegados pasan por las mismas políticas de scope, espacio de trabajo, rol y estado del recurso. OAuth nunca evita las restricciones administrativas normales.
+- **Compra de capacidad para Agents** — las subidas delegadas pueden recuperarse de una cuota insuficiente mediante compras x402 aprobadas por el controlador, con idempotencia duradera y aislada por tenant.
+- **Dominios de imagen personalizados** — permite configurar y verificar proveedores de dominios, automatizar hostnames de Cloudflare y servir enlaces públicos correctos en Workers y Node.
+
+### Mejoras y correcciones
+- Se añadieron challenges DPoP explícitos y diagnósticos del servidor, continuidad OAuth durante el inicio de sesión, confianza en orígenes oficiales de preview de Workers, sincronización de scopes y consentimiento multiespacio correcto.
+- La actividad de permisos OAuth se actualiza desde solicitudes autenticadas reales con escrituras limitadas; al revocar un permiso se invalidan inmediatamente sus tokens aún vigentes.
+- Se corrigieron las copias S3 en Cloudflare Workers conservando el header firmado `x-amz-copy-source`, además de regresiones en archivado, listados de aplicaciones y presentación del consentimiento.
+- Se añadieron auditorías conscientes del actor y perfiles del creador bajo demanda; también se limitaron metadatos largos y se unificaron los menús de acciones de archivos.
+- Se redujeron accesos a la base de datos y se añadió caché por capas en WebDAV, exploración de archivos, descargas y autenticación. Los listados usan cursores estables y actualizaciones en tiempo real sin polling.
+- Se reforzaron la caché de Workers, credenciales de arranque del downloader, recuperación de compras, persistencia de claves API, aislamiento de CI, comprobaciones Docker y TypeScript 7.
+
+> **Notas de compatibilidad:** los nuevos identificadores persistentes son valores Base62 opacos; los clientes no deben interpretarlos y las instalaciones existentes pueden ejecutar la normalización opcional cuando necesiten uniformar los datos históricos. Las APIs usan rutas REST canónicas y errores estructurados. El contrato OAuth final elimina intencionalmente el cliente ZPan fijo, perfiles/plugins de Restish, helpers de credenciales y la extensión no estándar authorization-constraints.
+
+[Notas completas de la versión ↗](https://github.com/saltbo/zpan/releases/tag/v2.9.0)
+
+## v2.8.3 — 2026-08-30
+
+### Correcciones
+- Se restringieron los controles de tareas en segundo plano a editores y administradores.
+- Se centralizó la autorización de credenciales del downloader y se actualizó la fuente de GeoIP para Docker.
+- Se actualizaron dependencias para resolver avisos de seguridad de la versión.
+
+[Notas completas de la versión ↗](https://github.com/saltbo/zpan/releases/tag/v2.8.3)
+
+## v2.8.2 — 2026-08-03
+
+### Seguridad
+- Se bloquearon variantes de direcciones de transición IPv6 que podían eludir las protecciones SSRF de solicitudes salientes.
+- Se escapó el contenido controlado por usuarios en los correos de notificación.
+- Se actualizaron dependencias y se regeneró el cliente OpenAPI con la pila de autenticación reforzada.
+
+[Notas completas de la versión ↗](https://github.com/saltbo/zpan/releases/tag/v2.8.2)
+
+## v2.8.1 — 2026-07-24
+
+### Rendimiento
+- Se redujo la amplificación de escrituras D1 en los flujos basados en base de datos.
+
+[Notas completas de la versión ↗](https://github.com/saltbo/zpan/releases/tag/v2.8.1)
+
+## v2.8.0 — 2026-07-24 · Analítica y operaciones de administración
+
+### Funcionalidades
+- **Panel analítico de administración** — tarjetas operativas en vivo y
+  agregados horarios fiables para almacenamiento, tráfico, usuarios, recursos
+  compartidos, descargas remotas y tareas en segundo plano, con tendencias,
+  indicadores de cobertura y herramientas de relleno histórico.
+- **Operaciones de almacenamiento** — gestión de backends rediseñada con
+  preajustes de proveedor, pruebas de conexión, vistas previas de solicitudes,
+  proyecciones de uso por categoría, ubicación de archivos y limpieza segura.
+- **Espacios y cuota** — los ajustes del espacio separan miembros, servicios,
+  facturación y alojamiento de imágenes, con propiedad de cuota y operaciones
+  entre espacios más claras.
+- **Perfiles y recursos públicos** — las páginas públicas rediseñadas pueden
+  mostrar recursos compartidos seleccionados en el perfil del usuario.
+- **Administración WebDAV** — controles del servicio y dominios personalizados
+  opcionales, con derivación y verificación automáticas.
+- **API y eventos** — cobertura OpenAPI completa con documentación Scalar,
+  esquemas y errores coherentes, y un flujo SSE unificado que sustituye el sondeo.
+- **Más mejoras** — actividad de usuarios/equipos en administración, mejores
+  filtros de auditoría, cronologías de descargas remotas, vista previa NFO,
+  verificación de correo configurable y recuerdo del último método de acceso.
+
+### Correcciones
+- Revisión de la supervisión, recuperación por heartbeat, siembra, reintentos,
+  preautorización de créditos, progreso y limpieza del descargador remoto.
+- La analítica usa agregados delimitados y completos, y muestra el historial
+  incompleto en vez de mezclar silenciosamente datos parciales o en vivo.
+- Corrección de metadatos de subida para nombres no ASCII y sincronización del
+  tipo de contenido almacenado después de la subida.
+- Mejor compatibilidad WebDAV con Finder, protección de carpetas activas,
+  desbordamiento de diálogos y navegación plegable por carpetas.
+
+> **Cambios incompatibles:** las rutas y respuestas de la API ahora están
+> orientadas a recursos; los errores usan un formato unificado, las eliminaciones
+> devuelven `204 No Content` y los cambios de estado usan endpoints de estado.
+> Los recursos con página de presentación son públicos por defecto salvo que se
+> configuren explícitamente como privados.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.8.0)
+
+## v2.7.4 — 2026-06-11
+
+### Funcionalidades
+- Los orígenes de loopback y LAN se confían automáticamente sin
+  `TRUSTED_ORIGINS`.
+- El emparejamiento de licencia en la nube ofrece configuración, errores y
+  confirmación más claros.
+- Se pueden introducir cupones durante el pago.
+
+### Correcciones
+- Eliminados los bloqueos de inicialización de sesión entre solicitudes y
+  añadida una caché de sesión del cliente más rápida.
+- Los nombres no ASCII ahora son seguros en `Content-Disposition`.
+- Los pagos duplicados cancelan automáticamente el pedido pendiente obsoleto.
+- Los valores de cuota predeterminados se procesan correctamente en administración.
+- Los fallos de consultas D1 registran toda la cadena de causas.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.4)
+
+## v2.7.3 — 2026-06-09
+
+### Funcionalidades
+- **Página «Acerca de»** — una nueva página de administración que muestra la
+  información de la instancia, la edición y la versión, con un panel de registro
+  de cambios integrado y comprobación de la última versión contra GitHub
+  Releases.
+- **Licenciamiento comercial** — autorización comercial independiente, una cinta
+  de edición en el diseño de administración y una tabla comparativa de ediciones
+  agrupada por capacidades (con restricciones de inicio de sesión social y del
+  descargador).
+- **Gestión de derechos** — los administradores ahora pueden editar y revocar
+  los derechos de cuota otorgados.
+- **Telemetría de la instancia** — envío opcional y anónimo de información del
+  despliegue (con región por GeoIP) para entender cómo se usa ZPan.
+
+### Correcciones
+- Facturación de uso de descargas remotas más resiliente.
+- Se reparó el arranque de la imagen Docker (ahora protegido en CI) y se usa el
+  nombre de host del anfitrión para registrar el descargador.
+- Listado de cuotas de administración más rápido — consultas por lotes
+  (fragmentadas bajo el límite de 100 parámetros de D1), con el reinicio mensual
+  movido a una tarea programada.
+- La versión de la app ahora se resuelve desde `package.json` y se inyecta en
+  tiempo de compilación.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.3)
+
+## v2.7.2 — 2026-06-07
+
+### Funcionalidades
+- Logo y marca de ZPan renovados.
+
+### Correcciones
+- El volumen de datos del descargador remoto ahora es escribible en Docker.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.2)
+
+## v2.7.1 — 2026-06-07
+
+### Funcionalidades
+- Renombra tus descargadores remotos desde la interfaz de administración.
+
+### Correcciones
+- Asignación de descargadores más fiable e informes precisos de velocidad de transferencia.
+- Exposición del puerto de escucha de torrents y uso del nombre de host del anfitrión para los descargadores en Docker.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.1)
+
+## v2.7.0 — 2026-06-06 · Descargas remotas, WebDAV y más
+
+### Funcionalidades
+- **Gestor de descargas remotas** — delega las descargas de torrent/HTTP a workers remotos,
+  con un inspector detallado de tareas, geo-regiones de pares, retención de semillas BT y
+  subidas que preservan las carpetas de vuelta a tu unidad.
+- **Descargador con CLI `zpan`** — inicio de sesión de dispositivo con un solo comando y una URL de servidor configurable.
+- **Acceso WebDAV** — monta tu unidad mediante WebDAV con contraseñas de aplicación por usuario
+  (compatible con RFC 4918 Clase 2).
+- **Archivado del lado del servidor** — encola trabajos de ZIP en streaming y haz un seguimiento en una nueva
+  página de tareas en segundo plano.
+- **Subidas de carpetas** en la interfaz web.
+- **Créditos en la nube** — egreso de almacenamiento medido y facturado mediante créditos, con una tienda de créditos.
+- Protección con **Captcha** para el inicio de sesión y el registro.
+- Gestión unificada de claves de API.
+
+### Correcciones
+- Endurecimiento del ciclo de vida de las descargas remotas (reinicios, recuperación y gestión de semillas),
+  además de varias correcciones de vista previa y subida.
+
+> **Cambio incompatible:** rutas de API RESTful más estrictas; los enlaces de descarga públicos se movieron de
+> `/dl/:token` a `/r/:token`.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.0)
+
+## v2.6.2 — 2026-05-11
+
+### Funcionalidades
+- Administración: panel lateral con los detalles de los pedidos en la nube.
+
+### Correcciones
+- Diseño de la tabla de planes de almacenamiento, enmascaramiento de tarjetas de regalo y diálogos de pago/historial de pedidos.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.6.2)
+
+## v2.6.1 — 2026-05-10
+
+### Correcciones
+- Flujo de redirección de pago y visualización de la cuota de almacenamiento en la barra lateral.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.6.1)
+
+## v2.6.0 — 2026-05-10 · Licencias Pro y tienda de cuotas
+
+### Funcionalidades
+- **Licencias Pro** — vincula tu instancia con ZPan Cloud (QR + modal de emparejamiento),
+  derechos verificados con Ed25519 con actualización en segundo plano, y control de acceso a funciones Pro.
+- **Marca de etiqueta blanca** — logo, favicon, logotipo de texto personalizados y pie de página oculto.
+- **Tienda de cuotas** — códigos de canje, cuotas mensuales de tráfico, paquetes de suscripción y
+  de cuota fija, precios medidos por moneda, y excedente de tráfico.
+- **Administración** — registros de auditoría de las acciones que cambian el estado, anuncios del sitio,
+  registro basado en invitaciones, y un panel de configuración y resumen rediseñado.
+- La vista previa de archivos gana un visor de Microsoft Office, un reproductor de música y una cola de
+  progreso de subida de múltiples archivos.
+
+### Correcciones
+- Se movió la facturación al panel de administración; unidades de cuota, cuotas de usuario y avatares en administración.
+- Sincronización en segundo plano del uso de tráfico en la nube; aplicación del tráfico mensual en los enlaces de descarga.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.6.0)
+
+## v2.5.0 — 2026-04-23 · Despliega en cualquier lugar
+
+### Funcionalidades
+- **Nuevos destinos de despliegue** — AWS Lambda, Vercel, Netlify, Azure Functions y
+  Google Cloud Run.
+- Adaptador de base de datos **libSQL (Turso)**, con una configuración opcional de Docker.
+- Subida de avatar en Configuración → Perfil.
+- Preferencia por el binding de Cloudflare R2 para las subidas de imágenes, con respaldo a S3.
+
+### Correcciones
+- Se unificó el diseño visual entre las pestañas de configuración y se añadió la i18n de avatar que faltaba.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.5.0)
+
+## v2.4.1 — 2026-04-22
+
+### Correcciones
+- Se resolvió un error 404 de Docker en el puerto 8222 y se simplificó la construcción de la imagen.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.4.1)
+
+## v2.4.0 — 2026-04-22 · Alojamiento de imágenes
+
+### Funcionalidades
+- **Alojamiento de imágenes** — una galería dedicada con subidas en dos etapas / proxy de streaming,
+  dominios personalizados (Cloudflare for SaaS) y una página de configuración.
+- **Integraciones de herramientas** — configuraciones listas para usar para PicGo, uPic y ShareX.
+- Autenticación con clave de API para subidas programáticas.
+
+### Correcciones
+- Se corrigieron las configuraciones de PicGo / uPic / ShareX, el filtrado de imágenes en borrador y
+  los errores de subida de archivos grandes/multipartes.
+
+> **Cambio incompatible:** enlaces públicos unificados bajo `/r/:token`.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.4.0)
+
+## v2.3.0 — 2026-04-21 · Uso compartido
+
+### Funcionalidades
+- **Uso compartido de archivos y carpetas** — páginas de uso compartido públicas (`/s/:token`) con modos de
+  aterrizaje y directo, contraseñas autogeneradas opcionales, y navegación de carpetas.
+- **Guardar en la unidad** — copia archivos compartidos entre espacios de trabajo con gestión de cuotas y
+  de conflictos de nombres.
+- **Notificaciones dentro de la aplicación** y un panel de Recursos compartidos dedicado.
+- Rediseño de la interfaz con la paleta de Google; la campana de notificaciones se movió a la cabecera.
+
+### Correcciones
+- Resolución de conflictos de nombres al estilo Finder, un 403 correcto cuando las contraseñas de uso compartido son erróneas,
+  y conteos de visualizaciones públicas deduplicados.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.3.0)
+
+## v2.2.0 — 2026-04-19 · Equipos
+
+### Funcionalidades
+- **Espacios de trabajo de equipo** — crea y gestiona equipos, miembros y roles con
+  RBAC a nivel de organización.
+- Selector de espacio de trabajo en la barra lateral y un feed de actividad por equipo.
+- **Invitaciones de equipo** mediante correo electrónico y enlace de invitación.
+- Página de inicio pública de usuario en `/u/:username`.
+
+### Correcciones
+- Filtrado de la lista de equipos y conteos de miembros; se movió la entrada de Equipos al menú del avatar.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.2.0)
+
+## v2.1.0 — 2026-04-14 · Autenticación e incorporación
+
+### Funcionalidades
+- **Proveedores de OAuth dinámicos**, correo/contraseña con verificación, y modos de
+  registro configurables.
+- Control de registro mediante **código de invitación**.
+- Abstracción del servicio de correo electrónico (controladores SMTP + HTTP API).
+- Renovación de la interfaz de inicio de sesión / registro y una página de configuración de autenticación de administración.
+
+### Correcciones
+- Validación de códigos de invitación y renderizado del modo oscuro en la barra lateral.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.1.0)
+
+## v2.0.2 — 2026-04-12
+
+### Funcionalidades
+- Diseño responsivo para escritorio, tableta y móvil, con vista previa adaptativa en móvil.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.0.2)
+
+## v2.0.1 — 2026-04-12
+
+### Funcionalidades
+- Migración a Cloudflare Workers con un botón de despliegue en un solo clic.
+
+### Correcciones
+- Configuración de despliegue y autenticación para Cloudflare Workers (inferencia de baseURL/orígenes
+  de confianza, `nodejs_compat_v2`).
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.0.1)
+
+## v2.0.0 — 2026-04-12 · Reescritura en TypeScript
+
+### Funcionalidades
+- Reescritura completa de Go a TypeScript: una API de Hono + SPA de React, desplegable en
+  tanto Cloudflare Workers como Node/Docker.
+- Subidas directas a S3 mediante URLs prefirmadas, un gestor de archivos personalizado con árbol de carpetas,
+  búsqueda y una papelera de reciclaje.
+- Vista previa de archivos para imágenes, PDF, código, audio y video.
+- Gestión de usuarios / almacenamiento / cuotas de administración, cuotas de almacenamiento por organización, e i18n (en/zh).
+
+### Correcciones
+- Búsqueda global del lado del servidor (se activa con Enter) y renderizado de vistas previas multimedia.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.0.0)
+
+---
+
+Para el registro de cambios de la v1, consulta la [rama v1](https://github.com/saltbo/zpan/tree/v1/CHANGELOG.md).

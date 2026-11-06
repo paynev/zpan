@@ -1,0 +1,1975 @@
+import { DirType } from '@shared/constants'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  abortUpload,
+  authorizeTaskUploadAbort,
+  authorizeTaskUploadConfirm,
+  completeUpload,
+  copyObject,
+  createObject,
+  deleteObject,
+  getObject,
+  getTrashObject,
+  hasEditorAccess,
+  listObjects,
+  listTrashedObjects,
+  type ObjectActor,
+  presignUploadSessionParts,
+  restoreObject,
+  transferObject,
+  trashObject,
+  UPLOAD_PRESIGNED_URL_TTL_SECONDS,
+  updateObject,
+} from './object'
+import {
+  AppError,
+  type AuditRepo,
+  type CloudTrafficReportRepo,
+  type ConflictPlan,
+  type DownloaderRepo,
+  type DownloadTaskRecord,
+  type DownloadTaskRepo,
+  type LicenseBindingRepo,
+  type LicensingCloudGateway,
+  type Matter,
+  type MatterRepo,
+  type ObjectUploadSessionRecord,
+  type ObjectUploadSessionRepo,
+  type OrgRepo,
+  type QuotaRepo,
+  type S3Gateway,
+  type ShareRepo,
+  type StorageRecord,
+  type StorageRepo,
+  type StorageUsageRepo,
+} from './ports'
+import { confirmDownloadTraffic, meterDownloadTraffic } from './store/traffic-metering'
+
+// Download metering is an end-to-end usecase of its own (quota + cloud report +
+// refund); object.getObject only orchestrates around it. Mock it and assert the
+// outcome mapping + presign rollback here; cloud-traffic-metering.test.ts owns
+// the metering internals.
+vi.mock('./store/traffic-metering', () => ({
+  meterDownloadTraffic: vi.fn(),
+  confirmDownloadTraffic: vi.fn(async () => {}),
+  reverseDownloadTraffic: vi.fn(async (deps, params) => deps.quota.refundTraffic(params.orgId, params.bytes)),
+}))
+
+const storage = {
+  id: 'st-1',
+  egressCreditBillingEnabled: false,
+  egressCreditUnitBytes: 0,
+  egressCreditPerUnit: 0,
+} as unknown as StorageRecord
+
+const confirmDownload = vi.mocked(confirmDownloadTraffic)
+
+// Fixed so two file() calls compare equal (tests deep-equal a fixture against a
+// usecase result; argless new Date() per call would flake under load).
+const FIXED_DATE = new Date('2024-01-01T00:00:00.000Z')
+
+function file(id: string, overrides: Partial<Matter> = {}): Matter {
+  return {
+    id,
+    orgId: 'o1',
+    alias: `${id}-alias`,
+    name: `${id}.txt`,
+    type: 'text/plain',
+    size: 100,
+    dirtype: DirType.FILE,
+    parent: '',
+    object: `key/${id}`,
+    storageId: 'st-1',
+    status: 'active',
+    trashedAt: null,
+    purgedAt: null,
+    createdAt: FIXED_DATE,
+    updatedAt: FIXED_DATE,
+    ...overrides,
+  }
+}
+
+const folder = (id: string, overrides: Partial<Matter> = {}): Matter =>
+  file(id, { dirtype: DirType.USER_FOLDER, size: 0, object: '', ...overrides })
+
+const user: ObjectActor = { kind: 'user', userId: 'u1' }
+
+// A permissive default deps; tests override only the ports they exercise.
+function makeDeps(
+  overrides: {
+    matter?: Partial<MatterRepo>
+    storages?: Partial<StorageRepo>
+    s3?: Partial<S3Gateway>
+    quota?: Partial<QuotaRepo>
+    storageUsage?: Partial<StorageUsageRepo>
+    audit?: Partial<AuditRepo>
+    share?: Partial<ShareRepo>
+    org?: Partial<OrgRepo>
+    objectUploadSessions?: Partial<ObjectUploadSessionRepo>
+    downloaders?: Partial<DownloaderRepo>
+    downloadTasks?: Partial<DownloadTaskRepo>
+  } = {},
+) {
+  const record = vi.fn(async () => {})
+  const deps = {
+    matter: {
+      get: async () => null,
+      list: async () => ({ items: [], nextBoundary: null }),
+      create: async (input: Parameters<MatterRepo['create']>[0]) => file('new', input as Partial<Matter>),
+      update: async () => null,
+      copy: async (source: Matter, parent: string, object: string) =>
+        file('copy', { parent, object, name: source.name }),
+      cancelDraft: async () => null,
+      trash: async () => null,
+      restore: async () => null,
+      collectForPurge: async () => null,
+      purge: async () => {},
+      planConflictResolution: async (_o: string, _p: string, name: string): Promise<ConflictPlan> => ({
+        finalName: name,
+        toTrash: null,
+      }),
+      findActiveConflict: async (_orgId: string, parent: string, name: string) => folder('target', { name, parent }),
+      commitConflictPlan: async () => {},
+      activateDraft: async () => true,
+      ...overrides.matter,
+    } as unknown as MatterRepo,
+    storages: {
+      get: async () => storage,
+      select: async () => storage,
+      ...overrides.storages,
+    } as unknown as StorageRepo,
+    s3: {
+      presignUpload: async () => 'https://upload.example',
+      presignDownload: async () => 'https://download.example',
+      copyObject: async () => {},
+      deleteObject: async () => {},
+      deleteObjects: async () => {},
+      ...overrides.s3,
+    } as unknown as S3Gateway,
+    // Type placeholders for getObject's metering ports — meterDownloadTraffic is mocked.
+    cloudTrafficReports: {} as unknown as CloudTrafficReportRepo,
+    licenseBinding: {} as unknown as LicenseBindingRepo,
+    licensingCloud: {} as unknown as LicensingCloudGateway,
+    quota: {
+      hasQuotaForBytes: async () => true,
+      incrementUsageIfEffectiveQuotaAllows: async () => true,
+      refundTraffic: async () => {},
+      ...overrides.quota,
+    } as unknown as QuotaRepo,
+    storageUsage: {
+      reconcile: async () => {},
+      rollbackReservations: async () => {},
+      ...overrides.storageUsage,
+    } as unknown as StorageUsageRepo,
+    audit: { record, ...overrides.audit } as unknown as AuditRepo,
+    share: {
+      revokeByMatter: async () => {},
+      computeSourceBytes: async () => 0,
+      hasQuotaForBytes: async () => true,
+      ...overrides.share,
+    } as unknown as ShareRepo,
+    org: {
+      getMemberRole: async () => null,
+      isPersonalOrg: async () => true,
+      canReadOrg: async () => true,
+      canWriteToOrg: async () => true,
+      ...overrides.org,
+    } as unknown as OrgRepo,
+    objectUploadSessions: {
+      create: async (input: Parameters<ObjectUploadSessionRepo['create']>[0]) =>
+        ({
+          id: 'sess-1',
+          objectId: input.objectId,
+          uploadId: input.uploadId,
+          partSize: input.partSize,
+          status: 'active',
+          storageKey: input.storageKey,
+          expiresAt: new Date(Date.now() + 3_600_000),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }) as ObjectUploadSessionRecord,
+      get: async () => null,
+      setStatus: async () => {},
+      ...overrides.objectUploadSessions,
+    } as unknown as ObjectUploadSessionRepo,
+    downloaders: { ...overrides.downloaders } as unknown as DownloaderRepo,
+    downloadTasks: {
+      findRecord: async () =>
+        ({ id: 't1', assignedDownloaderId: 'd1', status: 'uploading' }) as unknown as DownloadTaskRecord,
+      findActiveTargetWithin: async () => null,
+      ...overrides.downloadTasks,
+    } as unknown as DownloadTaskRepo,
+  }
+  return { deps, record }
+}
+
+beforeEach(() => vi.clearAllMocks())
+
+function expectError(out: unknown, httpStatus: number, message: string, reason?: string) {
+  const e = (out as { ok: false; error: AppError }).error
+  expect(e).toBeInstanceOf(AppError)
+  expect(e.httpStatus).toBe(httpStatus)
+  expect(e.message).toBe(message)
+  if (reason) expect(e.meta.reason).toBe(reason)
+}
+
+describe('object usecase', () => {
+  describe('listObjects', () => {
+    it('lists the active org without an override', async () => {
+      const item = { ...file('m1'), hasChildren: false }
+      const list = vi.fn(async () => ({ items: [item], nextBoundary: null }))
+      const { deps } = makeDeps({ matter: { list } })
+      const out = await listObjects(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        filters: { parent: '', pageSize: 20 },
+      })
+      expect(out).toEqual({ ok: true, result: { items: [item], nextBoundary: null } })
+      expect(list).toHaveBeenCalledWith('o1', { parent: '', pageSize: 20 })
+    })
+
+    it('browses an override org the user can read', async () => {
+      const list = vi.fn(async () => ({ items: [], nextBoundary: null }))
+      const canReadOrg = vi.fn(async () => true)
+      const { deps } = makeDeps({ matter: { list }, org: { canReadOrg } })
+      const out = await listObjects(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        orgOverride: 'o2',
+        filters: { parent: '', pageSize: 20 },
+      })
+      expect(out.ok).toBe(true)
+      expect(canReadOrg).toHaveBeenCalledWith('u1', 'o2')
+      expect(list).toHaveBeenCalledWith('o2', expect.anything())
+    })
+
+    it('forbids an override org when the credential is bound to a workspace', async () => {
+      const list = vi.fn()
+      const canReadOrg = vi.fn()
+      const { deps } = makeDeps({ matter: { list }, org: { canReadOrg } })
+      const out = await listObjects(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        boundOrgId: 'o1',
+        orgOverride: 'o2',
+        filters: { parent: '', pageSize: 20 },
+      })
+      expectError(out, 403, 'Forbidden')
+      expect(canReadOrg).not.toHaveBeenCalled()
+      expect(list).not.toHaveBeenCalled()
+    })
+
+    it('forbids an override org the user cannot read', async () => {
+      const list = vi.fn()
+      const { deps } = makeDeps({ matter: { list }, org: { canReadOrg: async () => false } })
+      const out = await listObjects(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        orgOverride: 'o2',
+        filters: { parent: '', pageSize: 20 },
+      })
+      expectError(out, 403, 'Forbidden')
+      expect(list).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('hasEditorAccess', () => {
+    it('grants editor+ member roles', async () => {
+      const { deps } = makeDeps({ org: { getMemberRole: async () => 'editor' } })
+      expect(await hasEditorAccess(deps, { orgId: 'o1', userId: 'u1' })).toBe(true)
+    })
+    it('denies viewer role', async () => {
+      const { deps } = makeDeps({ org: { getMemberRole: async () => 'viewer' } })
+      expect(await hasEditorAccess(deps, { orgId: 'o1', userId: 'u1' })).toBe(false)
+    })
+    it('falls back to personal-org ownership when no member row', async () => {
+      const { deps } = makeDeps({ org: { getMemberRole: async () => null, isPersonalOrg: async () => true } })
+      expect(await hasEditorAccess(deps, { orgId: 'o1', userId: 'u1' })).toBe(true)
+    })
+    it('returns false without an org or user', async () => {
+      const { deps } = makeDeps()
+      expect(await hasEditorAccess(deps, { orgId: null, userId: 'u1' })).toBe(false)
+      expect(await hasEditorAccess(deps, { orgId: 'o1', userId: null })).toBe(false)
+    })
+  })
+
+  describe('createObject', () => {
+    it('requires capacity before creating a draft or presigning storage', async () => {
+      const create = vi.fn()
+      const presignUpload = vi.fn()
+      const hasQuotaForBytes = vi.fn(async () => false)
+      const { deps } = makeDeps({
+        matter: { create },
+        s3: { presignUpload },
+        quota: { hasQuotaForBytes },
+      })
+
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'large.bin', size: 50, dirtype: DirType.FILE, parent: '' },
+      })
+
+      expect(out).toEqual({ ok: false, capacityRequired: { requestedBytes: 50 } })
+      expect(hasQuotaForBytes).toHaveBeenCalledWith('o1', 50)
+      expect(create).not.toHaveBeenCalled()
+      expect(presignUpload).not.toHaveBeenCalled()
+    })
+
+    it('checks only the net additional bytes for a replace upload', async () => {
+      const hasQuotaForBytes = vi.fn(async () => false)
+      const incumbent = file('old', { size: 40, parent: '', name: 'same.bin' })
+      const planConflictResolution = vi.fn(async () => ({ finalName: 'same.bin', toTrash: incumbent }))
+      const { deps } = makeDeps({
+        matter: { planConflictResolution },
+        quota: { hasQuotaForBytes },
+      })
+
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'same.bin', size: 50, dirtype: DirType.FILE, parent: '', onConflict: 'replace' },
+      })
+
+      expect(out).toEqual({ ok: false, capacityRequired: { requestedBytes: 10 } })
+      expect(planConflictResolution).toHaveBeenCalledWith('o1', '', 'same.bin', 'replace', { isFolder: false })
+      expect(hasQuotaForBytes).toHaveBeenCalledWith('o1', 10)
+    })
+
+    it('rejects a deterministic name conflict before checking quota or selecting storage', async () => {
+      const conflict = file('existing', { parent: '', name: 'same.bin' })
+      const planConflictResolution = vi.fn(async () => {
+        throw new (await import('./ports')).NameConflictError(conflict.name, conflict.id)
+      })
+      const select = vi.fn()
+      const hasQuotaForBytes = vi.fn(async () => false)
+      const { deps } = makeDeps({
+        matter: { planConflictResolution },
+        storages: { select },
+        quota: { hasQuotaForBytes },
+      })
+
+      await expect(
+        createObject(deps, {
+          orgId: 'o1',
+          actor: user,
+          input: { name: 'same.bin', size: 50, dirtype: DirType.FILE, parent: '' },
+        }),
+      ).rejects.toMatchObject({ name: 'NameConflictError', conflictingId: 'existing' })
+      expect(hasQuotaForBytes).not.toHaveBeenCalled()
+      expect(select).not.toHaveBeenCalled()
+    })
+
+    it('rejects unavailable storage before checking quota', async () => {
+      const hasQuotaForBytes = vi.fn(async () => false)
+      const { deps } = makeDeps({
+        storages: {
+          select: async () => {
+            throw new Error('No available storage')
+          },
+        },
+        quota: { hasQuotaForBytes },
+      })
+
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'large.bin', size: 50, dirtype: DirType.FILE, parent: '', storageId: 'missing' },
+      })
+
+      expectError(out, 503, 'Storage is not active or has no available capacity', 'NO_STORAGE_CONFIGURED')
+      expect(hasQuotaForBytes).not.toHaveBeenCalled()
+    })
+
+    it('creates a folder without presigning an upload', async () => {
+      const create = vi.fn(async () => folder('f1', { name: 'My Folder' }))
+      const presignUpload = vi.fn()
+      const { deps } = makeDeps({ matter: { create }, s3: { presignUpload } })
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'My Folder', type: 'folder', dirtype: DirType.USER_FOLDER, parent: '' },
+      })
+      expect(out).toEqual({ ok: true, matter: folder('f1', { name: 'My Folder' }) })
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'folder', size: 0, status: 'active', object: '' }),
+      )
+      expect(presignUpload).not.toHaveBeenCalled()
+    })
+
+    it('persists the stable OAuth agent identity on a created object', async () => {
+      const create = vi.fn(async () => folder('agent-folder', { name: 'Agent Folder' }))
+      const { deps } = makeDeps({ matter: { create } })
+
+      await createObject(deps, {
+        orgId: 'o1',
+        actor: {
+          kind: 'user',
+          userId: 'owner-1',
+          identity: { type: 'oauth', ref: 'agent-1', issuer: 'https://realm.example.com' },
+        },
+        input: { name: 'Agent Folder', type: 'folder', dirtype: DirType.USER_FOLDER, parent: '' },
+      })
+
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          createdByActorType: 'oauth',
+          createdByActorRef: 'agent-1',
+          createdByActorIssuer: 'https://realm.example.com',
+        }),
+      )
+    })
+
+    it('creates a small file draft and returns single-PUT upload instructions', async () => {
+      const create = vi.fn(async (input: Parameters<MatterRepo['create']>[0]) => file('d1', input as Partial<Matter>))
+      const presignUpload = vi.fn(async () => 'https://up')
+      const { deps } = makeDeps({
+        matter: { create },
+        s3: { presignUpload },
+      })
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'photo.jpg', type: 'image/jpeg', size: 2048, dirtype: DirType.FILE, parent: '' },
+      })
+      expect(out.ok).toBe(true)
+      if (out.ok && 'upload' in out) {
+        // Small file → single PutObject: one explicit part, partSize equals the file size.
+        expect(out.upload.sessionId).toBe('sess-1')
+        expect(out.upload.mode).toBe('single')
+        expect(out.upload.uploadId).toBeNull()
+        expect(out.upload.partSize).toBe(2048)
+        expect(out.upload.partCount).toBe(1)
+        expect(out.upload.requiredHeaders).toEqual({ 'content-type': 'image/jpeg' })
+        expect(out.upload.urls).toEqual(['https://up'])
+        expect(out.upload.parts).toEqual([
+          {
+            partNumber: 1,
+            url: 'https://up',
+            expiresAt: out.upload.presignedExpiresAt,
+            headers: { 'content-type': 'image/jpeg' },
+            offset: 0,
+            length: 2048,
+          },
+        ])
+        expect(out.matter.status).toBe('draft')
+        expect(out.matter.object).toMatch(/^o1\/u1\/\d{8}\/[A-Za-z0-9]{17}\.jpg$/)
+        expect(presignUpload).toHaveBeenCalledWith(
+          storage,
+          out.matter.object,
+          'image/jpeg',
+          UPLOAD_PRESIGNED_URL_TTL_SECONDS,
+        )
+      } else {
+        throw new Error('expected upload outcome')
+      }
+    })
+
+    it('presigns and stores a file draft without a content type', async () => {
+      const create = vi.fn(async (input: Parameters<MatterRepo['create']>[0]) =>
+        file('d1', { ...input, status: 'draft' }),
+      )
+      const presignUpload = vi.fn(async () => 'https://up')
+      const { deps } = makeDeps({ matter: { create }, s3: { presignUpload } })
+
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'unknown.bin', size: 10, dirtype: DirType.FILE, parent: '' },
+      })
+
+      expect(out.ok).toBe(true)
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ type: '' }))
+      expect(presignUpload).toHaveBeenCalledWith(
+        storage,
+        expect.any(String),
+        undefined,
+        UPLOAD_PRESIGNED_URL_TTL_SECONDS,
+      )
+    })
+
+    it('uses an eligible requested storage for a file draft', async () => {
+      const target = { ...storage, id: 'st-target' } as StorageRecord
+      const select = vi.fn(async () => target)
+      const create = vi.fn(async (input: Parameters<MatterRepo['create']>[0]) => file('d1', input as Partial<Matter>))
+      const createSession = vi.fn(
+        async (input: Parameters<ObjectUploadSessionRepo['create']>[0]) =>
+          ({
+            id: 'sess-1',
+            objectId: input.objectId,
+            uploadId: input.uploadId,
+            partSize: input.partSize,
+            status: 'active',
+            storageKey: input.storageKey,
+            expiresAt: new Date(Date.now() + 3_600_000),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }) as ObjectUploadSessionRecord,
+      )
+      const { deps } = makeDeps({
+        storages: { select },
+        matter: { create },
+        objectUploadSessions: { create: createSession },
+      })
+
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: {
+          name: 'photo.jpg',
+          type: 'image/jpeg',
+          size: 1,
+          dirtype: DirType.FILE,
+          parent: '',
+          storageId: 'st-target',
+        },
+      })
+
+      expect(out.ok).toBe(true)
+      expect(select).toHaveBeenCalledWith('st-target')
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ storageId: 'st-target' }))
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ storageId: 'st-target' }))
+    })
+
+    it('rejects a requested missing, inactive, or full storage before creating rows', async () => {
+      const create = vi.fn()
+      const createSession = vi.fn()
+      const { deps } = makeDeps({
+        matter: { create },
+        objectUploadSessions: { create: createSession },
+        storages: {
+          select: async () => {
+            throw new Error('No available storage')
+          },
+        },
+      })
+
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'x.txt', type: 'text/plain', dirtype: DirType.FILE, parent: '', storageId: 'missing' },
+      })
+
+      expectError(out, 503, 'Storage is not active or has no available capacity', 'NO_STORAGE_CONFIGURED')
+      expect(create).not.toHaveBeenCalled()
+      expect(createSession).not.toHaveBeenCalled()
+    })
+
+    it('creates a large file draft and returns multipart upload instructions', async () => {
+      const multipartPartSize = 64 * 1024 * 1024
+      const size = multipartPartSize + 1
+      const draft = file('big', { status: 'draft', object: 'o1/u1/big.bin', name: 'big.bin', size })
+      const createMultipartUpload = vi.fn(async () => 'mp-1')
+      const presignUploadPart = vi.fn(
+        async (_storage: unknown, _key: string, _uploadId: string, partNumber: number) => `https://part-${partNumber}`,
+      )
+      const { deps } = makeDeps({
+        matter: { create: async () => draft },
+        s3: { createMultipartUpload, presignUploadPart } as Partial<S3Gateway>,
+      })
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'big.bin', type: 'application/octet-stream', size, dirtype: DirType.FILE, parent: '' },
+      })
+      expect(out.ok).toBe(true)
+      if (out.ok && 'upload' in out) {
+        expect(out.upload.mode).toBe('multipart')
+        expect(out.upload.uploadId).toBe('mp-1')
+        expect(out.upload.partSize).toBe(multipartPartSize)
+        expect(out.upload.partCount).toBe(2)
+        expect(out.upload.requiredHeaders).toEqual({})
+        expect(out.upload.urls).toEqual(['https://part-1', 'https://part-2'])
+        expect(out.upload.parts).toEqual([
+          {
+            partNumber: 1,
+            url: 'https://part-1',
+            expiresAt: out.upload.presignedExpiresAt,
+            headers: {},
+            offset: 0,
+            length: multipartPartSize,
+          },
+          {
+            partNumber: 2,
+            url: 'https://part-2',
+            expiresAt: out.upload.presignedExpiresAt,
+            headers: {},
+            offset: multipartPartSize,
+            length: 1,
+          },
+        ])
+        expect(createMultipartUpload).toHaveBeenCalled()
+        expect(presignUploadPart).toHaveBeenCalledWith(
+          storage,
+          expect.any(String),
+          'mp-1',
+          1,
+          UPLOAD_PRESIGNED_URL_TTL_SECONDS,
+        )
+      } else {
+        throw new Error('expected upload outcome')
+      }
+    })
+
+    it('rejects a file larger than 5 TiB before creating a draft', async () => {
+      const create = vi.fn()
+      const { deps } = makeDeps({ matter: { create } })
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: {
+          name: 'huge.bin',
+          type: 'application/octet-stream',
+          size: 5 * 1024 * 1024 * 1024 * 1024 + 1,
+          dirtype: DirType.FILE,
+          parent: '',
+        },
+      })
+      expectError(out, 400, 'File exceeds the 5 TiB maximum', 'FILE_TOO_LARGE')
+      expect(create).not.toHaveBeenCalled()
+    })
+
+    it('returns no_storage when no storage is configured', async () => {
+      const { deps } = makeDeps({
+        storages: {
+          select: async () => {
+            throw new Error('No available storage')
+          },
+        },
+      })
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: user,
+        input: { name: 'x.txt', type: 'text/plain', dirtype: DirType.FILE, parent: '' },
+      })
+      expectError(out, 503, 'No storage configured', 'NO_STORAGE_CONFIGURED')
+    })
+
+    it('does not allow download-task uploads to choose a storage', async () => {
+      const create = vi.fn()
+      const select = vi.fn()
+      const { deps } = makeDeps({ matter: { create }, storages: { select } })
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: {
+          kind: 'download-task-upload',
+          downloaderId: 'd1',
+          taskId: 't1',
+          targetFolder: 'Inbox',
+          createdByUserId: 'creator',
+        },
+        input: { name: 'x.txt', type: 'text/plain', dirtype: DirType.FILE, parent: 'Inbox', storageId: 'st-1' },
+      })
+      expectError(out, 403, 'Storage selection is not allowed for task uploads')
+      expect(select).not.toHaveBeenCalled()
+      expect(create).not.toHaveBeenCalled()
+    })
+
+    it('rejects an agent upload outside its target folder', async () => {
+      const create = vi.fn()
+      const { deps } = makeDeps({ matter: { create } })
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: {
+          kind: 'download-task-upload',
+          downloaderId: 'd1',
+          taskId: 't1',
+          targetFolder: 'Inbox',
+          createdByUserId: 'creator',
+        },
+        input: { name: 'x.txt', type: 'text/plain', dirtype: DirType.FILE, parent: 'Other' },
+      })
+      expectError(out, 403, 'Target folder is outside task authorization')
+      expect(create).not.toHaveBeenCalled()
+    })
+
+    it('keys an agent upload to the task creator without embedding audit context', async () => {
+      const create = vi.fn(async (input: Parameters<MatterRepo['create']>[0]) => file('m', input as Partial<Matter>))
+      const { deps } = makeDeps({ matter: { create } })
+      await createObject(deps, {
+        orgId: 'o1',
+        actor: {
+          kind: 'download-task-upload',
+          downloaderId: 'd1',
+          taskId: 't1',
+          targetFolder: 'Inbox',
+          createdByUserId: 'creator',
+        },
+        input: { name: 'x.txt', type: 'text/plain', dirtype: DirType.FILE, parent: 'Inbox' },
+      })
+      const arg = create.mock.calls[0][0]
+      expect(arg).not.toHaveProperty('userId')
+      expect(arg.object).toMatch(/^o1\/creator\/\d{8}\/[A-Za-z0-9]{17}\.txt$/)
+    })
+
+    it('recreates the actual upload parent and uses its canonical path', async () => {
+      const create = vi.fn(async (input: Parameters<MatterRepo['create']>[0]) =>
+        input.dirtype === DirType.USER_FOLDER
+          ? folder(input.name, { name: input.name, parent: input.parent })
+          : file('m', input as Partial<Matter>),
+      )
+      const { deps } = makeDeps({
+        matter: {
+          findActiveConflict: async (_orgId, parent, name) =>
+            parent === '' && name === 'inbox' ? folder('Inbox', { name: 'Inbox' }) : null,
+          create,
+        },
+      })
+
+      const out = await createObject(deps, {
+        orgId: 'o1',
+        actor: {
+          kind: 'download-task-upload',
+          downloaderId: 'd1',
+          taskId: 't1',
+          targetFolder: 'inbox',
+          createdByUserId: 'creator',
+        },
+        input: { name: 'part.txt', type: 'text/plain', dirtype: DirType.FILE, parent: 'inbox/movie' },
+      })
+
+      expect(out.ok).toBe(true)
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: 'movie', parent: 'Inbox' }))
+      expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'part.txt', parent: 'Inbox/movie' }))
+    })
+  })
+
+  // An active upload session record as the repo returns it. uploadId=null is a
+  // single PutObject; a string is an S3 multipart upload.
+  function session(overrides: Partial<ObjectUploadSessionRecord> = {}): ObjectUploadSessionRecord {
+    return {
+      id: 'sess-1',
+      orgId: 'o1',
+      objectId: 'd1',
+      storageId: 'st-1',
+      storageKey: 'key/d1',
+      uploadId: null,
+      partSize: 100,
+      status: 'active',
+      onConflict: 'fail',
+      createdBy: 'u1',
+      expiresAt: new Date(Date.now() + 3_600_000),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...overrides,
+    } as ObjectUploadSessionRecord
+  }
+
+  describe('completeUpload', () => {
+    it('finalizes a single-PUT draft after HEAD confirms the reported ETag', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      const setStatus = vi.fn(async () => {})
+      const headObject = vi.fn(async () => ({ size: 100, contentType: 'text/plain', etag: 'abc' }))
+      const activateDraft = vi.fn(async () => true)
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft },
+        s3: { headObject } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus },
+      })
+      const out = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'abc' }],
+        actorId: 'u1',
+      })
+      expect(out.ok).toBe(true)
+      if (out.ok) expect(out.matter.status).toBe('active')
+      expect(headObject).toHaveBeenCalledWith(storage, 'key/d1')
+      expect(setStatus).toHaveBeenCalledWith('sess-1', 'completed')
+      expect(activateDraft).toHaveBeenCalledWith('d1', 'o1', 'd1.txt', 'text/plain', expect.any(Date))
+    })
+
+    it('stores an empty type when HEAD returns no Content-Type', async () => {
+      const draft = file('d1', { status: 'draft', size: 100, type: 'client/type' })
+      const activateDraft = vi.fn(async () => true)
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft },
+        s3: { headObject: async () => ({ size: 100, contentType: undefined, etag: 'abc' }) } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
+      })
+
+      const out = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'abc' }],
+        actorId: 'u1',
+      })
+
+      expect(out.ok).toBe(true)
+      if (out.ok) expect(out.matter.type).toBe('')
+      expect(activateDraft).toHaveBeenCalledWith('d1', 'o1', 'd1.txt', '', expect.any(Date))
+    })
+
+    it('tolerates quoted ETags from the client (strips quotes before comparing)', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft: async () => true },
+        s3: { headObject: async () => ({ size: 100, contentType: 'text/plain', etag: 'abc' }) } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
+      })
+      const out = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: '"abc"' }],
+        actorId: 'u1',
+      })
+      expect(out.ok).toBe(true)
+    })
+
+    it('rejects a single-PUT completion whose ETag does not match the HEAD', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      const { deps } = makeDeps({
+        matter: { get: async () => draft },
+        s3: { headObject: async () => ({ size: 100, contentType: 'text/plain', etag: 'real' }) } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
+      })
+      await expect(
+        completeUpload(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          parts: [{ partNumber: 1, etag: 'wrong' }],
+          actorId: 'u1',
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+    })
+
+    it('completes a multipart draft via CompleteMultipartUpload', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      const completeMultipartUpload = vi.fn(async () => {})
+      const headObject = vi.fn(async () => ({ size: 100, contentType: 'audio/flac', etag: 'multipart-etag' }))
+      const activateDraft = vi.fn(async () => true)
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft },
+        s3: { completeMultipartUpload, headObject } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1' }), setStatus: async () => {} },
+      })
+      const out = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'e1' }],
+        actorId: 'u1',
+      })
+      expect(out.ok).toBe(true)
+      expect(completeMultipartUpload).toHaveBeenCalledWith(storage, 'key/d1', 'mp-1', [{ partNumber: 1, etag: 'e1' }])
+      expect(headObject).toHaveBeenCalledWith(storage, 'key/d1')
+      expect(activateDraft).toHaveBeenCalledWith('d1', 'o1', 'd1.txt', 'audio/flac', expect.any(Date))
+    })
+
+    it('retries activation after multipart storage completion without completing S3 again', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      let sessionStatus: ObjectUploadSessionRecord['status'] = 'active'
+      let quotaAttempts = 0
+      const completeMultipartUpload = vi.fn(async () => {})
+      const setStatus = vi.fn(async (_id: string, status: ObjectUploadSessionRecord['status']) => {
+        sessionStatus = status
+      })
+      const headObject = vi.fn(async () => ({ size: 100, contentType: 'audio/flac', etag: 'multipart-etag' }))
+      const activateDraft = vi.fn(async () => true)
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft },
+        s3: { completeMultipartUpload, headObject } as Partial<S3Gateway>,
+        objectUploadSessions: {
+          get: async () => session({ status: sessionStatus, uploadId: 'mp-1' }),
+          setStatus,
+        },
+        quota: {
+          incrementUsageIfEffectiveQuotaAllows: async () => {
+            quotaAttempts += 1
+            return quotaAttempts > 1
+          },
+        },
+      })
+
+      const first = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'e1' }],
+        actorId: 'u1',
+      })
+      expectError(first, 422, 'Quota exceeded', 'QUOTA_EXCEEDED')
+
+      const second = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'e1' }],
+        actorId: 'u1',
+      })
+
+      expect(second.ok).toBe(true)
+      expect(completeMultipartUpload).toHaveBeenCalledTimes(1)
+      expect(setStatus).toHaveBeenCalledTimes(1)
+      expect(setStatus).toHaveBeenCalledWith('sess-1', 'completed')
+      expect(headObject).toHaveBeenCalledTimes(2)
+      expect(activateDraft).toHaveBeenCalledTimes(1)
+    })
+
+    it('retries a multipart activation race without completing S3 again', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      let sessionStatus: ObjectUploadSessionRecord['status'] = 'active'
+      let activationAttempts = 0
+      const completeMultipartUpload = vi.fn(async () => {})
+      const setStatus = vi.fn(async (_id: string, status: ObjectUploadSessionRecord['status']) => {
+        sessionStatus = status
+      })
+      const headObject = vi.fn(async () => ({ size: 100, contentType: 'audio/flac', etag: 'multipart-etag' }))
+      const activateDraft = vi.fn(async () => {
+        activationAttempts += 1
+        return activationAttempts > 1
+      })
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft },
+        s3: { completeMultipartUpload, headObject } as Partial<S3Gateway>,
+        objectUploadSessions: {
+          get: async () => session({ status: sessionStatus, uploadId: 'mp-1' }),
+          setStatus,
+        },
+      })
+
+      const first = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'e1' }],
+        actorId: 'u1',
+      })
+      expect(first).toEqual({ ok: false, reason: 'not_found' })
+
+      const second = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'e1' }],
+        actorId: 'u1',
+      })
+
+      expect(second.ok).toBe(true)
+      expect(completeMultipartUpload).toHaveBeenCalledTimes(1)
+      expect(setStatus).toHaveBeenCalledTimes(1)
+      expect(setStatus).toHaveBeenCalledWith('sess-1', 'completed')
+      expect(headObject).toHaveBeenCalledTimes(2)
+      expect(activateDraft).toHaveBeenCalledTimes(2)
+    })
+
+    it('returns the active object when completion is repeated for an already-completed session', async () => {
+      const active = file('d1', { status: 'active' })
+      const completeMultipartUpload = vi.fn()
+      const headObject = vi.fn()
+      const setStatus = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => active },
+        s3: { completeMultipartUpload, headObject } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ status: 'completed', uploadId: 'mp-1' }), setStatus },
+      })
+
+      const out = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'e1' }],
+        actorId: 'u1',
+      })
+
+      expect(out).toEqual({ ok: true, matter: active })
+      expect(completeMultipartUpload).not.toHaveBeenCalled()
+      expect(headObject).not.toHaveBeenCalled()
+      expect(setStatus).not.toHaveBeenCalled()
+    })
+
+    it('rejects duplicate multipart completion parts before completing storage', async () => {
+      const completeMultipartUpload = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 200 }) },
+        s3: { completeMultipartUpload } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1', partSize: 100 }) },
+      })
+
+      await expect(
+        completeUpload(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          parts: [
+            { partNumber: 1, etag: 'e1' },
+            { partNumber: 1, etag: 'e1-again' },
+          ],
+          actorId: 'u1',
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(completeMultipartUpload).not.toHaveBeenCalled()
+    })
+
+    it('rejects missing multipart completion parts before completing storage', async () => {
+      const completeMultipartUpload = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 200 }) },
+        s3: { completeMultipartUpload } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1', partSize: 100 }) },
+      })
+
+      await expect(
+        completeUpload(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          parts: [{ partNumber: 1, etag: 'e1' }],
+          actorId: 'u1',
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(completeMultipartUpload).not.toHaveBeenCalled()
+    })
+
+    it('rejects an expired upload session before completing storage', async () => {
+      const completeMultipartUpload = vi.fn()
+      const headObject = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft' }) },
+        s3: { completeMultipartUpload, headObject } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ expiresAt: new Date(Date.now() - 1_000) }) },
+      })
+
+      await expect(
+        completeUpload(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          parts: [{ partNumber: 1, etag: 'e1' }],
+          actorId: 'u1',
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(completeMultipartUpload).not.toHaveBeenCalled()
+      expect(headObject).not.toHaveBeenCalled()
+    })
+
+    it('throws not_found when the upload session is missing', async () => {
+      const draft = file('d1', { status: 'draft' })
+      const { deps } = makeDeps({
+        matter: { get: async () => draft },
+        objectUploadSessions: { get: async () => null },
+      })
+      await expect(
+        completeUpload(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          parts: [{ partNumber: 1, etag: 'x' }],
+          actorId: 'u1',
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' })
+    })
+
+    it('returns quota_exceeded when the activation reservation is rejected', async () => {
+      const draft = file('d1', { status: 'draft', size: 50 })
+      const { deps } = makeDeps({
+        matter: { get: async () => draft },
+        s3: { headObject: async () => ({ size: 50, contentType: 'text/plain', etag: 'abc' }) } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
+        quota: { incrementUsageIfEffectiveQuotaAllows: async () => false },
+      })
+      const out = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'abc' }],
+        actorId: 'u1',
+      })
+      expectError(out, 422, 'Quota exceeded', 'QUOTA_EXCEEDED')
+    })
+
+    it('propagates a name conflict thrown during activation', async () => {
+      const draft = file('d1', { status: 'draft' })
+      const { deps } = makeDeps({
+        matter: {
+          get: async () => draft,
+          planConflictResolution: async () => {
+            throw new (await import('./ports')).NameConflictError('upload.txt', 'active1')
+          },
+        },
+        s3: { headObject: async () => ({ size: 100, contentType: 'text/plain', etag: 'abc' }) } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
+      })
+      await expect(
+        completeUpload(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          parts: [{ partNumber: 1, etag: 'abc' }],
+          actorId: 'u1',
+        }),
+      ).rejects.toMatchObject({ name: 'NameConflictError' })
+    })
+  })
+
+  describe('presignUploadSessionParts', () => {
+    it('re-signs bounded explicit multipart part numbers with expiry metadata', async () => {
+      const presignUploadPart = vi.fn(
+        async (_storage: unknown, _key: string, _uploadId: string, partNumber: number) => `https://part-${partNumber}`,
+      )
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 250 }) },
+        s3: { presignUploadPart } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1', partSize: 100 }) },
+      })
+
+      const out = await presignUploadSessionParts(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        partNumbers: [3, 1],
+      })
+
+      expect(out.mode).toBe('multipart')
+      expect(out.uploadId).toBe('mp-1')
+      expect(out.partCount).toBe(3)
+      expect(out.parts).toEqual([
+        {
+          partNumber: 3,
+          url: 'https://part-3',
+          expiresAt: out.presignedExpiresAt,
+          headers: {},
+          offset: 200,
+          length: 50,
+        },
+        {
+          partNumber: 1,
+          url: 'https://part-1',
+          expiresAt: out.presignedExpiresAt,
+          headers: {},
+          offset: 0,
+          length: 100,
+        },
+      ])
+      expect(presignUploadPart).toHaveBeenCalledWith(storage, 'key/d1', 'mp-1', 3, UPLOAD_PRESIGNED_URL_TTL_SECONDS)
+    })
+
+    it('rejects duplicate or out-of-session re-sign part numbers', async () => {
+      const presignUploadPart = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 250 }) },
+        s3: { presignUploadPart } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1', partSize: 100 }) },
+      })
+
+      await expect(
+        presignUploadSessionParts(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          partNumbers: [1, 1],
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      await expect(
+        presignUploadSessionParts(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          partNumbers: [4],
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(presignUploadPart).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('abortUpload', () => {
+    it('aborts a single-PUT session: best-effort S3 delete + discards the draft', async () => {
+      const setStatus = vi.fn(async () => {})
+      const cancelDraft = vi.fn(async () => file('d1', { status: 'draft' }))
+      const deleteObjectFn = vi.fn(async () => {})
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft' }), cancelDraft },
+        s3: { deleteObject: deleteObjectFn },
+        objectUploadSessions: { get: async () => session(), setStatus },
+      })
+      await abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' })
+      expect(deleteObjectFn).toHaveBeenCalledWith(storage, 'key/d1')
+      expect(setStatus).toHaveBeenCalledWith('sess-1', 'aborted')
+      expect(cancelDraft).toHaveBeenCalledWith('d1', 'o1')
+    })
+
+    it('strict single-PUT abort fails when S3 cleanup fails', async () => {
+      const setStatus = vi.fn()
+      const cancelDraft = vi.fn()
+      const deleteObjectFn = vi.fn(async () => {
+        throw new Error('delete denied')
+      })
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft' }), cancelDraft },
+        s3: { deleteObject: deleteObjectFn },
+        objectUploadSessions: { get: async () => session(), setStatus },
+      })
+
+      await expect(
+        abortUpload(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          actorId: 'u1',
+          strictStorageCleanup: true,
+        }),
+      ).rejects.toMatchObject({ name: 'ObjectUploadSessionError', code: 'storage_failure' })
+      expect(setStatus).not.toHaveBeenCalled()
+      expect(cancelDraft).not.toHaveBeenCalled()
+    })
+
+    it('aborts a multipart session via AbortMultipartUpload', async () => {
+      const abortMultipartUpload = vi.fn(async () => {})
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft' }), cancelDraft: async () => file('d1') },
+        s3: { abortMultipartUpload } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1' }), setStatus: async () => {} },
+      })
+      await abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' })
+      expect(abortMultipartUpload).toHaveBeenCalledWith(storage, 'key/d1', 'mp-1')
+    })
+
+    it('abandons a completed multipart draft by deleting the finalized object', async () => {
+      const deleteObjectFn = vi.fn(async () => {})
+      const abortMultipartUpload = vi.fn()
+      const setStatus = vi.fn(async () => {})
+      const cancelDraft = vi.fn(async () => file('d1', { status: 'draft' }))
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft' }), cancelDraft },
+        s3: { deleteObject: deleteObjectFn, abortMultipartUpload } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ status: 'completed', uploadId: 'mp-1' }), setStatus },
+      })
+
+      await abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' })
+
+      expect(deleteObjectFn).toHaveBeenCalledWith(storage, 'key/d1')
+      expect(abortMultipartUpload).not.toHaveBeenCalled()
+      expect(setStatus).toHaveBeenCalledWith('sess-1', 'aborted')
+      expect(cancelDraft).toHaveBeenCalledWith('d1', 'o1')
+    })
+
+    it('finishes draft cancellation when retrying an already-aborted session', async () => {
+      const cancelDraft = vi.fn(async () => null)
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft' }), cancelDraft },
+        objectUploadSessions: { get: async () => session({ status: 'aborted' }) },
+      })
+      await abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' })
+      expect(cancelDraft).toHaveBeenCalledWith('d1', 'o1')
+    })
+
+    it('returns successfully for an already-aborted session whose draft was already deleted', async () => {
+      const cancelDraft = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => null, cancelDraft },
+        objectUploadSessions: { get: async () => session({ status: 'aborted' }) },
+      })
+      await abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' })
+      expect(cancelDraft).not.toHaveBeenCalled()
+    })
+
+    it('is idempotent for an already-aborted non-draft session', async () => {
+      const cancelDraft = vi.fn(async () => null)
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'cancelled' }), cancelDraft },
+        objectUploadSessions: { get: async () => session({ status: 'aborted' }) },
+      })
+      await abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' })
+      expect(cancelDraft).not.toHaveBeenCalled()
+    })
+
+    it('recovers when completed draft abort marked aborted before draft cancellation failed', async () => {
+      let status: ObjectUploadSessionRecord['status'] = 'completed'
+      let cancelAttempts = 0
+      const deleteObjectFn = vi.fn(async () => {})
+      const setStatus = vi.fn(async (_id: string, next: ObjectUploadSessionRecord['status']) => {
+        status = next
+      })
+      const cancelDraft = vi.fn(async () => {
+        cancelAttempts += 1
+        if (cancelAttempts === 1) throw new Error('db write failed')
+        return file('d1', { status: 'draft' })
+      })
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft' }), cancelDraft },
+        s3: { deleteObject: deleteObjectFn },
+        objectUploadSessions: { get: async () => session({ status, uploadId: 'mp-1' }), setStatus },
+      })
+
+      await expect(
+        abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' }),
+      ).rejects.toThrow('db write failed')
+      await abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' })
+
+      expect(deleteObjectFn).toHaveBeenCalledTimes(1)
+      expect(setStatus).toHaveBeenCalledWith('sess-1', 'aborted')
+      expect(cancelDraft).toHaveBeenCalledTimes(2)
+      expect(cancelDraft).toHaveBeenLastCalledWith('d1', 'o1')
+    })
+
+    it('rejects aborting an already-completed active session', async () => {
+      const deleteObjectFn = vi.fn()
+      const cancelDraft = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'active' }), cancelDraft },
+        s3: { deleteObject: deleteObjectFn },
+        objectUploadSessions: { get: async () => session({ status: 'completed' }) },
+      })
+      await expect(
+        abortUpload(deps, { orgId: 'o1', objectId: 'd1', sessionId: 'sess-1', actorId: 'u1' }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(deleteObjectFn).not.toHaveBeenCalled()
+      expect(cancelDraft).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('presignUploadSessionParts', () => {
+    it('re-signs bounded multipart parts with explicit descriptors', async () => {
+      const presignUploadPart = vi.fn(
+        async (_storage, _key, _uploadId, partNumber: number) => `https://part-${partNumber}`,
+      )
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 300 }) },
+        s3: { presignUploadPart } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1', partSize: 100 }) },
+      })
+
+      const out = await presignUploadSessionParts(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        partNumbers: [2, 3],
+      })
+
+      expect(out).toMatchObject({
+        uploadId: 'mp-1',
+        mode: 'multipart',
+        partSize: 100,
+        partCount: 3,
+        requiredHeaders: {},
+        parts: [
+          { partNumber: 2, url: 'https://part-2', headers: {} },
+          { partNumber: 3, url: 'https://part-3', headers: {} },
+        ],
+      })
+      expect(out.parts[0]?.expiresAt).toBe(out.presignedExpiresAt)
+      expect(presignUploadPart).toHaveBeenCalledWith(storage, 'key/d1', 'mp-1', 2, UPLOAD_PRESIGNED_URL_TTL_SECONDS)
+    })
+
+    it('re-signs a single-PUT session with required headers for interrupted resume', async () => {
+      const presignUpload = vi.fn(async () => 'https://single-resigned')
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 100, type: 'text/plain' }) },
+        s3: { presignUpload } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: null, partSize: 100 }) },
+      })
+
+      const out = await presignUploadSessionParts(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        partNumbers: [1],
+      })
+
+      expect(out).toMatchObject({
+        uploadId: null,
+        mode: 'single',
+        partSize: 100,
+        partCount: 1,
+        requiredHeaders: { 'content-type': 'text/plain' },
+        parts: [{ partNumber: 1, url: 'https://single-resigned', headers: { 'content-type': 'text/plain' } }],
+      })
+      expect(out.parts[0]?.expiresAt).toBe(out.presignedExpiresAt)
+      expect(presignUpload).toHaveBeenCalledWith(storage, 'key/d1', 'text/plain', UPLOAD_PRESIGNED_URL_TTL_SECONDS)
+    })
+
+    it('rejects duplicate re-sign part numbers before signing', async () => {
+      const presignUploadPart = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 300 }) },
+        s3: { presignUploadPart } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1', partSize: 100 }) },
+      })
+
+      await expect(
+        presignUploadSessionParts(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          partNumbers: [2, 2],
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(presignUploadPart).not.toHaveBeenCalled()
+    })
+
+    it('rejects re-sign part numbers outside the session part count before signing', async () => {
+      const presignUploadPart = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 300 }) },
+        s3: { presignUploadPart } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1', partSize: 100 }) },
+      })
+
+      await expect(
+        presignUploadSessionParts(deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          partNumbers: [4],
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(presignUploadPart).not.toHaveBeenCalled()
+    })
+
+    it('rejects re-sign for expired sessions before signing', async () => {
+      const presignUploadPart = vi.fn()
+      const expired = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 300 }) },
+        s3: { presignUploadPart } as Partial<S3Gateway>,
+        objectUploadSessions: {
+          get: async () => session({ uploadId: 'mp-1', partSize: 100, expiresAt: new Date(Date.now() - 1_000) }),
+        },
+      })
+      await expect(
+        presignUploadSessionParts(expired.deps, {
+          orgId: 'o1',
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          partNumbers: [1],
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(presignUploadPart).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('listTrashedObjects / getTrashObject', () => {
+    it('paginates trashed roots', async () => {
+      const roots = [file('t1', { trashedAt: 2 }), file('t2', { trashedAt: 1 })]
+      const nextBoundary = { trashedAt: 2, createdAt: roots[0]!.createdAt, id: 't1' }
+      const listTrashedRootPage = vi.fn(async () => ({ items: [roots[0]!], nextBoundary }))
+      const { deps } = makeDeps({ matter: { listTrashedRootPage } })
+      const out = await listTrashedObjects(deps, { orgId: 'o1', pageSize: 1 })
+      expect(out.result.items).toEqual([roots[0]])
+      expect(out.result.nextBoundary).toEqual(nextBoundary)
+      expect(listTrashedRootPage).toHaveBeenCalledWith('o1', { pageSize: 1, after: undefined })
+    })
+
+    it('returns a trashed object', async () => {
+      const { deps } = makeDeps({ matter: { get: async () => file('t1', { trashedAt: 5 }) } })
+      const out = await getTrashObject(deps, { orgId: 'o1', objectId: 't1' })
+      expect(out.ok).toBe(true)
+      if (out.ok) expect(out.matter.trashedAt).toBe(5)
+    })
+
+    it('returns not_found for a live (non-trashed) object', async () => {
+      const { deps } = makeDeps({ matter: { get: async () => file('m1', { trashedAt: null }) } })
+      expectError(await getTrashObject(deps, { orgId: 'o1', objectId: 'm1' }), 404, 'Not found')
+    })
+
+    it('returns not_found for a missing object', async () => {
+      const { deps } = makeDeps({ matter: { get: async () => null } })
+      expectError(await getTrashObject(deps, { orgId: 'o1', objectId: 'x' }), 404, 'Not found')
+    })
+  })
+
+  describe('getObject', () => {
+    it('returns a folder without metering or presigning', async () => {
+      const presignDownload = vi.fn()
+      const { deps } = makeDeps({ matter: { get: async () => folder('f1') }, s3: { presignDownload } })
+      const out = await getObject(deps, { orgId: 'o1', objectId: 'f1', cloudBaseUrl: 'https://cloud' })
+      expect(out).toEqual({ ok: true, matter: folder('f1') })
+      expect(meterDownloadTraffic).not.toHaveBeenCalled()
+      expect(presignDownload).not.toHaveBeenCalled()
+    })
+
+    it('returns not_found for a missing object', async () => {
+      const { deps } = makeDeps({ matter: { get: async () => null } })
+      const out = await getObject(deps, { orgId: 'o1', objectId: 'x', cloudBaseUrl: 'https://cloud' })
+      expectError(out, 404, 'Not found')
+    })
+
+    it('returns storage_not_found when a file has no storage row', async () => {
+      const { deps } = makeDeps({ matter: { get: async () => file('m1') }, storages: { get: async () => null } })
+      const out = await getObject(deps, { orgId: 'o1', objectId: 'm1', cloudBaseUrl: 'https://cloud' })
+      expectError(out, 404, 'Storage not found')
+    })
+
+    it('meters egress then presigns the download URL for a file', async () => {
+      vi.mocked(meterDownloadTraffic).mockResolvedValue({ ok: true })
+      const presignDownload = vi.fn(async () => 'https://signed')
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { size: 100 }) },
+        s3: { presignDownload },
+      })
+      const out = await getObject(deps, { orgId: 'o1', objectId: 'm1', cloudBaseUrl: 'https://cloud' })
+      expect(out).toMatchObject({ ok: true, downloadUrl: 'https://signed' })
+      expect(meterDownloadTraffic).toHaveBeenCalledWith(
+        deps,
+        expect.objectContaining({
+          cloudBaseUrl: 'https://cloud',
+          orgId: 'o1',
+          bytes: 100,
+          source: 'object_download',
+          sourceId: 'm1',
+        }),
+      )
+      expect(confirmDownload).toHaveBeenCalledWith(deps, {
+        eventId: expect.any(String),
+      })
+    })
+
+    it('fails when download audit recording fails', async () => {
+      vi.mocked(meterDownloadTraffic).mockResolvedValue({ ok: true })
+      confirmDownload.mockRejectedValueOnce(new Error('audit unavailable'))
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { size: 100 }) },
+        s3: { presignDownload: async () => 'https://signed' },
+      })
+      await expect(getObject(deps, { orgId: 'o1', objectId: 'm1', cloudBaseUrl: 'https://cloud' })).rejects.toThrow(
+        'audit unavailable',
+      )
+      expect(confirmDownload).toHaveBeenCalledOnce()
+    })
+
+    it('maps a quota_exceeded metering outcome and never presigns', async () => {
+      vi.mocked(meterDownloadTraffic).mockResolvedValue({ ok: false, reason: 'quota_exceeded' })
+      const presignDownload = vi.fn()
+      const { deps } = makeDeps({ matter: { get: async () => file('m1') }, s3: { presignDownload } })
+      const out = await getObject(deps, { orgId: 'o1', objectId: 'm1', cloudBaseUrl: 'https://cloud' })
+      expectError(out, 422, 'Traffic quota exceeded', 'QUOTA_EXCEEDED')
+      expect(presignDownload).not.toHaveBeenCalled()
+    })
+
+    it('maps an insufficient_credits metering outcome', async () => {
+      vi.mocked(meterDownloadTraffic).mockResolvedValue({ ok: false, reason: 'insufficient_credits' })
+      const { deps } = makeDeps({ matter: { get: async () => file('m1') } })
+      const out = await getObject(deps, { orgId: 'o1', objectId: 'm1', cloudBaseUrl: 'https://cloud' })
+      expectError(out, 402, 'Insufficient credits', 'INSUFFICIENT_CREDITS')
+      expect((out as { ok: false; error: AppError }).error.meta.metadata).toEqual({ resource: 'storage_egress' })
+    })
+
+    it('refunds the traffic and rethrows when presign fails after metering', async () => {
+      vi.mocked(meterDownloadTraffic).mockResolvedValue({ ok: true })
+      const refundTraffic = vi.fn(async () => {})
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { size: 250 }) },
+        quota: { refundTraffic },
+        s3: {
+          presignDownload: async () => {
+            throw new Error('sign failed')
+          },
+        },
+      })
+      await expect(getObject(deps, { orgId: 'o1', objectId: 'm1', cloudBaseUrl: 'https://cloud' })).rejects.toThrow(
+        'sign failed',
+      )
+      expect(refundTraffic).toHaveBeenCalledWith('o1', 250)
+    })
+  })
+
+  describe('updateObject', () => {
+    it('renames and returns the matter', async () => {
+      const update = vi.fn(async () => file('m1', { name: 'New.txt' }))
+      const { deps } = makeDeps({ matter: { get: async () => file('m1'), update } })
+      const out = await updateObject(deps, {
+        orgId: 'o1',
+        objectId: 'm1',
+        input: { name: 'New.txt' },
+      })
+      expect(out).toEqual({ ok: true, matter: file('m1', { name: 'New.txt' }) })
+      expect(update).toHaveBeenCalledWith('m1', 'o1', { name: 'New.txt', parent: undefined, onConflict: undefined })
+    })
+
+    it('returns not_found when the matter is missing', async () => {
+      const { deps } = makeDeps({ matter: { update: async () => null } })
+      const out = await updateObject(deps, {
+        orgId: 'o1',
+        objectId: 'x',
+        input: { name: 'X' },
+      })
+      expectError(out, 404, 'Not found')
+    })
+  })
+
+  describe('trashObject / restoreObject', () => {
+    it('trashes a matter', async () => {
+      // Trash = active row with trashedAt set (no 'trashed' status).
+      const { deps } = makeDeps({
+        matter: {
+          get: async () => file('m1'),
+          trash: async () => file('m1', { status: 'active', trashedAt: 1 }),
+        },
+      })
+      const out = await trashObject(deps, { orgId: 'o1', objectId: 'm1' })
+      expect(out.ok).toBe(true)
+      if (out.ok) {
+        expect(out.matter.status).toBe('active')
+        expect(out.matter.trashedAt).toBe(1)
+      }
+    })
+
+    it('trash returns not_found when missing', async () => {
+      const { deps } = makeDeps({ matter: { trash: async () => null } })
+      expectError(await trashObject(deps, { orgId: 'o1', objectId: 'x' }), 404, 'Not found')
+    })
+
+    it('restores with the default fail strategy', async () => {
+      const restore = vi.fn(async () => file('m1', { status: 'active' }))
+      const { deps } = makeDeps({ matter: { restore } })
+      const out = await restoreObject(deps, { orgId: 'o1', objectId: 'm1' })
+      expect(out.ok).toBe(true)
+      expect(restore).toHaveBeenCalledWith('o1', 'm1', 'fail')
+    })
+
+    it('restore passes the given onConflict strategy', async () => {
+      const restore = vi.fn(async () => file('m1', { status: 'active' }))
+      const { deps } = makeDeps({ matter: { restore } })
+      await restoreObject(deps, { orgId: 'o1', objectId: 'm1', onConflict: 'rename' })
+      expect(restore).toHaveBeenCalledWith('o1', 'm1', 'rename')
+    })
+
+    it('restore returns not_found when missing', async () => {
+      const { deps } = makeDeps({ matter: { restore: async () => null } })
+      expectError(await restoreObject(deps, { orgId: 'o1', objectId: 'x' }), 404, 'Not found')
+    })
+  })
+
+  describe('deleteObject (purge)', () => {
+    it('purges a trashed subtree without writing audit events in the usecase', async () => {
+      const subtree = [folder('f1', { trashedAt: 1 }), file('m1', { trashedAt: 1, parent: 'f1' })]
+      const purge = vi.fn(async () => {})
+      const deleteObjects = vi.fn(async () => {})
+      const { deps, record } = makeDeps({
+        matter: { collectForPurge: async () => subtree, purge },
+        s3: { deleteObjects },
+      })
+      const out = await deleteObject(deps, { orgId: 'o1', objectId: 'f1' })
+      expect(out).toEqual({ ok: true, id: 'f1', purged: 2 })
+      expect(purge).toHaveBeenCalledWith('o1', ['f1', 'm1'])
+      expect(deleteObjects).toHaveBeenCalled()
+      expect(record).not.toHaveBeenCalled()
+    })
+
+    it('returns not_found when the object does not exist', async () => {
+      const { deps } = makeDeps({
+        matter: { collectForPurge: (async () => null) as unknown as MatterRepo['collectForPurge'] },
+      })
+      expect(await deleteObject(deps, { orgId: 'o1', objectId: 'x' })).toEqual({
+        ok: false,
+        reason: 'not_found',
+      })
+    })
+
+    it('returns not_trashed when the object is still active', async () => {
+      const { deps, record } = makeDeps({
+        matter: { collectForPurge: async () => [folder('f1', { status: 'active' })] },
+      })
+      const out = await deleteObject(deps, { orgId: 'o1', objectId: 'f1' })
+      expect(out).toEqual({ ok: false, reason: 'not_trashed' })
+      expect(record).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('copyObject', () => {
+    it('copies a file: reserves quota, copies the S3 object, creates the matter', async () => {
+      const source = file('src', { size: 200, object: 'legacy_/source-file-.txt' })
+      const copyObjectS3 = vi.fn(async (..._args: Parameters<S3Gateway['copyObject']>) => {})
+      const increment = vi.fn(async () => true)
+      const copy = vi.fn(async () => file('cp', { parent: 'Dest', name: source.name }))
+      const { deps } = makeDeps({
+        matter: { get: async () => source, copy },
+        s3: { copyObject: copyObjectS3 },
+        quota: { incrementUsageIfEffectiveQuotaAllows: increment },
+      })
+      const out = await copyObject(deps, { orgId: 'o1', userId: 'u1', input: { copyFrom: 'src', parent: 'Dest' } })
+      expect(out.ok).toBe(true)
+      expect(increment).toHaveBeenCalledWith('o1', 'st-1', 200, true)
+      const destinationKey = copyObjectS3.mock.calls[0]?.[3]
+      expect(source.object).toBe('legacy_/source-file-.txt')
+      expect(destinationKey).toMatch(/^o1\/u1\/\d{8}\/[A-Za-z0-9]{17}\.txt$/)
+      expect(copyObjectS3).toHaveBeenCalledWith(storage, source.object, storage, destinationKey)
+      expect(copy).toHaveBeenCalledWith(source, 'Dest', destinationKey, {
+        onConflict: undefined,
+        createdByActorType: 'user',
+        createdByActorRef: 'u1',
+        createdByActorIssuer: null,
+      })
+    })
+
+    it('returns not_found for a missing source', async () => {
+      const { deps } = makeDeps({ matter: { get: async () => null } })
+      expectError(
+        await copyObject(deps, { orgId: 'o1', userId: 'u1', input: { copyFrom: 'x', parent: '' } }),
+        404,
+        'Not found',
+      )
+    })
+
+    it('returns storage_not_found for an object-backed source with no storage', async () => {
+      const source = file('src', { object: 'key/src' })
+      const { deps } = makeDeps({ matter: { get: async () => source }, storages: { get: async () => null } })
+      const out = await copyObject(deps, { orgId: 'o1', userId: 'u1', input: { copyFrom: 'src', parent: '' } })
+      expectError(out, 404, 'Storage not found')
+    })
+
+    it('rolls back the S3 copy when the matter copy fails', async () => {
+      const source = file('src', { size: 200, object: 'key/src' })
+      const deleteObjectFn = vi.fn(async () => {})
+      const rollback = vi.fn(async () => {})
+      const { deps } = makeDeps({
+        matter: {
+          get: async () => source,
+          copy: async () => {
+            throw new Error('copy failed')
+          },
+        },
+        s3: { copyObject: async () => {}, deleteObject: deleteObjectFn },
+        storageUsage: { rollbackReservations: rollback },
+      })
+      await expect(
+        copyObject(deps, { orgId: 'o1', userId: 'u1', input: { copyFrom: 'src', parent: '' } }),
+      ).rejects.toThrow('copy failed')
+      // onRollback deletes the freshly copied S3 object; reservation rolled back too.
+      expect(deleteObjectFn).toHaveBeenCalled()
+      expect(rollback).toHaveBeenCalled()
+    })
+  })
+
+  describe('transferObject', () => {
+    it('rejects a transfer to the same space', async () => {
+      const { deps } = makeDeps()
+      const out = await transferObject(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        objectId: 'm1',
+        input: { targetOrgId: 'o1', targetParent: '', mode: 'copy' },
+      })
+      expectError(out, 400, 'Target must be a different space', 'SAME_ORG')
+    })
+
+    it('returns not_found for a missing/inactive source', async () => {
+      const { deps } = makeDeps({ matter: { get: async () => null } })
+      const out = await transferObject(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        objectId: 'm1',
+        input: { targetOrgId: 'o2', targetParent: '', mode: 'copy' },
+      })
+      expectError(out, 404, 'Not found')
+    })
+
+    it('forbids a move without editor access on the source space', async () => {
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { status: 'active' }) },
+        org: { getMemberRole: async () => 'viewer', isPersonalOrg: async () => false },
+      })
+      const out = await transferObject(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        objectId: 'm1',
+        input: { targetOrgId: 'o2', targetParent: '', mode: 'move' },
+      })
+      expectError(out, 403, 'Forbidden')
+    })
+
+    it('forbids a transfer into a target the user cannot write', async () => {
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { status: 'active' }) },
+        org: { canWriteToOrg: async () => false },
+      })
+      const out = await transferObject(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        objectId: 'm1',
+        input: { targetOrgId: 'o2', targetParent: '', mode: 'copy' },
+      })
+      expectError(out, 403, 'Forbidden')
+    })
+
+    it('rejects moving a folder used by an active download before copying it', async () => {
+      const copyObject = vi.fn(async () => {})
+      const { deps } = makeDeps({
+        matter: { get: async () => folder('Downloads', { name: 'Downloads', status: 'active' }) },
+        downloadTasks: {
+          findActiveTargetWithin: async () =>
+            ({ id: 'task-1', targetFolder: 'Downloads/Movies' }) as unknown as DownloadTaskRecord,
+        },
+        s3: { copyObject },
+      })
+
+      await expect(
+        transferObject(deps, {
+          orgId: 'o1',
+          userId: 'u1',
+          objectId: 'downloads',
+          input: { targetOrgId: 'o2', targetParent: '', mode: 'move' },
+        }),
+      ).rejects.toMatchObject({ httpStatus: 409, meta: { reason: 'DIRECTORY_IN_USE' } })
+      expect(copyObject).not.toHaveBeenCalled()
+    })
+
+    it('rejects a transfer that exceeds the target quota', async () => {
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { status: 'active' }) },
+        share: { computeSourceBytes: async () => 1000, hasQuotaForBytes: async () => false },
+      })
+      const out = await transferObject(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        objectId: 'm1',
+        input: { targetOrgId: 'o2', targetParent: '', mode: 'copy' },
+      })
+      expectError(out, 422, 'Quota exceeded', 'QUOTA_EXCEEDED')
+    })
+
+    it('copies into the target without deleting the source', async () => {
+      const source = file('m1', { status: 'active', name: 'report.pdf', object: 'legacy_/source-file-.pdf' })
+      const collectForPurge = vi.fn()
+      const copyObjectS3 = vi.fn(async (..._args: Parameters<S3Gateway['copyObject']>) => {})
+      const { deps } = makeDeps({
+        matter: { get: async () => source, collectForPurge },
+        storages: {
+          get: async () => storage,
+          select: async () => storage,
+        },
+        s3: { copyObject: copyObjectS3 },
+      })
+      const out = await transferObject(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        objectId: 'm1',
+        input: { targetOrgId: 'o2', targetParent: '', mode: 'copy' },
+      })
+      expect(out.ok).toBe(true)
+      if (out.ok) {
+        expect(out.result.sourceDeleted).toBe(false)
+        expect(out.result.saved[0]?.object).toMatch(/^o2\/u1\/\d{8}\/[A-Za-z0-9]{17}\.pdf$/)
+      }
+      expect(source.object).toBe('legacy_/source-file-.pdf')
+      expect(copyObjectS3).toHaveBeenCalledWith(storage, source.object, storage, expect.stringMatching(/^o2\/u1\//))
+      expect(collectForPurge).not.toHaveBeenCalled()
+    })
+
+    it('moves and purges the source subtree without usecase-level audit writes', async () => {
+      const source = file('m1', { status: 'active', object: 'key/m1' })
+      const purge = vi.fn(async () => {})
+      const { deps, record } = makeDeps({
+        matter: {
+          get: async () => source,
+          collectForPurge: async () => [source],
+          purge,
+        },
+        storages: { get: async () => storage, select: async () => storage },
+        s3: { copyObject: async () => {}, deleteObjects: async () => {} },
+      })
+      const out = await transferObject(deps, {
+        orgId: 'o1',
+        userId: 'u1',
+        objectId: 'm1',
+        input: { targetOrgId: 'o2', targetParent: '', mode: 'move' },
+      })
+      expect(out.ok).toBe(true)
+      if (out.ok) expect(out.result.sourceDeleted).toBe(true)
+      expect(purge).toHaveBeenCalledWith('o1', ['m1'])
+      expect(record).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('authorizeTaskUploadConfirm', () => {
+    const taskParams = {
+      orgId: 'o1',
+      objectId: 'm1',
+      taskId: 't1',
+      downloaderId: 'd1',
+      targetFolder: 'Inbox',
+    }
+
+    it('forbids confirming an object outside the target folder', async () => {
+      const { deps } = makeDeps({ matter: { get: async () => file('m1', { parent: 'Other' }) } })
+      expectError(await authorizeTaskUploadConfirm(deps, taskParams), 403, 'Forbidden')
+    })
+
+    it('authorizes a confirm within the target folder for a live task', async () => {
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { parent: 'Inbox' }) },
+        downloadTasks: {
+          findRecord: async () =>
+            ({ id: 't1', assignedDownloaderId: 'd1', status: 'uploading' }) as unknown as DownloadTaskRecord,
+        },
+      })
+      expect(await authorizeTaskUploadConfirm(deps, taskParams)).toEqual({ ok: true })
+    })
+  })
+
+  describe('authorizeTaskUploadAbort', () => {
+    const taskParams = {
+      orgId: 'o1',
+      objectId: 'm1',
+      sessionId: 'sess-1',
+      taskId: 't1',
+      downloaderId: 'd1',
+      targetFolder: 'Inbox',
+    }
+
+    it('authorizes an already-aborted upload session after the draft was deleted', async () => {
+      const matterGet = vi.fn(async () => null)
+      const { deps } = makeDeps({
+        matter: { get: matterGet },
+        objectUploadSessions: {
+          get: async () => session({ status: 'aborted', createdBy: 'downloader:d1' }),
+        },
+        downloadTasks: {
+          findRecord: async () =>
+            ({ id: 't1', assignedDownloaderId: 'd1', status: 'uploading' }) as unknown as DownloadTaskRecord,
+        },
+      })
+      expect(await authorizeTaskUploadAbort(deps, taskParams)).toEqual({ ok: true })
+      expect(matterGet).not.toHaveBeenCalled()
+    })
+
+    it('forbids an already-aborted upload session created by another downloader', async () => {
+      const matterGet = vi.fn(async () => null)
+      const { deps } = makeDeps({
+        matter: { get: matterGet },
+        objectUploadSessions: {
+          get: async () => session({ status: 'aborted', createdBy: 'downloader:other' }),
+        },
+      })
+      expectError(await authorizeTaskUploadAbort(deps, taskParams), 403, 'Forbidden')
+      expect(matterGet).not.toHaveBeenCalled()
+    })
+
+    it('forbids an active upload session created by another downloader', async () => {
+      const matterGet = vi.fn(async () => file('m1', { parent: 'Inbox' }))
+      const { deps } = makeDeps({
+        matter: { get: matterGet },
+        objectUploadSessions: {
+          get: async () => session({ createdBy: 'downloader:other' }),
+        },
+      })
+      expectError(await authorizeTaskUploadAbort(deps, taskParams), 403, 'Forbidden')
+      expect(matterGet).not.toHaveBeenCalled()
+    })
+
+    it('authorizes an active upload session owned by the downloader', async () => {
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { parent: 'Inbox' }) },
+        objectUploadSessions: {
+          get: async () => session({ createdBy: 'downloader:d1' }),
+        },
+        downloadTasks: {
+          findRecord: async () =>
+            ({ id: 't1', assignedDownloaderId: 'd1', status: 'uploading' }) as unknown as DownloadTaskRecord,
+        },
+      })
+      expect(await authorizeTaskUploadAbort(deps, taskParams)).toEqual({ ok: true })
+    })
+
+    it('still forbids non-aborted abort outside the task target folder', async () => {
+      const { deps } = makeDeps({
+        matter: { get: async () => file('m1', { parent: 'Other' }) },
+        objectUploadSessions: { get: async () => session({ createdBy: 'downloader:d1' }) },
+      })
+      expectError(await authorizeTaskUploadAbort(deps, taskParams), 403, 'Forbidden')
+    })
+  })
+})

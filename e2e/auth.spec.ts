@@ -1,0 +1,90 @@
+import { expect, test } from '@playwright/test'
+import { expandSignInForm, expandSignUpForm, testIdentity } from './helpers'
+
+test.describe('Auth flow', () => {
+  test('redirects to sign-in when not authenticated @all', async ({ page }) => {
+    await page.goto('/')
+    await expect(page).toHaveURL(/sign-in/, { timeout: 5000 })
+  })
+
+  test('sign-up and redirect to files @all', async ({ page }) => {
+    const identity = testIdentity('signup')
+    await page.goto('/sign-up')
+    await expect(page.getByRole('heading', { name: 'ZPan' })).toBeVisible()
+
+    await expandSignUpForm(page)
+    await page.getByLabel('Email').fill(`${identity}@example.com`)
+    await page.getByLabel('Username').fill(identity)
+    await page.getByLabel('Password').fill('password123456')
+
+    // Listen for the sign-up API response
+    const [response] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/auth/sign-up')),
+      page.getByRole('button', { name: 'Sign up' }).click(),
+    ])
+    expect(response.status()).toBe(200)
+
+    await expect(page).toHaveURL(/files/, { timeout: 10000 })
+  })
+
+  test('sign-in with existing account @all @critical', async ({ page }) => {
+    const identity = testIdentity('login')
+    const email = `${identity}@example.com`
+
+    // Register via UI
+    await page.goto('/sign-up')
+    await expandSignUpForm(page)
+    await page.getByLabel('Email').fill(email)
+    await page.getByLabel('Username').fill(identity)
+    await page.getByLabel('Password').fill('password123456')
+    const [signUpResp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/auth/sign-up')),
+      page.getByRole('button', { name: 'Sign up' }).click(),
+    ])
+    expect(signUpResp.status()).toBe(200)
+    await expect(page).toHaveURL(/files/, { timeout: 10000 })
+
+    // Clear cookies and go to sign-in
+    await page.context().clearCookies()
+    await page.goto('/sign-in')
+    await expandSignInForm(page)
+    await page.locator('#identity').fill(email)
+    await page.locator('#password').fill('password123456')
+
+    const [signInResp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/auth/sign-in')),
+      page.getByRole('button', { name: 'Sign in' }).click(),
+    ])
+    expect(signInResp.status()).toBe(200)
+
+    await expect(page).toHaveURL(/files/, { timeout: 10000 })
+
+    await page.goto('/sign-in')
+    await expect(page.getByText('Last used')).toBeVisible()
+  })
+
+  test('sidebar shows only My Files and Trash for regular users @desktop @tablet', async ({ page }) => {
+    const identity = testIdentity('sidebar')
+    await page.goto('/sign-up')
+    await expandSignUpForm(page)
+    await page.getByLabel('Email').fill(`${identity}@example.com`)
+    await page.getByLabel('Username').fill(identity)
+    await page.getByLabel('Password').fill('password123456')
+
+    const [signUpResp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/auth/sign-up')),
+      page.getByRole('button', { name: 'Sign up' }).click(),
+    ])
+    expect(signUpResp.status()).toBe(200)
+    await expect(page).toHaveURL(/files/, { timeout: 10000 })
+
+    // Main sidebar should show My Files and Trash
+    const sidebar = page.locator('[data-slot="sidebar"]')
+    await expect(sidebar.getByText('My Files')).toBeVisible()
+    await expect(sidebar.getByText('Trash')).toBeVisible()
+
+    // Admin items should NOT be in the main sidebar
+    await expect(sidebar.getByText('Storages')).not.toBeVisible()
+    await expect(sidebar.getByText('Users')).not.toBeVisible()
+  })
+})

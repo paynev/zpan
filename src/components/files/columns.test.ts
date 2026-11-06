@@ -1,0 +1,470 @@
+import { DirType } from '@shared/constants'
+import type { StorageObject } from '@shared/types'
+import type { ColumnDef, Row } from '@tanstack/react-table'
+import { describe, expect, it, vi } from 'vitest'
+import { getColumns } from './columns'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeObject(id: string, dirtype: number, extra: Partial<StorageObject> = {}): StorageObject {
+  return {
+    id,
+    name: id,
+    dirtype,
+    size: 0,
+    status: 'active',
+    parent: '',
+    storageId: '',
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-06-01T00:00:00.000Z',
+    orgId: '',
+    alias: '',
+    type: '',
+    object: '',
+    ...extra,
+  } as StorageObject
+}
+
+function makeRow(obj: StorageObject): Row<StorageObject> {
+  return {
+    original: obj,
+    getIsSelected: vi.fn(() => false),
+    toggleSelected: vi.fn(),
+    getValue: vi.fn((key: string) => obj[key as keyof StorageObject]),
+  } as unknown as Row<StorageObject>
+}
+
+const noopHandlers = {
+  onOpen: vi.fn(),
+  onRename: vi.fn(),
+  onMove: vi.fn(),
+  onTrash: vi.fn(),
+  onCopy: vi.fn(),
+  onDownload: vi.fn(),
+  onShare: vi.fn(),
+}
+
+const t = (key: string) => key
+
+// ---------------------------------------------------------------------------
+// Column shape
+// ---------------------------------------------------------------------------
+
+describe('getColumns — column definitions', () => {
+  it('returns six columns', () => {
+    const cols = getColumns(noopHandlers, t)
+
+    expect(cols).toHaveLength(6)
+  })
+
+  it('first column id is select', () => {
+    const cols = getColumns(noopHandlers, t)
+
+    expect(cols[0].id).toBe('select')
+  })
+
+  it('second column accessorKey is name', () => {
+    const cols = getColumns(noopHandlers, t)
+    const col = cols[1] as ColumnDef<StorageObject> & { accessorKey?: string }
+
+    expect(col.accessorKey).toBe('name')
+  })
+
+  it('third column accessorKey is size', () => {
+    const cols = getColumns(noopHandlers, t)
+    const col = cols[2] as ColumnDef<StorageObject> & { accessorKey?: string }
+
+    expect(col.accessorKey).toBe('size')
+  })
+
+  it('fourth column accessorKey is updatedAt', () => {
+    const cols = getColumns(noopHandlers, t)
+    const col = cols[3] as ColumnDef<StorageObject> & { accessorKey?: string }
+
+    expect(col.accessorKey).toBe('updatedAt')
+  })
+
+  it('last column id is actions', () => {
+    const cols = getColumns(noopHandlers, t)
+
+    expect(cols[5].id).toBe('actions')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Responsive meta.className
+// ---------------------------------------------------------------------------
+
+describe('getColumns — size column meta.className', () => {
+  it('size column has meta.className set to "hidden sm:table-cell"', () => {
+    const cols = getColumns(noopHandlers, t)
+    const sizeCol = cols[2]
+
+    expect(sizeCol.meta).toBeDefined()
+    expect((sizeCol.meta as { className: string }).className).toBe('hidden sm:table-cell')
+  })
+})
+
+describe('getColumns — modified column meta.className', () => {
+  it('updatedAt column has meta.className set to "hidden md:table-cell"', () => {
+    const cols = getColumns(noopHandlers, t)
+    const modifiedCol = cols[3]
+
+    expect(modifiedCol.meta).toBeDefined()
+    expect((modifiedCol.meta as { className: string }).className).toBe('hidden truncate md:table-cell')
+  })
+
+  it('keeps the modified column compact next to creator', () => {
+    const cols = getColumns(noopHandlers, t)
+
+    expect(cols[3].size).toBe(128)
+  })
+})
+
+describe('getColumns — creator column', () => {
+  it('shows creator only on large screens and does not sort display profiles', () => {
+    const cols = getColumns(noopHandlers, t)
+    const creatorCol = cols[4]
+
+    expect(creatorCol.id).toBe('createdBy')
+    expect(creatorCol.header).toBe('files.colCreatedBy')
+    expect(creatorCol.size).toBe(64)
+    expect((creatorCol.meta as { className: string }).className).toBe('hidden text-center lg:table-cell')
+    expect(creatorCol.enableSorting).toBe(false)
+  })
+})
+
+describe('getColumns — select column meta.className', () => {
+  it('select column meta.className is "pl-4 pr-0" (always visible)', () => {
+    const cols = getColumns(noopHandlers, t)
+    const selectCol = cols[0]
+
+    expect((selectCol.meta as { className: string }).className).toBe('pl-4 pr-0')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sorting: folders-first logic
+// ---------------------------------------------------------------------------
+
+describe('getColumns — name column sortingFn (folders first)', () => {
+  it('sorts folder before file regardless of alphabetical order', () => {
+    const cols = getColumns(noopHandlers, t)
+    const nameCol = cols[1] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const folderRow = makeRow(makeObject('z-folder', DirType.USER_FOLDER))
+    const fileRow = makeRow(makeObject('a-file', DirType.FILE))
+
+    const result = nameCol.sortingFn(fileRow, folderRow, 'name')
+
+    // file vs folder: folder should come first, so file > folder → positive
+    expect(result).toBeGreaterThan(0)
+  })
+
+  it('returns 0 for two folders of the same name when folder order is same', () => {
+    const cols = getColumns(noopHandlers, t)
+    const nameCol = cols[1] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const folderA = makeRow(makeObject('same', DirType.USER_FOLDER))
+    const folderB = makeRow(makeObject('same', DirType.USER_FOLDER))
+
+    const result = nameCol.sortingFn(folderA, folderB, 'name')
+
+    expect(result).toBe(0)
+  })
+
+  it('sorts two files by name alphabetically', () => {
+    const cols = getColumns(noopHandlers, t)
+    const nameCol = cols[1] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const fileA = makeRow(makeObject('apple', DirType.FILE))
+    const fileB = makeRow(makeObject('banana', DirType.FILE))
+
+    const result = nameCol.sortingFn(fileA, fileB, 'name')
+
+    expect(result).toBeLessThan(0)
+  })
+})
+
+describe('getColumns — size column sortingFn (folders first)', () => {
+  it('sorts folder before file', () => {
+    const cols = getColumns(noopHandlers, t)
+    const sizeCol = cols[2] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const folderRow = makeRow(makeObject('folder', DirType.USER_FOLDER, { size: 0 }))
+    const fileRow = makeRow(makeObject('file', DirType.FILE, { size: 9999 }))
+
+    const result = sizeCol.sortingFn(fileRow, folderRow, 'size')
+
+    expect(result).toBeGreaterThan(0)
+  })
+
+  it('sorts two files by size ascending', () => {
+    const cols = getColumns(noopHandlers, t)
+    const sizeCol = cols[2] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const smallFile = makeRow(makeObject('small', DirType.FILE, { size: 100 }))
+    const bigFile = makeRow(makeObject('big', DirType.FILE, { size: 5000 }))
+
+    // small < big → negative
+    const result = sizeCol.sortingFn(smallFile, bigFile, 'size')
+
+    expect(result).toBeLessThan(0)
+  })
+})
+
+describe('getColumns — updatedAt column sortingFn (folders first)', () => {
+  it('sorts folder before file', () => {
+    const cols = getColumns(noopHandlers, t)
+    const dateCol = cols[3] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const folderRow = makeRow(makeObject('folder', DirType.USER_FOLDER, { updatedAt: '2024-01-01T00:00:00.000Z' }))
+    const fileRow = makeRow(makeObject('file', DirType.FILE, { updatedAt: '2020-01-01T00:00:00.000Z' }))
+
+    const result = dateCol.sortingFn(fileRow, folderRow, 'updatedAt')
+
+    expect(result).toBeGreaterThan(0)
+  })
+
+  it('sorts two files by updatedAt chronologically', () => {
+    const cols = getColumns(noopHandlers, t)
+    const dateCol = cols[3] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const olderFile = makeRow(makeObject('old', DirType.FILE, { updatedAt: '2020-01-01T00:00:00.000Z' }))
+    const newerFile = makeRow(makeObject('new', DirType.FILE, { updatedAt: '2024-01-01T00:00:00.000Z' }))
+
+    const result = dateCol.sortingFn(olderFile, newerFile, 'updatedAt')
+
+    expect(result).toBeLessThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// size column cell renderer
+// ---------------------------------------------------------------------------
+
+describe('getColumns — size column cell renderer', () => {
+  it('returns em-dash for a folder row', () => {
+    const cols = getColumns(noopHandlers, t)
+    const sizeCol = cols[2] as ColumnDef<StorageObject> & {
+      cell: (ctx: { row: Row<StorageObject> }) => string
+    }
+
+    const folderRow = makeRow(makeObject('folder', DirType.USER_FOLDER))
+    const result = sizeCol.cell({ row: folderRow })
+
+    expect(result).toBe('—')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// size column cell renderer — file branch
+// ---------------------------------------------------------------------------
+
+describe('getColumns — size column cell renderer (file)', () => {
+  it('returns formatted size string for a file row', () => {
+    const cols = getColumns(noopHandlers, t)
+    const sizeCol = cols[2] as ColumnDef<StorageObject> & {
+      cell: (ctx: { row: Row<StorageObject> }) => string
+    }
+
+    const fileRow = makeRow(makeObject('file', DirType.FILE, { size: 1024 }))
+    const result = sizeCol.cell({ row: fileRow })
+
+    expect(result).toBe('1.0 KB')
+  })
+
+  it('returns "0 B" for a file with zero size', () => {
+    const cols = getColumns(noopHandlers, t)
+    const sizeCol = cols[2] as ColumnDef<StorageObject> & {
+      cell: (ctx: { row: Row<StorageObject> }) => string
+    }
+
+    const fileRow = makeRow(makeObject('file', DirType.FILE, { size: 0 }))
+    const result = sizeCol.cell({ row: fileRow })
+
+    expect(result).toBe('0 B')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// updatedAt column cell renderer
+// ---------------------------------------------------------------------------
+
+describe('getColumns — updatedAt column cell renderer', () => {
+  it('returns a formatted date string for a valid ISO date', () => {
+    const cols = getColumns(noopHandlers, t)
+    const dateCol = cols[3] as ColumnDef<StorageObject> & {
+      cell: (ctx: { getValue: () => string }) => string
+    }
+
+    const result = dateCol.cell({ getValue: () => '2024-06-01T00:00:00.000Z' })
+
+    expect(result).toBeTruthy()
+    expect(result).not.toBe('—')
+  })
+
+  it('returns "—" for an empty updatedAt value', () => {
+    const cols = getColumns(noopHandlers, t)
+    const dateCol = cols[3] as ColumnDef<StorageObject> & {
+      cell: (ctx: { getValue: () => string }) => string
+    }
+
+    const result = dateCol.cell({ getValue: () => '' })
+
+    expect(result).toBe('—')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// updatedAt sortingFn — two same-type items (both files)
+// ---------------------------------------------------------------------------
+
+describe('getColumns — updatedAt column sortingFn (same dates)', () => {
+  it('returns 0 for two files with identical updatedAt timestamps', () => {
+    const cols = getColumns(noopHandlers, t)
+    const dateCol = cols[3] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const fileA = makeRow(makeObject('a', DirType.FILE, { updatedAt: '2024-01-01T00:00:00.000Z' }))
+    const fileB = makeRow(makeObject('b', DirType.FILE, { updatedAt: '2024-01-01T00:00:00.000Z' }))
+
+    const result = dateCol.sortingFn(fileA, fileB, 'updatedAt')
+
+    expect(result).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// size sortingFn — equal sizes
+// ---------------------------------------------------------------------------
+
+describe('getColumns — size column sortingFn (equal sizes)', () => {
+  it('returns 0 for two files with identical size', () => {
+    const cols = getColumns(noopHandlers, t)
+    const sizeCol = cols[2] as ColumnDef<StorageObject> & {
+      sortingFn: (a: Row<StorageObject>, b: Row<StorageObject>, id: string) => number
+    }
+
+    const fileA = makeRow(makeObject('a', DirType.FILE, { size: 500 }))
+    const fileB = makeRow(makeObject('b', DirType.FILE, { size: 500 }))
+
+    const result = sizeCol.sortingFn(fileA, fileB, 'size')
+
+    expect(result).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sorting flags
+// ---------------------------------------------------------------------------
+
+describe('getColumns — sorting flags', () => {
+  it('select column has enableSorting false', () => {
+    const cols = getColumns(noopHandlers, t)
+
+    expect(cols[0].enableSorting).toBe(false)
+  })
+
+  it('actions column has enableSorting false', () => {
+    const cols = getColumns(noopHandlers, t)
+
+    expect(cols[5].enableSorting).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Width-injection rule (mirrors files-table.tsx line 176)
+//
+// Rule: style width is injected when meta.flex is falsy; omitted when truthy.
+// Reproduces the bugfix: TanStack defaults size=150 for columns without an
+// explicit size, so checking `size != null` would always inject width.
+// Checking `meta.flex` instead is what prevents the Name column from getting
+// a hardcoded width under `table-fixed`.
+// ---------------------------------------------------------------------------
+
+describe('getColumns — meta.flex on name column (width-injection guard)', () => {
+  it('name column has meta.flex set to true', () => {
+    const cols = getColumns(noopHandlers, t)
+    const nameCol = cols[1]
+
+    expect((nameCol.meta as { flex?: boolean }).flex).toBe(true)
+  })
+
+  it('select column does not have meta.flex (receives injected width)', () => {
+    const cols = getColumns(noopHandlers, t)
+    const selectCol = cols[0]
+
+    expect((selectCol.meta as { flex?: boolean }).flex).toBeFalsy()
+  })
+
+  it('size column does not have meta.flex (receives injected width)', () => {
+    const cols = getColumns(noopHandlers, t)
+    const sizeCol = cols[2]
+
+    expect((sizeCol.meta as { flex?: boolean }).flex).toBeFalsy()
+  })
+
+  it('updatedAt column does not have meta.flex (receives injected width)', () => {
+    const cols = getColumns(noopHandlers, t)
+    const dateCol = cols[3]
+
+    expect((dateCol.meta as { flex?: boolean }).flex).toBeFalsy()
+  })
+
+  it('actions column does not have meta.flex (receives injected width)', () => {
+    const cols = getColumns(noopHandlers, t)
+    const actionsCol = cols[4]
+
+    expect((actionsCol.meta as { flex?: boolean }).flex).toBeFalsy()
+  })
+})
+
+describe('width-injection rule — pure logic', () => {
+  it('returns undefined style when meta.flex is true', () => {
+    const resolveStyle = (flex: boolean | undefined, size: number) => (flex ? undefined : { width: size })
+
+    expect(resolveStyle(true, 150)).toBeUndefined()
+  })
+
+  it('returns width style when meta.flex is falsy', () => {
+    const resolveStyle = (flex: boolean | undefined, size: number) => (flex ? undefined : { width: size })
+
+    expect(resolveStyle(undefined, 40)).toEqual({ width: 40 })
+  })
+
+  it('returns width style when meta.flex is false', () => {
+    const resolveStyle = (flex: boolean | undefined, size: number) => (flex ? undefined : { width: size })
+
+    expect(resolveStyle(false, 96)).toEqual({ width: 96 })
+  })
+
+  it('name column size defaults to TanStack default (150) but flex guard prevents width injection', () => {
+    // TanStack Table defaults column size to 150 when not specified.
+    // The old check `size != null` would always be true (150 != null → true),
+    // so the Name column would incorrectly get style="width:150px".
+    // With the meta.flex guard, size=150 on the name column is irrelevant.
+    const cols = getColumns(noopHandlers, t)
+    const nameMeta = cols[1].meta as { flex?: boolean }
+
+    // Confirms that the guard key (flex) is truthy, not the size value
+    expect(nameMeta.flex).toBe(true)
+  })
+})

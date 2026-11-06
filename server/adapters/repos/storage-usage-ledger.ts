@@ -1,0 +1,320 @@
+import { DirType } from '@shared/constants'
+import { and, asc, eq, isNull, sql } from 'drizzle-orm'
+import { generateId } from '../../../shared/ids'
+import { imageHostings, matters, storageUsageLedger } from '../../db/schema'
+import { type AtomicQuery, executeWriteTransaction } from '../../db/transaction'
+import type { Database } from '../../platform/interface'
+
+export type StorageUsageResourceType = 'matter' | 'image_hosting' | 'storage'
+
+export type StorageUsageReason =
+  | 'opening_balance'
+  | 'opening_balance_complete'
+  | 'integrity_opening_balance'
+  | 'matter_activated'
+  | 'matter_resized'
+  | 'matter_purged'
+  | 'image_activated'
+  | 'image_purged'
+
+export interface StorageUsageLedgerMutation {
+  eventKey?: string
+  orgId: string
+  storageId: string
+  resourceType: StorageUsageResourceType
+  resourceId: string
+  deltaBytes: number
+  reason: StorageUsageReason
+  occurredAt: Date
+}
+
+const HOUR_MS = 3_600_000
+
+export function storageUsageLedgerExactFrom(opening: Date): Date {
+  return new Date(Math.ceil(opening.getTime() / HOUR_MS) * HOUR_MS)
+}
+
+export async function getStorageUsageLedgerOpening(db: Database): Promise<Date | null> {
+  const integrityRows = await db
+    .select({ occurredAt: storageUsageLedger.occurredAt })
+    .from(storageUsageLedger)
+    .where(eq(storageUsageLedger.reason, 'integrity_opening_balance'))
+    .orderBy(asc(storageUsageLedger.occurredAt))
+    .limit(1)
+  if (integrityRows[0]) return integrityRows[0].occurredAt
+  const rows = await db
+    .select({ occurredAt: storageUsageLedger.occurredAt })
+    .from(storageUsageLedger)
+    .where(eq(storageUsageLedger.reason, 'opening_balance_complete'))
+    .orderBy(asc(storageUsageLedger.occurredAt))
+    .limit(1)
+  return rows[0]?.occurredAt ?? null
+}
+
+function openingEventKey(orgId: string, storageId: string): string {
+  return `opening:${orgId}:${storageId}`
+}
+
+export function storageUsageOpeningBalanceQuery(
+  db: Database,
+  orgId: string,
+  storageId: string,
+  occurredAt: Date,
+): AtomicQuery {
+  const eventKey = openingEventKey(orgId, storageId)
+  return db
+    .insert(storageUsageLedger)
+    .values({
+      id: generateId(),
+      eventKey,
+      orgId,
+      storageId,
+      resourceType: 'storage',
+      resourceId: storageId,
+      deltaBytes: sql<number>`COALESCE((
+        SELECT SUM(${matters.size})
+        FROM ${matters}
+        WHERE ${matters.orgId} = ${orgId}
+          AND ${matters.storageId} = ${storageId}
+          AND ${matters.dirtype} = ${DirType.FILE}
+          AND ${matters.status} = 'active'
+          AND ${matters.purgedAt} IS NULL
+      ), 0) + COALESCE((
+        SELECT SUM(${imageHostings.size})
+        FROM ${imageHostings}
+        WHERE ${imageHostings.orgId} = ${orgId}
+          AND ${imageHostings.storageId} = ${storageId}
+          AND ${imageHostings.status} = 'active'
+          AND ${imageHostings.purgedAt} IS NULL
+      ), 0)`,
+      reason: 'opening_balance',
+      occurredAt,
+      createdAt: occurredAt,
+    })
+    .onConflictDoNothing({ target: storageUsageLedger.eventKey })
+}
+
+export function storageUsageMutationQuery(db: Database, mutation: StorageUsageLedgerMutation): AtomicQuery {
+  const eventKey = mutation.eventKey ?? `mutation:${generateId()}`
+  return db
+    .insert(storageUsageLedger)
+    .values({
+      id: generateId(),
+      eventKey,
+      orgId: mutation.orgId,
+      storageId: mutation.storageId,
+      resourceType: mutation.resourceType,
+      resourceId: mutation.resourceId,
+      deltaBytes: mutation.deltaBytes,
+      reason: mutation.reason,
+      occurredAt: mutation.occurredAt,
+      createdAt: mutation.occurredAt,
+    })
+    .onConflictDoNothing({ target: storageUsageLedger.eventKey })
+}
+
+function conditionalMutationQuery(db: Database, selection: ReturnType<typeof sql>): AtomicQuery {
+  return db.insert(storageUsageLedger).select(selection).onConflictDoNothing({ target: storageUsageLedger.eventKey })
+}
+
+export function matterActivationLedgerQuery(
+  db: Database,
+  orgId: string,
+  matterId: string,
+  occurredAt: Date,
+): AtomicQuery {
+  const eventKey = `matter:${matterId}:activated`
+  return conditionalMutationQuery(
+    db,
+    sql`SELECT
+      ${generateId()}, ${eventKey}, ${matters.orgId}, ${matters.storageId}, 'matter', ${matters.id},
+      ${matters.size}, 'matter_activated', ${occurredAt.getTime()}, ${occurredAt.getTime()}
+    FROM ${matters}
+    WHERE ${matters.id} = ${matterId}
+      AND ${matters.orgId} = ${orgId}
+      AND ${matters.status} = 'active'
+      AND ${matters.dirtype} = ${DirType.FILE}
+      AND ${matters.purgedAt} IS NULL
+      AND COALESCE(${matters.size}, 0) > 0`,
+  )
+}
+
+export function matterResizeLedgerQuery(
+  db: Database,
+  orgId: string,
+  matterId: string,
+  nextSize: number,
+  occurredAt: Date,
+): AtomicQuery {
+  return conditionalMutationQuery(
+    db,
+    sql`SELECT
+      ${generateId()}, ${`matter:${matterId}:resized:${generateId()}`}, ${matters.orgId}, ${matters.storageId}, 'matter',
+      ${matters.id}, ${nextSize} - COALESCE(${matters.size}, 0), 'matter_resized',
+      ${occurredAt.getTime()}, ${occurredAt.getTime()}
+    FROM ${matters}
+    WHERE ${matters.id} = ${matterId}
+      AND ${matters.orgId} = ${orgId}
+      AND ${matters.status} = 'active'
+      AND ${matters.dirtype} = ${DirType.FILE}
+      AND ${matters.purgedAt} IS NULL
+      AND ${nextSize} <> COALESCE(${matters.size}, 0)`,
+  )
+}
+
+export function matterPurgeLedgerQuery(db: Database, orgId: string, matterId: string, occurredAt: Date): AtomicQuery {
+  const eventKey = `matter:${matterId}:purged`
+  return conditionalMutationQuery(
+    db,
+    sql`SELECT
+      ${generateId()}, ${eventKey}, ${matters.orgId}, ${matters.storageId}, 'matter', ${matters.id},
+      -COALESCE(${matters.size}, 0), 'matter_purged', ${occurredAt.getTime()}, ${occurredAt.getTime()}
+    FROM ${matters}
+    WHERE ${matters.id} = ${matterId}
+      AND ${matters.orgId} = ${orgId}
+      AND ${matters.status} = 'active'
+      AND ${matters.dirtype} = ${DirType.FILE}
+      AND ${matters.purgedAt} IS NULL
+      AND COALESCE(${matters.size}, 0) > 0`,
+  )
+}
+
+export function imageActivationLedgerQuery(
+  db: Database,
+  orgId: string,
+  imageId: string,
+  occurredAt: Date,
+): AtomicQuery {
+  const eventKey = `image:${imageId}:activated`
+  return conditionalMutationQuery(
+    db,
+    sql`SELECT
+      ${generateId()}, ${eventKey}, ${imageHostings.orgId}, ${imageHostings.storageId}, 'image_hosting',
+      ${imageHostings.id}, ${imageHostings.size}, 'image_activated', ${occurredAt.getTime()}, ${occurredAt.getTime()}
+    FROM ${imageHostings}
+    WHERE ${imageHostings.id} = ${imageId}
+      AND ${imageHostings.orgId} = ${orgId}
+      AND ${imageHostings.status} = 'active'
+      AND ${imageHostings.purgedAt} IS NULL
+      AND ${imageHostings.size} > 0`,
+  )
+}
+
+export function imagePurgeLedgerQuery(db: Database, orgId: string, imageId: string, occurredAt: Date): AtomicQuery {
+  const eventKey = `image:${imageId}:purged`
+  return conditionalMutationQuery(
+    db,
+    sql`SELECT
+      ${generateId()}, ${eventKey}, ${imageHostings.orgId}, ${imageHostings.storageId}, 'image_hosting',
+      ${imageHostings.id}, -${imageHostings.size}, 'image_purged', ${occurredAt.getTime()}, ${occurredAt.getTime()}
+    FROM ${imageHostings}
+    WHERE ${imageHostings.id} = ${imageId}
+      AND ${imageHostings.orgId} = ${orgId}
+      AND ${imageHostings.status} = 'active'
+      AND ${imageHostings.purgedAt} IS NULL
+      AND ${imageHostings.size} > 0`,
+  )
+}
+
+export async function ensureStorageUsageOpeningBalances(db: Database, occurredAt: Date): Promise<void> {
+  const [matterPairs, imagePairs] = await Promise.all([
+    db
+      .selectDistinct({ orgId: matters.orgId, storageId: matters.storageId })
+      .from(matters)
+      .where(and(eq(matters.dirtype, DirType.FILE), eq(matters.status, 'active'), isNull(matters.purgedAt))),
+    db
+      .selectDistinct({ orgId: imageHostings.orgId, storageId: imageHostings.storageId })
+      .from(imageHostings)
+      .where(and(eq(imageHostings.status, 'active'), isNull(imageHostings.purgedAt))),
+  ])
+
+  const pairs = new Map<string, { orgId: string; storageId: string }>()
+  for (const pair of [...matterPairs, ...imagePairs]) {
+    pairs.set(`${pair.orgId}\u0000${pair.storageId}`, pair)
+  }
+
+  const queries = [...pairs.values()].map(({ orgId, storageId }) =>
+    storageUsageOpeningBalanceQuery(db, orgId, storageId, occurredAt),
+  )
+  for (let offset = 0; offset < queries.length; offset += 50) {
+    await executeWriteTransaction(db, queries.slice(offset, offset + 50))
+  }
+  await executeWriteTransaction(db, [
+    storageUsageMutationQuery(db, {
+      eventKey: 'opening:complete',
+      orgId: '',
+      storageId: '',
+      resourceType: 'storage',
+      resourceId: 'global',
+      deltaBytes: 0,
+      reason: 'opening_balance_complete',
+      occurredAt,
+    }),
+  ])
+}
+
+export async function ensureStorageUsageIntegrityOpeningBalances(db: Database, occurredAt: Date): Promise<void> {
+  const [matterPairs, imagePairs, ledgerPairs] = await Promise.all([
+    db
+      .selectDistinct({ orgId: matters.orgId, storageId: matters.storageId })
+      .from(matters)
+      .where(and(eq(matters.dirtype, DirType.FILE), eq(matters.status, 'active'), isNull(matters.purgedAt))),
+    db
+      .selectDistinct({ orgId: imageHostings.orgId, storageId: imageHostings.storageId })
+      .from(imageHostings)
+      .where(and(eq(imageHostings.status, 'active'), isNull(imageHostings.purgedAt))),
+    db
+      .selectDistinct({ orgId: storageUsageLedger.orgId, storageId: storageUsageLedger.storageId })
+      .from(storageUsageLedger),
+  ])
+  const pairs = new Map<string, { orgId: string; storageId: string }>()
+  for (const pair of [...matterPairs, ...imagePairs, ...ledgerPairs]) {
+    if (!pair.orgId || !pair.storageId) continue
+    pairs.set(`${pair.orgId}\u0000${pair.storageId}`, pair)
+  }
+
+  const queries = [...pairs.values()].map(({ orgId, storageId }) => {
+    const eventKey = `integrity-opening:v1:${orgId}:${storageId}`
+    return db
+      .insert(storageUsageLedger)
+      .values({
+        id: generateId(),
+        eventKey,
+        orgId,
+        storageId,
+        resourceType: 'storage',
+        resourceId: storageId,
+        deltaBytes: sql<number>`
+          COALESCE((
+            SELECT SUM(${matters.size})
+            FROM ${matters}
+            WHERE ${matters.orgId} = ${orgId}
+              AND ${matters.storageId} = ${storageId}
+              AND ${matters.dirtype} = ${DirType.FILE}
+              AND ${matters.status} = 'active'
+              AND ${matters.purgedAt} IS NULL
+          ), 0)
+          + COALESCE((
+            SELECT SUM(${imageHostings.size})
+            FROM ${imageHostings}
+            WHERE ${imageHostings.orgId} = ${orgId}
+              AND ${imageHostings.storageId} = ${storageId}
+              AND ${imageHostings.status} = 'active'
+              AND ${imageHostings.purgedAt} IS NULL
+          ), 0)
+          - COALESCE((
+            SELECT SUM(${storageUsageLedger.deltaBytes})
+            FROM ${storageUsageLedger}
+            WHERE ${storageUsageLedger.orgId} = ${orgId}
+              AND ${storageUsageLedger.storageId} = ${storageId}
+          ), 0)`,
+        reason: 'integrity_opening_balance',
+        occurredAt,
+        createdAt: occurredAt,
+      })
+      .onConflictDoNothing({ target: storageUsageLedger.eventKey })
+  })
+  for (let offset = 0; offset < queries.length; offset += 50) {
+    await executeWriteTransaction(db, queries.slice(offset, offset + 50))
+  }
+}

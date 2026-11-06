@@ -1,0 +1,42 @@
+import { createFileRoute, Outlet } from '@tanstack/react-router'
+import { Settings as SettingsIcon } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { PageHeader } from '@/components/layout/page-header'
+import { PageTabs } from '@/components/layout/page-tabs'
+import { useSiteConfig } from '@/hooks/use-site-config'
+
+export const Route = createFileRoute('/_authenticated/settings')({
+  component: SettingsLayout,
+})
+
+export function SettingsLayout() {
+  const { t } = useTranslation()
+  const { data: siteConfig } = useSiteConfig()
+
+  const tabs = [
+    { to: '/settings/profile', label: t('settings.tabProfile') },
+    { to: '/settings/password', label: t('settings.tabPassword') },
+    ...(siteConfig?.services.webdav.enabled === false
+      ? []
+      : [{ to: '/settings/webdav', label: t('settings.tabWebDav') }]),
+    { to: '/settings/api-keys', label: t('settings.tabApiKeys') },
+    { to: '/settings/oauth-apps', label: t('settings.tabOAuthApps') },
+  ]
+
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        items={[
+          {
+            label: t('settings.title'),
+            icon: <SettingsIcon className="size-4 text-muted-foreground" />,
+          },
+        ]}
+      />
+      <div className="border-b">
+        <PageTabs items={tabs} />
+      </div>
+      <Outlet />
+    </div>
+  )
+}

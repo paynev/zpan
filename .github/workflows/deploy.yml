@@ -1,0 +1,98 @@
+name: Deploy
+
+# Fan-out dispatcher for ZPan's 6 deployment targets.
+#
+# On push to main (or manual trigger), a quick `detect` job probes which
+# platform secrets are configured and sets one output per platform. Each
+# platform's reusable child workflow (deploy-<target>.yml) is invoked only
+# when its flag is `true` — platforms you haven't configured are shown as
+# "Skipped", not failed.
+#
+# The upstream saltbo/zpan repo uses Cloudflare Workers Builds (the CF-side
+# git integration) for its own deploys — this dispatcher is a no-op there.
+# Forks get the full fan-out.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dispatch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: Detect configured platforms
+    runs-on: ubuntu-latest
+    if: github.repository != 'saltbo/zpan'
+    outputs:
+      cf:        ${{ steps.probe.outputs.cf }}
+      lambda:    ${{ steps.probe.outputs.lambda }}
+      vercel:    ${{ steps.probe.outputs.vercel }}
+      netlify:   ${{ steps.probe.outputs.netlify }}
+      azure:     ${{ steps.probe.outputs.azure }}
+      cloud_run: ${{ steps.probe.outputs.cloud_run }}
+    steps:
+      - id: probe
+        # secrets are smuggled into env as booleans so the following shell
+        # can evaluate them; secrets.* is not allowed in job-level `if:`.
+        env:
+          CF:        ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+          LAMBDA:    ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_REGION != '' && secrets.TURSO_DATABASE_URL != '' }}
+          VERCEL:    ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' && secrets.TURSO_DATABASE_URL != '' }}
+          NETLIFY:   ${{ secrets.NETLIFY_AUTH_TOKEN != '' && secrets.NETLIFY_SITE_ID != '' && secrets.TURSO_DATABASE_URL != '' }}
+          AZURE:     ${{ secrets.AZURE_CREDENTIALS != '' && secrets.TURSO_DATABASE_URL != '' }}
+          CLOUD_RUN: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY != '' && secrets.GCP_PROJECT_ID != '' && secrets.TURSO_DATABASE_URL != '' }}
+        run: |
+          configured=""
+          for p in CF LAMBDA VERCEL NETLIFY AZURE CLOUD_RUN; do
+            v=$(eval echo \$$p)
+            key=$(echo "$p" | tr '[:upper:]' '[:lower:]')
+            echo "${key}=${v}" >> "$GITHUB_OUTPUT"
+            [ "$v" = "true" ] && configured="$configured $p"
+          done
+          if [ -z "$configured" ]; then
+            echo "::notice::No deploy targets configured. Add secrets under Settings → Secrets and variables → Actions. See README for per-platform requirements."
+          else
+            echo "### 🚀 Dispatching to:$configured" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  cloudflare:
+    needs: detect
+    if: needs.detect.outputs.cf == 'true'
+    uses: ./.github/workflows/deploy-cloudflare.yml
+    secrets: inherit
+
+  aws-lambda:
+    needs: detect
+    if: needs.detect.outputs.lambda == 'true'
+    uses: ./.github/workflows/deploy-aws-lambda.yml
+    secrets: inherit
+
+  vercel:
+    needs: detect
+    if: needs.detect.outputs.vercel == 'true'
+    uses: ./.github/workflows/deploy-vercel.yml
+    secrets: inherit
+
+  netlify:
+    needs: detect
+    if: needs.detect.outputs.netlify == 'true'
+    uses: ./.github/workflows/deploy-netlify.yml
+    secrets: inherit
+
+  azure:
+    needs: detect
+    if: needs.detect.outputs.azure == 'true'
+    uses: ./.github/workflows/deploy-azure.yml
+    secrets: inherit
+
+  cloud-run:
+    needs: detect
+    if: needs.detect.outputs.cloud_run == 'true'
+    uses: ./.github/workflows/deploy-cloud-run.yml
+    secrets: inherit

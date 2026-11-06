@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  check:
+    name: Typecheck & Test
+    runs-on: ubuntu-latest
+    if: github.repository == 'saltbo/zpan'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cmd/go.mod
+          cache-dependency-path: cmd/go.sum
+      - run: pnpm install --frozen-lockfile
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high --ignore-registry-errors
+      - run: pnpm release:check-version
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm openapi:client:check
+      - run: pnpm test
+      - run: mkdir -p dist # required by vitest cloudflare config
+      - run: pnpm test:cf
+
+  docker:
+    name: Docker Image
+    runs-on: ubuntu-latest
+    needs: check
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - uses: docker/metadata-action@v6
+        id: cli-meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # latest=false: the bare `latest` tag belongs to the server image. The
+          # metadata-action default (latest=auto) would re-add `latest` here and,
+          # since this build runs after the server build, overwrite it with the CLI image.
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}-cli
+            type=semver,pattern={{major}}.{{minor}}-cli
+            type=semver,pattern={{major}}-cli
+            type=raw,value=latest-cli
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            APP_COMMIT=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: cli
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.cli-meta.outputs.tags }}
+          labels: ${{ steps.cli-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [check, docker]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cmd/go.mod
+          cache-dependency-path: cmd/go.sum
+
+      - name: Generate changelog
+        id: changelog
+        uses: requarks/changelog-action@v1
+        with:
+          token: ${{ github.token }}
+          tag: ${{ github.ref_name }}
+          excludeTypes: docs,style,test
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          body: |
+            ${{ steps.changelog.outputs.changes }}
+
+            ### Docker
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ needs.docker.outputs.version }}
+            docker pull ghcr.io/${{ github.repository }}:${{ needs.docker.outputs.version }}-cli
+            ```
+          generate_release_notes: false

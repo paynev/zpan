@@ -1,0 +1,98 @@
+import type { Context } from 'hono'
+import { Hono } from 'hono'
+import { describe, expect, it } from 'vitest'
+import { AppError, NameConflictError } from '../usecases/ports'
+import { isHandledError, jsonError, standaloneJsonError } from './error-handler'
+import type { Env } from './platform'
+
+// Build a real Context so jsonError's c.json / c.set behave as in production.
+async function ctx(): Promise<Context<Env>> {
+  let captured!: Context<Env>
+  const app = new Hono<Env>()
+  app.get('/x', (c) => {
+    c.set('errorLog', null)
+    captured = c as unknown as Context<Env>
+    return c.body(null, 200)
+  })
+  await app.request('/x')
+  return captured
+}
+
+describe('jsonError', () => {
+  it('renders an AppError as its AIP-193 body + status and records errorLog', async () => {
+    const c = await ctx()
+    const res = jsonError(c, new AppError(402, 'Insufficient credits', { reason: 'INSUFFICIENT_CREDITS' }))
+    expect(res.status).toBe(402)
+    expect(await res.json()).toMatchObject({
+      error: { status: 'FAILED_PRECONDITION', message: 'Insufficient credits' },
+    })
+    expect(c.get('errorLog')).toEqual({ reason: 'INSUFFICIENT_CREDITS', message: 'Insufficient credits' })
+  })
+
+  it('keeps authentication diagnostics out of the client response', async () => {
+    const c = await ctx()
+    const res = jsonError(
+      c,
+      new AppError(401, 'Unauthorized', {
+        diagnostics: { reason: 'OAUTH_DPOP_REPLAY', message: 'DPoP proof jti has already been used' },
+      }),
+    )
+
+    expect(await res.json()).toMatchObject({ error: { message: 'Unauthorized', status: 'UNAUTHENTICATED' } })
+    expect(c.get('errorLog')).toEqual({
+      reason: 'UNAUTHENTICATED',
+      message: 'DPoP proof jti has already been used',
+      diagnostic: 'OAUTH_DPOP_REPLAY',
+    })
+  })
+
+  it('renders a mapped domain error with its mapped status + reason', async () => {
+    const c = await ctx()
+    const res = jsonError(c, new NameConflictError('doc.txt', 'id-1'))
+    expect(res.status).toBe(409)
+    expect(c.get('errorLog')?.reason).toBe('NAME_CONFLICT')
+  })
+
+  it('renders an unknown error as a generic 500 while logging the full cause chain', async () => {
+    const c = await ctx()
+    const err = new Error('top') as Error & { cause?: unknown }
+    err.cause = new Error('D1_ERROR: disk full')
+    const res = jsonError(c, err)
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe('Internal Server Error')
+    const log = c.get('errorLog')
+    expect(log?.reason).toBe('INTERNAL')
+    expect(log?.message).toContain('top')
+    expect(log?.message).toContain('D1_ERROR: disk full')
+  })
+})
+
+describe('isHandledError', () => {
+  it('is true for AppError and mapped domain errors, false otherwise', () => {
+    expect(isHandledError(new AppError(400, 'x'))).toBe(true)
+    expect(isHandledError(new NameConflictError('a', 'b'))).toBe(true)
+    expect(isHandledError(new Error('boom'))).toBe(false)
+    expect(isHandledError(null)).toBe(false)
+  })
+})
+
+describe('standaloneJsonError', () => {
+  it('renders an AppError without a Hono context', async () => {
+    const res = standaloneJsonError(
+      new AppError(429, 'Try later', { reason: 'RATE_LIMITED', headers: { 'Retry-After': '5' } }),
+    )
+    expect(res.status).toBe(429)
+    expect(res.headers.get('retry-after')).toBe('5')
+    expect(await res.json()).toMatchObject({
+      error: { message: 'Try later', status: 'RESOURCE_EXHAUSTED' },
+    })
+  })
+
+  it('does not expose unexpected errors', async () => {
+    const res = standaloneJsonError(new Error('database password leaked'))
+    expect(res.status).toBe(500)
+    expect(await res.json()).toMatchObject({
+      error: { message: 'Internal Server Error' },
+    })
+  })
+})

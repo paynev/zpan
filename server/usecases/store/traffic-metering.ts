@@ -1,0 +1,332 @@
+import { z } from 'zod'
+import { generateId } from '../../../shared/ids'
+import { hasFeature } from '../../domain/licensing'
+import { currentTrafficPeriod } from '../../domain/quota'
+import type {
+  CloudTrafficReportRecord,
+  CloudTrafficReportRepo,
+  CloudTrafficReportStatus,
+  LicenseBindingRepo,
+  LicensingCloudGateway,
+  QuotaRepo,
+  TrafficReportSource,
+} from '../ports'
+import { loadBindingState } from '../site/licensing'
+
+export type { TrafficReportSource } from '../ports'
+
+export type CloudTrafficMeteringDeps = {
+  licenseBinding: LicenseBindingRepo
+  licensingCloud: LicensingCloudGateway
+  cloudTrafficReports: CloudTrafficReportRepo
+}
+
+export class CloudTrafficBlockedError extends Error {
+  constructor() {
+    super('cloud_traffic_blocked')
+    this.name = 'CloudTrafficBlockedError'
+  }
+}
+
+const usageResponseSchema = z.object({
+  accepted: z.boolean(),
+  duplicate: z.boolean(),
+  eventId: z.string().min(1),
+})
+
+const MAX_TRAFFIC_REPORT_ATTEMPTS = 8
+const TERMINAL_TRAFFIC_REPORT_ERRORS = new Set(['usage_idempotency_conflict'])
+
+export async function reportTrafficEgress(
+  deps: CloudTrafficMeteringDeps,
+  params: {
+    cloudBaseUrl: string
+    orgId: string
+    bytes: number
+    storageId?: string | null
+    egressCreditBillingEnabled?: boolean
+    egressCreditUnitBytes?: number | null
+    egressCreditPerUnit?: number | null
+    source: TrafficReportSource
+    sourceId: string
+    eventId?: string
+    eventIdIsNew?: boolean
+    now?: Date
+  },
+): Promise<{ status: CloudTrafficReportStatus; eventId: string; duplicate: boolean }> {
+  const { orgId, bytes, source, sourceId, now = new Date() } = params
+  if (bytes < 0) throw new Error('traffic_bytes_invalid')
+  const cloudBillingEnabled =
+    bytes > 0 && params.egressCreditBillingEnabled && hasFeature('quota_store', await loadBindingState(deps))
+  if (cloudBillingEnabled && (!params.storageId || !params.egressCreditUnitBytes || !params.egressCreditPerUnit)) {
+    throw new Error('storage_egress_pricing_missing')
+  }
+
+  const eventId = params.eventId ?? `traffic_${generateId()}`
+  const existing = params.eventIdIsNew ? undefined : await deps.cloudTrafficReports.findByEventId(eventId)
+  const period = existing?.period ?? currentTrafficPeriod(now)
+  if (existing) {
+    assertSameReport(existing, {
+      orgId,
+      period,
+      source,
+      sourceId,
+      bytes,
+      storageId: params.storageId ?? null,
+      unitBytes: params.egressCreditUnitBytes ?? null,
+      creditsPerUnit: params.egressCreditPerUnit ?? null,
+    })
+    if (existing.status === 'reversed') throw new Error('traffic_report_reversed')
+    if (existing.status !== 'blocked') {
+      return { status: existing.status, eventId, duplicate: true }
+    }
+    if (existing.status === 'blocked') throw new CloudTrafficBlockedError()
+  } else {
+    await deps.cloudTrafficReports.insert({
+      orgId,
+      period,
+      source,
+      sourceId,
+      eventId,
+      bytes,
+      storageId: params.storageId ?? null,
+      unitBytes: params.egressCreditUnitBytes ?? null,
+      creditsPerUnit: params.egressCreditPerUnit ?? null,
+      status: cloudBillingEnabled ? 'pending' : 'not_required',
+      now,
+    })
+  }
+
+  if (!cloudBillingEnabled) return { status: 'not_required', eventId, duplicate: false }
+
+  const binding = await deps.licenseBinding.loadActiveLicenseBinding()
+  if (!binding?.refreshToken || !binding.cloudStoreId) {
+    await deps.cloudTrafficReports.updateStatus(eventId, 'skipped_unbound', null, now)
+    return { status: 'skipped_unbound', eventId, duplicate: false }
+  }
+
+  const status = await syncTrafficReport(deps, {
+    cloudBaseUrl: params.cloudBaseUrl,
+    refreshToken: binding.refreshToken,
+    storeId: binding.cloudStoreId,
+    report: (await deps.cloudTrafficReports.findByEventId(eventId))!,
+    now,
+  })
+  if (status === 'blocked') throw new CloudTrafficBlockedError()
+  return { status, eventId, duplicate: false }
+}
+
+export async function syncPendingCloudTrafficReports(
+  deps: CloudTrafficMeteringDeps,
+  params: { cloudBaseUrl: string; limit?: number; now?: Date },
+): Promise<{ attempted: number; reported: number; blocked: number; failed: number; deadLetter: number }> {
+  const { cloudBaseUrl, limit = 100, now = new Date() } = params
+  if (!hasFeature('quota_store', await loadBindingState(deps)))
+    return { attempted: 0, reported: 0, blocked: 0, failed: 0, deadLetter: 0 }
+  const binding = await deps.licenseBinding.loadActiveLicenseBinding()
+  if (!binding?.refreshToken || !binding.cloudStoreId)
+    return { attempted: 0, reported: 0, blocked: 0, failed: 0, deadLetter: 0 }
+
+  const reports = await deps.cloudTrafficReports.listPending(limit, now)
+
+  const result = { attempted: reports.length, reported: 0, blocked: 0, failed: 0, deadLetter: 0 }
+  for (const report of reports) {
+    const status = await syncTrafficReport(deps, {
+      cloudBaseUrl,
+      refreshToken: binding.refreshToken,
+      storeId: binding.cloudStoreId,
+      report,
+      now,
+    })
+    result[status === 'dead_letter' ? 'deadLetter' : status] += 1
+  }
+  return result
+}
+
+async function syncTrafficReport(
+  deps: CloudTrafficMeteringDeps,
+  params: {
+    cloudBaseUrl: string
+    refreshToken: string
+    storeId: string
+    report: CloudTrafficReportRecord
+    now: Date
+  },
+): Promise<'reported' | 'blocked' | 'failed' | 'dead_letter'> {
+  const { cloudBaseUrl, refreshToken, storeId, report, now } = params
+  try {
+    const client = deps.licensingCloud.createBoundCloudClient(cloudBaseUrl, refreshToken)
+    const isStorageEgress = Boolean(report.storageId && report.unitBytes && report.creditsPerUnit)
+    const payload = isStorageEgress
+      ? {
+          resource: 'storage_egress',
+          unit: 'byte',
+          bytes: report.bytes,
+          eventId: report.eventId,
+          idempotencyKey: report.eventId,
+          customerId: report.orgId,
+          source: report.source,
+          sourceId: report.sourceId,
+          usageContext: { storageId: report.storageId },
+          pricing: { unitQuantity: report.unitBytes!, creditsPerUnit: report.creditsPerUnit! },
+        }
+      : {
+          resource: 'traffic_egress',
+          bytes: report.bytes,
+          eventId: report.eventId,
+          idempotencyKey: report.eventId,
+          customerId: report.orgId,
+        }
+    const response = await deps.licensingCloud.requestCloudJson(
+      client.stores[':storeId'].billing['usage-events'].$post({
+        param: { storeId },
+        json: payload as never,
+      }),
+      usageResponseSchema,
+    )
+    if (!response.accepted) throw new Error('cloud_usage_report_rejected')
+    await deps.cloudTrafficReports.updateStatus(report.eventId, 'reported', null, now, {
+      attemptCount: report.attemptCount + 1,
+      nextRetryAt: null,
+    })
+    return 'reported'
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'cloud_usage_report_failed'
+    if (message === 'insufficient_credits' || message === 'overage_cap_exceeded') {
+      await deps.cloudTrafficReports.updateStatus(report.eventId, 'blocked', message, now, {
+        attemptCount: report.attemptCount + 1,
+        nextRetryAt: null,
+      })
+      return 'blocked'
+    }
+    const attemptCount = report.attemptCount + 1
+    const terminal = TERMINAL_TRAFFIC_REPORT_ERRORS.has(message) || attemptCount >= MAX_TRAFFIC_REPORT_ATTEMPTS
+    await deps.cloudTrafficReports.updateStatus(report.eventId, terminal ? 'dead_letter' : 'failed', message, now, {
+      attemptCount,
+      nextRetryAt: terminal ? null : nextTrafficReportRetryAt(now, attemptCount),
+    })
+    return terminal ? 'dead_letter' : 'failed'
+  }
+}
+
+function nextTrafficReportRetryAt(now: Date, attemptCount: number): Date {
+  const delayMinutes = Math.min(360, 2 ** Math.min(attemptCount - 1, 8))
+  return new Date(now.getTime() + delayMinutes * 60_000)
+}
+
+function assertSameReport(
+  report: CloudTrafficReportRecord,
+  params: {
+    orgId: string
+    period: string
+    source: TrafficReportSource
+    sourceId: string
+    bytes: number
+    storageId: string | null
+    unitBytes: number | null
+    creditsPerUnit: number | null
+  },
+) {
+  if (
+    report.orgId !== params.orgId ||
+    report.period !== params.period ||
+    report.source !== params.source ||
+    report.sourceId !== params.sourceId ||
+    report.bytes !== params.bytes ||
+    report.storageId !== params.storageId ||
+    report.unitBytes !== params.unitBytes ||
+    report.creditsPerUnit !== params.creditsPerUnit
+  ) {
+    throw new Error('traffic_report_idempotency_conflict')
+  }
+}
+
+export async function reverseDownloadTraffic(
+  deps: Pick<DownloadMeteringDeps, 'quota' | 'cloudTrafficReports'>,
+  params: { orgId: string; bytes: number; eventId: string; now?: Date },
+): Promise<void> {
+  await deps.quota.refundTraffic(params.orgId, params.bytes, params.now)
+  await deps.cloudTrafficReports.reverse(params.eventId, params.now ?? new Date())
+}
+
+export async function confirmDownloadTraffic(
+  deps: Pick<DownloadMeteringDeps, 'cloudTrafficReports'>,
+  params: { eventId: string; now?: Date },
+): Promise<void> {
+  await deps.cloudTrafficReports.markIssued(params.eventId, params.now ?? new Date())
+}
+
+// ─── Download metering (egress quota + cloud report) ─────────────────────────
+// The end-to-end download meter, lifted out of the former http traffic helper:
+// consume the org's traffic quota, then report egress to Cloud (refunding the
+// quota if Cloud rejects). Returns a plain outcome; the http layer renders the
+// 422/402 responses. Shared by every download path (shares, objects, redirect,
+// webdav).
+
+export type DownloadTrafficStorage = {
+  id: string
+  egressCreditBillingEnabled: boolean
+  egressCreditUnitBytes: number
+  egressCreditPerUnit: number
+}
+
+export type DownloadTrafficParams = {
+  cloudBaseUrl: string
+  orgId: string
+  bytes: number
+  storage: DownloadTrafficStorage
+  source: TrafficReportSource
+  sourceId: string
+  eventId?: string
+  eventIdIsNew?: boolean
+  // Compensating action run when traffic is rejected (quota or egress).
+  onRejected?: () => Promise<void>
+}
+
+export type DownloadTrafficOutcome =
+  | { ok: true }
+  | { ok: false; reason: 'quota_exceeded' }
+  | { ok: false; reason: 'insufficient_credits' }
+
+type DownloadMeteringDeps = CloudTrafficMeteringDeps & { quota: QuotaRepo }
+
+// Consume traffic quota, then report egress.
+export async function meterDownloadTraffic(
+  deps: DownloadMeteringDeps,
+  params: DownloadTrafficParams,
+): Promise<DownloadTrafficOutcome> {
+  const allowed = await deps.quota.consumeTrafficIfQuotaAllows(params.orgId, params.bytes)
+  if (!allowed) {
+    await params.onRejected?.()
+    return { ok: false, reason: 'quota_exceeded' }
+  }
+  return reportDownloadEgress(deps, params)
+}
+
+// Report egress only (quota already consumed); refund + signal on a cloud block.
+export async function reportDownloadEgress(
+  deps: DownloadMeteringDeps,
+  params: DownloadTrafficParams,
+): Promise<DownloadTrafficOutcome> {
+  try {
+    await reportTrafficEgress(deps, {
+      cloudBaseUrl: params.cloudBaseUrl,
+      orgId: params.orgId,
+      bytes: params.bytes,
+      storageId: params.storage.id,
+      egressCreditBillingEnabled: params.storage.egressCreditBillingEnabled,
+      egressCreditUnitBytes: params.storage.egressCreditUnitBytes,
+      egressCreditPerUnit: params.storage.egressCreditPerUnit,
+      source: params.source,
+      sourceId: params.sourceId,
+      eventId: params.eventId,
+      eventIdIsNew: params.eventIdIsNew ?? params.eventId === undefined,
+    })
+    return { ok: true }
+  } catch (error) {
+    await deps.quota.refundTraffic(params.orgId, params.bytes)
+    await params.onRejected?.()
+    if (error instanceof CloudTrafficBlockedError) return { ok: false, reason: 'insufficient_credits' }
+    throw error
+  }
+}

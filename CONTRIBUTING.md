@@ -1,0 +1,249 @@
+# Contributing
+
+By participating in this project, you agree to abide by our [Code of Conduct](CODEOFCONDUCT.md).
+
+## Setup
+
+Prerequisites: Node.js 24+ (managed by [Volta](https://volta.sh/))
+
+```sh
+git clone git@github.com:saltbo/zpan.git
+cd zpan
+pnpm install
+```
+
+## Development
+
+```sh
+pnpm dev              # CF Workers mode with HMR (default, uses simulated local D1 bindings)
+pnpm dev:node         # Node.js mode with HMR (SQLite, reads .dev.vars)
+```
+
+## Quality Gates
+
+Every commit and PR must pass these checks. Husky enforces them on pre-commit.
+
+```sh
+pnpm lint             # Biome — lint + format check
+pnpm typecheck        # TypeScript strict mode
+pnpm test                 # Unit + integration tests (Node runtime, 90% coverage gate)
+pnpm test:cf          # Integration tests (Cloudflare Workers runtime)
+pnpm e2e              # Playwright E2E tests
+```
+
+### Test boundaries
+
+- Backend unit tests use `*.test.ts`, run in Node, and must not create a database-backed application.
+- Frontend unit and component tests use `*.test.ts(x)` and run in jsdom.
+- Backend repository, HTTP, and application integration tests use `*.integration.test.ts`; CI runs HTTP/application and datastore/adapter boundaries independently.
+- `*.cf-test.ts` is reserved for behavior that specifically needs D1, Workers bindings, or the Workers runtime.
+- Pull requests run only `@critical` browser journeys against the local Cloudflare runtime. The complete multi-viewport browser suite runs nightly.
+- Tests must replace S3 and ZPan Cloud with local fakes; CI must not depend on staging services or credentials.
+
+## Adding a Feature
+
+1. **Write code** in the relevant directory (`server/`, `src/`, `shared/`)
+2. **Write tests** — co-locate with source as `*.test.ts` (Node) or `*.cf-test.ts` (CF Workers)
+3. **Run checks** — `pnpm lint && pnpm typecheck && pnpm test && pnpm test:cf`
+4. **Coverage** — new code must maintain 90%+ line coverage on `server/`
+5. **Commit** — use [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `docs:`, etc.)
+6. **PR** — target the `main` branch
+7. **Preview verification** — every PR must be verified in the preview environment (see below)
+
+### OAuth scope metadata
+
+Every scope published by ZPan must have an explicit English and Chinese description in
+`shared/oauth-scope-metadata.ts`. Do not generate permission copy from the scope name and do not add an unmapped
+scope as a temporary fallback. `shared/oauth-scope-metadata.test.ts` must continue to prove that the canonical scope
+registry and both descriptions are complete. UI surfaces must show the raw scope value alongside its description;
+an unexpected runtime scope must be identified as missing metadata rather than presented as a normal translation.
+
+## Preview Verification
+
+Every PR that touches UI or API behavior **must** be verified in the Cloudflare Workers preview environment before merging. The verification report **must** be posted as a PR comment — a PR without a verification comment cannot be merged.
+
+Cloudflare Workers Builds deploys non-production branches with `pnpm deploy:preview` after `pnpm build`. Each branch has a Worker Preview URL posted on its PR. `main` deploys production. See [Worker Previews](docs/deploy/worker-previews.md).
+
+Before merging, the reviewer **must** verify in the preview environment and post a PR comment with:
+   - **Evidence appropriate to the change**:
+     - For intentional visual changes (layout, styling, component presentation, responsive behavior, or a new UI surface), include screenshots covering the golden path and relevant edge cases.
+     - For API changes and non-visual UI behavior changes (such as data binding, validation, submission, or explanatory copy that does not change the visual design), screenshots are optional; include direct preview or executable evidence instead.
+   - **What was tested** (e.g. "Switched theme to dark, changed language to Chinese, verified password mismatch error")
+   - **Verdict** — approve or request changes
+
+A code-review-only approval (reading the diff without visiting the preview) is **not sufficient** to merge.
+
+### Preview environment details
+
+- All PRs share one staging D1 database (`zpan-db-staging`) — data persists across deployments
+- A dev storage backend is pre-configured, so file upload works out of the box
+- If you need a clean state, coordinate with maintainers
+
+### Staging test accounts
+
+A shared test account is available on the staging database for preview verification:
+
+| Field | Value |
+|-------|-------|
+| Email | `reviewer@zpan.dev` |
+| Password | `zpan-staging-reviewer-2026` |
+
+Use this account for UI regression testing in preview deployments. **Do not change the password** — other contributors depend on it.
+
+For admin feature testing, use the dedicated non-production preview admin account:
+
+| Field | Value |
+|-------|-------|
+| Email | `admin@zpan.space` |
+| Password | Private maintainer `DEV_ADMIN_PASSWORD` value |
+
+Use this account only in the staging/preview environment. **Do not commit, post, or use the password for production.**
+
+If the staging admin account is missing, demoted, or the password stops working, a maintainer can repair it without touching production:
+
+```sh
+pnpm seed:preview-admin
+```
+
+The command reads `DEV_ADMIN_PASSWORD` from the shell environment or the gitignored local `.dev.vars` file, then targets
+`zpan-db-staging` with `--config wrangler.preview-migrations.json --remote` and upserts only `admin@zpan.space`.
+To rotate the shared preview password intentionally, run the same command with the new non-production
+`DEV_ADMIN_PASSWORD` value and update the private maintainer credential source in the same change.
+
+## Database Migrations
+
+Schema is defined in `server/db/schema.ts` and `server/db/auth-schema.ts`.
+
+```sh
+pnpm db:generate                            # Generate migration SQL after schema changes
+pnpm db:migrate:node                        # Apply migrations (Node/SQLite)
+pnpm db:migrate:d1                          # Apply migrations (D1 local)
+wrangler d1 migrations apply zpan-db --remote  # Apply migrations (D1 production)
+```
+
+To reset local databases with seed data (admin user + dev storage):
+
+```sh
+pnpm db:reset                # Reset local Workers D1
+pnpm db:reset:node           # Reset Node database (.local/node/zpan.db)
+pnpm db:reset:d1             # Reset D1 local database (.wrangler)
+```
+
+Migration files live in `migrations/` at project root. Always commit them.
+
+### Storage usage backfill
+
+After applying the migration that creates `storage_usage_breakdowns`, run the storage usage backfill once. The command is a dry run unless `--apply` is present.
+
+```sh
+pnpm storage:backfill -- --d1 zpan-db --remote
+pnpm storage:backfill -- --d1 zpan-db --remote --apply
+
+pnpm storage:backfill -- --sqlite .local/node/zpan.db
+pnpm storage:backfill -- --sqlite .local/node/zpan.db --apply
+```
+
+The backfill recalculates all eight storage categories from `matters` and `image_hostings`. It is an operator command, not part of the application runtime or deployment lifecycle.
+
+### Storage enabled/status backfill
+
+After applying migrations 0066 through 0069, convert legacy storage status values into
+the `enabled` flag and the `unknown`/`healthy`/`unhealthy` health model:
+
+```sh
+pnpm storage-status:backfill -- --d1 zpan-db --remote
+pnpm storage-status:backfill -- --d1 zpan-db --remote --apply
+
+pnpm storage-status:backfill -- --sqlite .local/node/zpan.db
+pnpm storage-status:backfill -- --sqlite .local/node/zpan.db --apply
+```
+
+Run this once before deploying the application version that reads health status.
+
+### Turso (libSQL) migrate path
+
+When deploying the Node/Docker image against a Turso (libSQL) database, set `TURSO_DATABASE_URL` (and `TURSO_AUTH_TOKEN` for remote URLs) before running `db:migrate:node`. `drizzle.config.ts` detects the env var and switches to the `turso` dialect automatically:
+
+```sh
+TURSO_DATABASE_URL=libsql://your-db.turso.io \
+TURSO_AUTH_TOKEN=your-token \
+pnpm db:migrate:node
+```
+
+For local libSQL files the token can be omitted:
+
+```sh
+TURSO_DATABASE_URL=file:./zpan.db pnpm db:migrate:node
+```
+
+Migrations run automatically at Docker container startup when `TURSO_DATABASE_URL` is set. See [docs/deploy/docker.md](docs/deploy/docker.md) for the full Docker + Turso setup.
+
+## Deployment
+
+Primary target is Cloudflare Workers. Node.js (Docker) is the backup runtime.
+
+```sh
+pnpm build            # Build frontend to dist/
+pnpm deploy           # Build + deploy to Cloudflare Workers
+```
+
+## Project Structure
+
+```
+zpan/
+├── server/               # Hono API (routes, middleware, auth, platform abstraction)
+├── src/                  # React frontend (TanStack Router, shadcn/ui)
+├── shared/               # Shared types, Zod schemas, constants
+├── workers/              # Cloudflare Workers entry
+├── spec/                 # Gherkin behavior specs traced to tests
+├── docs/design/          # Technical designs and implementation proposals
+├── skills/               # Source for Agent Skills distributed by ZPan
+├── public/.well-known/agent-skills/ # Generated Skill discovery index and archives
+├── migrations/           # D1/SQLite migrations (drizzle-kit generated, wrangler managed)
+├── wrangler.toml         # Cloudflare Workers config
+└── biome.json            # Lint + format config
+```
+
+### Specs, designs, and Agent Skills
+
+Keep behavior specifications in `spec/*.feature` and technical designs in
+`docs/design/*.md`, using kebab-case filenames. Do not create a parallel `specs/`
+directory. See [spec/README.md](spec/README.md) for scenario and test traceability.
+
+`skills/<skill-name>/` contains the canonical source for Agent Skills published
+by ZPan, including `SKILL.md` and optional agent metadata. These are product
+artifacts; development-assistant skills installed locally belong in the ignored
+`.agents/` or `.claude/skills/` directories.
+
+After changing a published Skill, run `pnpm agent-skills:build` and commit its
+updated discovery index and archive under `public/.well-known/agent-skills/`.
+Do not edit these generated files directly. `pnpm agent-skills:check` verifies
+that they match the source; public discovery and archive URLs stay stable when
+source directories move.
+
+## Financial Contributions
+
+We welcome financial contributions on our [Open Collective](https://opencollective.com/zpan).
+
+## Contributors
+
+Thank you to all the people who have already contributed to ZPan!
+
+<a href="https://github.com/saltbo/zpan/graphs/contributors"><img src="https://opencollective.com/zpan/contributors.svg?width=890" /></a>
+
+## Local runtime and database selection
+
+`pnpm dev` runs Cloudflare Workers locally. Copy `.dev.vars.example` to `.dev.vars`
+and fill in development credentials. Bindings are simulated locally in `.wrangler/state/`;
+there is no `env.local`. Never add `remote: true` for ordinary local development.
+
+- `pnpm db:migrate`: migrate local Workers D1.
+- `pnpm db:query --command "SELECT name FROM sqlite_master WHERE type='table'"`: query the same local D1.
+- Node is opt-in via `pnpm dev:node`; its database lives in `.local/node/`.
+- `pnpm db:migrate:node`: migrate Node SQLite (or explicitly configured Node database).
+
+Agents: first identify the running runtime. For the default Workers server, use
+`pnpm db:query`; never inspect a root-level `.db` file or Node SQLite as evidence
+about Workers data. Do not select an arbitrary `.sqlite` file from Wrangler state.
+Explicit `DATABASE_URL` overrides apply only to Node; Docker volume paths are preserved.
+Stop local servers before clearing `.wrangler/state/`, then run `pnpm db:migrate`.

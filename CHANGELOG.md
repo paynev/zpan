@@ -1,0 +1,368 @@
+## v2.9.0 — 2026-08-30 · External OAuth apps & Agent access
+
+### Features
+- **External OAuth applications** — ZPan is now a discoverable OAuth 2.1
+  resource with protected-resource and authorization-server metadata, dynamic
+  client registration, PKCE, Rich Authorization Requests, workspace-aware
+  consent, DPoP-bound access tokens, token exchange, and JWT revocation.
+- **Application and grant management** — administrators can inspect every
+  dynamically registered application on an instance, while users can review
+  application names and client IDs, inspect complete scope details, see real
+  last-used timestamps, and revoke individual workspace grants.
+- **Self-describing Agent API** — the canonical OpenAPI document publishes
+  OAuth scopes and stable operation IDs, Arazzo describes the upload lifecycle,
+  and create-object responses contain authoritative single- and multipart-upload
+  instructions for generic controllers.
+- **Realmroot integration** — Agent Skills Discovery publishes the optional
+  digest-pinned `use-zpan` Skill, with workspace Contexts and least-privilege
+  delegated access. Agent-created files and downloads now retain actor identity
+  for user-facing attribution and audit records.
+- **Unified authorization** — browser sessions, API keys, downloaders, and
+  delegated OAuth principals now pass through the same protocol-neutral scope,
+  workspace, role, and resource-state policies. OAuth never bypasses normal
+  administrator constraints.
+- **Agent capacity purchases** — delegated uploads can recover from insufficient
+  quota through controller-approved x402 capacity purchases with durable,
+  tenant-scoped idempotency.
+- **Custom image domains** — configure and verify custom-domain providers,
+  automate Cloudflare hostname setup, and serve correct public image links on
+  both Workers and Node deployments.
+
+### Improvements and fixes
+- Added explicit DPoP challenges and server-side diagnostics for invalid proofs,
+  preserved OAuth continuation through sign-in, trusted official Worker preview
+  origins, synchronized registered-client scopes, and corrected multi-workspace
+  consent handling.
+- OAuth grant activity now updates from real authenticated requests with bounded
+  database writes; revoked grants immediately invalidate otherwise live tokens.
+- Fixed S3 copy requests on Cloudflare Workers by preserving the signed
+  `x-amz-copy-source` header, along with release-gate regressions in archive
+  processing, application listings, and consent presentation.
+- Added actor-aware audit displays and on-demand creator profiles, constrained
+  long metadata in file and profile surfaces, and unified file action menus.
+- Reduced database round trips and added layered caching across WebDAV, file
+  browsing, downloads, and authentication hot paths. List pages now use stable
+  cursor pagination and realtime updates without frontend polling.
+- Hardened Worker cache initialization, downloader bootstrap credentials,
+  capacity-purchase recovery, API-key persistence, CI isolation, Docker checks,
+  and the TypeScript 7 toolchain.
+
+> **Compatibility notes:** New persistent identifiers use opaque Base62 values;
+> API consumers must not parse IDs, and existing deployments may run the
+> optional normalization workflow when they need a uniform historical dataset.
+> Resource APIs use canonical REST routes and structured errors. The final OAuth
+> contract intentionally removes the fixed ZPan client, Restish profiles/plugin,
+> credential helpers, and the non-standard authorization-constraints extension.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.9.0)
+
+## v2.8.3 — 2026-08-30
+
+### Fixes
+- Restricted workspace background-job controls to editors and administrators.
+- Centralized downloader credential authorization and refreshed the Docker
+  GeoIP database source.
+- Updated dependencies to resolve release security advisories.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.8.3)
+
+## v2.8.2 — 2026-08-03
+
+### Security
+- Blocked IPv6 transition-address variants that could bypass outbound-request
+  SSRF protections.
+- Escaped user-controlled content in notification emails.
+- Updated release dependencies and regenerated the OpenAPI client against the
+  secured authentication stack.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.8.2)
+
+## v2.8.1 — 2026-07-24
+
+### Performance
+- Reduced D1 write amplification in database-backed request flows.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.8.1)
+
+## v2.8.0 — 2026-07-24 · Admin analytics & operations
+
+### Features
+- **Admin analytics dashboard** — live operational cards and trustworthy hourly
+  rollups for storage, traffic, users, shares, remote downloads, and background
+  jobs, including trend charts, coverage indicators, and backfill tooling.
+- **Storage operations** — redesigned backend management with provider presets,
+  connection testing and request previews, usage projections by category, file
+  location tracking, and safer cleanup workflows.
+- **Spaces and quota** — workspace settings now separate members, services,
+  billing, and image hosting, with clearer quota ownership and cross-space file
+  operations.
+- **Public profiles and shares** — redesigned public pages can feature curated
+  shares directly on a user's profile.
+- **WebDAV administration** — service controls and optional custom domains, with
+  automatic domain derivation and verification.
+- **API and events** — complete OpenAPI coverage with Scalar documentation,
+  consistent resource schemas and errors, plus a unified SSE stream that
+  replaces frontend polling.
+- **More refinements** — admin user/team activity feeds, improved audit filters,
+  remote-download event timelines, NFO previews, configurable email
+  verification, and a remembered last sign-in method.
+
+### Fixes
+- Reworked remote-downloader supervision, heartbeat recovery, seeding, retries,
+  credit pre-authorization, progress reporting, and cleanup.
+- Analytics now uses bounded, completed rollups and explicitly shows incomplete
+  history instead of silently mixing partial or live data.
+- Fixed upload metadata for non-ASCII filenames and synchronized stored content
+  types after upload.
+- Improved Finder WebDAV compatibility, active-folder protection, dialog
+  overflow, and collapsible folder navigation.
+
+> **Breaking changes:** API endpoints and response shapes are now consistently
+> resource-oriented; errors use a unified format, delete operations return
+> `204 No Content`, and status transitions use resource status endpoints.
+> Landing-page shares are now publicly accessible by default unless explicitly
+> configured as private.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.8.0)
+
+## v2.7.4 — 2026-06-11
+
+### Features
+- Loopback and LAN origins are trusted automatically without
+  `TRUSTED_ORIGINS`.
+- Cloud license pairing now has clearer configuration, errors, and confirmation.
+- Coupon codes can be entered during checkout.
+
+### Fixes
+- Eliminated cross-request session initialization hangs and added a faster
+  client-side session cache.
+- Non-ASCII upload filenames are now safe in `Content-Disposition`.
+- Duplicate checkout attempts automatically cancel the stale pending order.
+- Default quota values are handled correctly in the admin form.
+- Failed D1 queries now log their underlying cause chain.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.4)
+
+## v2.7.3 — 2026-06-09
+
+### Features
+- **About page** — a new admin About page showing instance info, edition, and
+  version, with a built-in changelog drawer and a latest-version check against
+  GitHub Releases.
+- **Business licensing** — independent business authorization, an edition ribbon
+  in the admin layout, and a capability-grouped edition comparison (with
+  social-login and downloader gating).
+- **Entitlement management** — admins can now edit and revoke granted quota
+  entitlements.
+- **Instance telemetry** — optional, anonymous reporting of deployment info
+  (with GeoIP region) to help us understand how ZPan is run.
+
+### Fixes
+- More resilient remote-download usage billing.
+- Repaired Docker image startup (now guarded in CI) and use the host hostname
+  for downloader registration.
+- Faster admin quota listing — batched queries (chunked under D1's 100-param
+  cap), with the monthly reset moved to a scheduled job.
+- App version now resolves from `package.json` and is injected at build time.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.3)
+
+## v2.7.2 — 2026-06-07
+
+### Features
+- Refreshed ZPan logo and branding.
+
+### Fixes
+- The remote downloader's data volume is now writable in Docker.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.2)
+
+## v2.7.1 — 2026-06-07
+
+### Features
+- Rename your remote downloaders from the admin UI.
+
+### Fixes
+- More reliable downloader assignment and accurate transfer-speed reporting.
+- Expose the torrent listen port and use the host hostname for downloaders in Docker.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.1)
+
+## v2.7.0 — 2026-06-06 · Remote downloads, WebDAV & more
+
+### Features
+- **Remote download manager** — offload torrent/HTTP downloads to remote workers,
+  with a detailed task inspector, peer geo-regions, BT seed retention, and
+  folder-preserving uploads back to your drive.
+- **`zpan` CLI downloader** — one-command device-login and a configurable server URL.
+- **WebDAV access** — mount your drive over WebDAV with per-user app passwords
+  (RFC 4918 Class 2 compatible).
+- **Server-side archiving** — queue streaming ZIP jobs and track them on a new
+  background tasks page.
+- **Folder uploads** in the web UI.
+- **Cloud credits** — metered storage egress billed via credits, with a credits store.
+- **Captcha** protection for sign-in and sign-up.
+- Unified API-key management.
+
+### Fixes
+- Hardened the remote-download lifecycle (resets, recovery, and seed handling),
+  plus assorted preview and upload fixes.
+
+> **Breaking:** stricter RESTful API routes; public download links moved from
+> `/dl/:token` to `/r/:token`.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.7.0)
+
+## v2.6.2 — 2026-05-11
+
+### Features
+- Admin: cloud order details drawer.
+
+### Fixes
+- Storage plan table layout, gift-card masking, and checkout/order-history dialogs.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.6.2)
+
+## v2.6.1 — 2026-05-10
+
+### Fixes
+- Checkout redirect flow and the sidebar storage-quota display.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.6.1)
+
+## v2.6.0 — 2026-05-10 · Pro licensing & quota store
+
+### Features
+- **Pro licensing** — pair your instance with ZPan Cloud (QR + pairing modal),
+  Ed25519-verified entitlements with background refresh, and Pro feature gating.
+- **White-label branding** — custom logo, favicon, wordmark, and hidden footer.
+- **Quota store** — redemption codes, monthly traffic quotas, subscription and
+  fixed-quota packages, per-currency metered pricing, and traffic overage.
+- **Admin** — audit logs across state-changing actions, site announcements,
+  invitation-based signup, and a redesigned settings & overview dashboard.
+- File preview gains a Microsoft Office viewer, a music player, and a multi-file
+  upload progress queue.
+
+### Fixes
+- Moved Billing into the admin panel; quota units, user quotas, and avatars in admin.
+- Background sync of cloud traffic usage; enforce monthly traffic on download links.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.6.0)
+
+## v2.5.0 — 2026-04-23 · Deploy anywhere
+
+### Features
+- **New deployment targets** — AWS Lambda, Vercel, Netlify, Azure Functions, and
+  Google Cloud Run.
+- **libSQL (Turso)** database adapter, with an opt-in Docker configuration.
+- Avatar upload in Settings → Profile.
+- Prefer the Cloudflare R2 binding for image uploads, falling back to S3.
+
+### Fixes
+- Unified the visual design across settings tabs and added missing avatar i18n.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.5.0)
+
+## v2.4.1 — 2026-04-22
+
+### Fixes
+- Resolved a Docker 404 on port 8222 and simplified the image build.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.4.1)
+
+## v2.4.0 — 2026-04-22 · Image hosting
+
+### Features
+- **Image hosting** — a dedicated gallery with two-stage / stream-proxy uploads,
+  custom domains (Cloudflare for SaaS), and a settings page.
+- **Tool integrations** — ready-made configs for PicGo, uPic, and ShareX.
+- API-key authentication for programmatic uploads.
+
+### Fixes
+- Corrected the PicGo / uPic / ShareX configs, draft-image filtering, and
+  large/multipart upload errors.
+
+> **Breaking:** public links unified under `/r/:token`.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.4.0)
+
+## v2.3.0 — 2026-04-21 · Sharing
+
+### Features
+- **File & folder sharing** — public share pages (`/s/:token`) with landing and
+  direct modes, optional auto-generated passwords, and folder browsing.
+- **Save to Drive** — copy shared files across workspaces with quota and
+  name-conflict handling.
+- **In-app notifications** and a dedicated Shares dashboard.
+- Google-palette UI redesign; notification bell moved to the header.
+
+### Fixes
+- Finder-style name-conflict resolution, a correct 403 on wrong share passwords,
+  and deduplicated public view counts.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.3.0)
+
+## v2.2.0 — 2026-04-19 · Teams
+
+### Features
+- **Team workspaces** — create and manage teams, members, and roles with
+  org-level RBAC.
+- Workspace switcher in the sidebar and a per-team activity feed.
+- **Team invitations** via email and invite link.
+- Public user homepage at `/u/:username`.
+
+### Fixes
+- Team list filtering and member counts; moved the Teams entry into the avatar menu.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.2.0)
+
+## v2.1.0 — 2026-04-14 · Auth & onboarding
+
+### Features
+- **Dynamic OAuth providers**, email/password with verification, and configurable
+  registration modes.
+- **Invite-code** registration gating.
+- Email service abstraction (SMTP + HTTP API drivers).
+- Sign-in / sign-up UI overhaul and an admin auth settings page.
+
+### Fixes
+- Invite-code validation and sidebar dark-mode rendering.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.1.0)
+
+## v2.0.2 — 2026-04-12
+
+### Features
+- Responsive layout for desktop, tablet, and mobile, with adaptive mobile preview.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.0.2)
+
+## v2.0.1 — 2026-04-12
+
+### Features
+- Migrated to Cloudflare Workers with a one-click deploy button.
+
+### Fixes
+- Deployment and auth configuration for Cloudflare Workers (baseURL/trusted
+  origins inference, `nodejs_compat_v2`).
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.0.1)
+
+## v2.0.0 — 2026-04-12 · TypeScript rewrite
+
+### Features
+- Complete rewrite from Go to TypeScript: a Hono API + React SPA, deployable on
+  both Cloudflare Workers and Node/Docker.
+- Direct-to-S3 uploads via presigned URLs, a custom file manager with folder tree,
+  search, and a recycle bin.
+- File preview for images, PDF, code, audio, and video.
+- Admin user / storage / quota management, per-org storage quotas, and i18n (en/zh).
+
+### Fixes
+- Server-side global search (triggers on Enter) and media-preview rendering.
+
+[Full release notes ↗](https://github.com/saltbo/zpan/releases/tag/v2.0.0)
+
+---
+
+For the v1 changelog, see the [v1 branch](https://github.com/saltbo/zpan/tree/v1/CHANGELOG.md).

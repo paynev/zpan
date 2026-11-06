@@ -1,0 +1,1215 @@
+import { apiKey } from '@better-auth/api-key'
+import { oauthProvider } from '@better-auth/oauth-provider'
+import { APIError, type BetterAuthOptions, type BetterAuthPlugin, betterAuth } from 'better-auth'
+import { drizzleAdapter } from 'better-auth/adapters/drizzle'
+import { createAuthMiddleware, getSessionFromCtx } from 'better-auth/api'
+import type { CaptchaOptions } from 'better-auth/plugins'
+import {
+  admin,
+  bearer,
+  captcha,
+  deviceAuthorization,
+  jwt,
+  lastLoginMethod,
+  openAPI,
+  organization,
+  username,
+} from 'better-auth/plugins'
+import { genericOAuth } from 'better-auth/plugins/generic-oauth'
+import { adminAc, memberAc, ownerAc } from 'better-auth/plugins/organization/access'
+import { count, eq, like } from 'drizzle-orm'
+import { customAlphabet } from 'nanoid'
+import {
+  API_KEY_TEMPLATES,
+  ApiKeyTemplate,
+  apiKeyMetadata,
+  IHOST_API_KEY_PERMISSIONS,
+  REMOTE_DOWNLOAD_API_KEY_PERMISSIONS,
+  WEBDAV_API_KEY_PERMISSIONS,
+  WEBDAV_API_KEY_RATE_LIMIT_MAX_REQUESTS,
+  WEBDAV_API_KEY_RATE_LIMIT_WINDOW_MS,
+  WEBDAV_RATE_LIMITER_BINDING,
+} from '../shared/api-key-templates'
+import { DEFAULT_ORG_QUOTA, DEFAULT_ORG_TRAFFIC_QUOTA, SignupMode } from '../shared/constants'
+import { BASE62_PATTERN, generateId, generateToken } from '../shared/ids'
+import { JWT_BEARER_GRANT_TYPE, OAUTH_SCOPES, TOKEN_EXCHANGE_GRANT_TYPE } from '../shared/oauth'
+import {
+  BUILTIN_PROVIDER_IDS,
+  OAUTH_PROVIDER_KEY_PATTERN,
+  OAUTH_PROVIDER_KEY_PREFIX,
+  type OAuthProviderConfig,
+  parseProviderConfig,
+} from '../shared/oauth-providers'
+import { generateUserOrgSlug, isPersonalOrgLike } from '../shared/org-slugs'
+import { createEmailGateway } from './adapters/gateways/email'
+import { deleteApiKeysScopedToOrganization, normalizeLegacyApiKeysForUser } from './adapters/repos/api-key-scopes'
+import { createAuditRepo } from './adapters/repos/audit'
+import { createDownloadTokenGateway } from './adapters/repos/download-tokens'
+import { createDownloaderBootstrapCredentialRepo } from './adapters/repos/downloader-bootstrap'
+import { createInviteRepo } from './adapters/repos/invite'
+import { createLicenseBindingRepo } from './adapters/repos/license-binding'
+import { createMemberCountRepo } from './adapters/repos/member-count'
+import { createNotificationRepo } from './adapters/repos/notification'
+import { createOrgRepo } from './adapters/repos/org'
+import { createSiteInvitationRepo } from './adapters/repos/site-invitations'
+import { initialStorageUsageProjectionQueries } from './adapters/repos/storage-usage-breakdown'
+import { createSystemOptionsRepo } from './adapters/repos/system-options'
+import { recordUserActivity } from './adapters/repos/user-activity'
+import { handleOAuthClientRegistrationManagement } from './auth/oauth-client-registration-management'
+import { oauthPushedAuthorizationRequests } from './auth/oauth-par'
+import { createOAuthProviderOptions } from './auth/oauth-provider'
+import * as authSchema from './db/auth-schema'
+import { orgQuotaEntitlements, orgQuotas, systemOptions } from './db/schema'
+import { executeWriteTransaction } from './db/transaction'
+import { CAPTCHA_AUTH_ENDPOINTS, type CaptchaConfig } from './domain/captcha'
+import { EMAIL_VERIFICATION_REQUIRED_OPTION_KEY, isEmailVerificationRequired } from './domain/email-verification'
+import {
+  LEGACY_DOWNLOADER_BOOTSTRAP_SESSION_ORG,
+  LEGACY_DOWNLOADER_CLIENT_ID,
+  LEGACY_DOWNLOADER_REGISTER_SCOPE,
+} from './domain/legacy-downloader-bootstrap'
+import { currentTrafficPeriod } from './domain/quota'
+import { recordAuditEffect } from './lib/audit'
+import { escapeHtml } from './lib/html'
+import { isLocalNetworkOrigin } from './lib/local-origin'
+import { hashPassword, verifyPassword as verifyPasswordHash } from './lib/password'
+import { createDbProxy, createPlatformProxy } from './platform/context'
+import type { Database, Platform } from './platform/interface'
+import { loadCaptchaConfig } from './usecases/site/captcha'
+import { checkTeamLimit, getEffectiveSignupMode } from './usecases/site/licensing'
+
+// better-auth's default password hasher is pure-JS scrypt from @noble/hashes,
+// which blows past Cloudflare Workers' CPU budget and triggers error 1102.
+// We use node:crypto.scryptSync via server/lib/password.ts (native OpenSSL,
+// counted as I/O rather than JS CPU time on CF Workers).
+
+async function authHashPassword(password: string): Promise<string> {
+  return hashPassword(password)
+}
+
+async function authVerifyPassword({ hash, password }: { hash: string; password: string }): Promise<boolean> {
+  if (!hash.includes(':')) throw new Error('stored password hash is malformed: expected "<salt>:<key>"')
+  return verifyPasswordHash(hash, password)
+}
+
+interface AuthPasswordProvider {
+  hash(password: string): Promise<string>
+  verify(input: { hash: string; password: string }): Promise<boolean>
+}
+
+const productionPasswordProvider: AuthPasswordProvider = {
+  hash: authHashPassword,
+  verify: authVerifyPassword,
+}
+
+function generateApiKey({ length, prefix }: { length: number; prefix: string | undefined }): string {
+  if (prefix && !BASE62_PATTERN.test(prefix)) {
+    throw new APIError('BAD_REQUEST', { message: 'API key prefixes must contain only ASCII letters and digits' })
+  }
+  return `${prefix ?? ''}${generateToken(length)}`
+}
+
+interface ProviderConfigs {
+  oidc: OAuthProviderConfig[]
+  builtin: Array<{ providerId: string; clientId: string; clientSecret: string }>
+}
+
+const EXTERNAL_RESOURCE_GRANTS = new Set([
+  'authorization_code',
+  'refresh_token',
+  JWT_BEARER_GRANT_TYPE,
+  TOKEN_EXCHANGE_GRANT_TYPE,
+])
+
+function isExternalResourceClientRegistration(body: Record<string, unknown>): boolean {
+  const grants = Array.isArray(body.grant_types) ? body.grant_types : []
+  const responses = Array.isArray(body.response_types) ? body.response_types : []
+  return (
+    body.token_endpoint_auth_method === 'client_secret_basic' &&
+    typeof body.jwks_uri === 'string' &&
+    Array.isArray(body.redirect_uris) &&
+    body.redirect_uris.length > 0 &&
+    grants.length === EXTERNAL_RESOURCE_GRANTS.size &&
+    grants.every((grant) => typeof grant === 'string' && EXTERNAL_RESOURCE_GRANTS.has(grant)) &&
+    responses.length === 1 &&
+    responses[0] === 'code'
+  )
+}
+
+async function dynamicRegistrationOrigins(request: Request): Promise<string[]> {
+  if (!new URL(request.url).pathname.endsWith('/oauth2/register') || request.method !== 'POST') return []
+  let body: Record<string, unknown>
+  try {
+    body = (await request.clone().json()) as Record<string, unknown>
+  } catch {
+    return []
+  }
+  if (!isExternalResourceClientRegistration(body)) return []
+  const redirectUris = body.redirect_uris as string[]
+  const jwksUri = body.jwks_uri as string
+  try {
+    const origins = new Set(redirectUris.map((uri) => new URL(uri).origin))
+    const jwksOrigin = new URL(jwksUri).origin
+    if (origins.size !== 1 || !origins.has(jwksOrigin)) return []
+    return [jwksOrigin]
+  } catch {
+    return []
+  }
+}
+
+export function officialWorkersPreviewOrigin(
+  baseURL: string | undefined,
+  candidate: string | null | undefined,
+): string | null {
+  if (!baseURL || !candidate) return null
+  try {
+    const configured = new URL(baseURL)
+    const preview = new URL(candidate)
+    if (configured.protocol !== 'https:' || preview.protocol !== 'https:') return null
+
+    const configuredLabels = configured.hostname.toLowerCase().split('.')
+    const previewLabels = preview.hostname.toLowerCase().split('.')
+    if (
+      configuredLabels.length !== 4 ||
+      previewLabels.length !== 4 ||
+      configuredLabels[2] !== 'workers' ||
+      configuredLabels[3] !== 'dev' ||
+      previewLabels[2] !== 'workers' ||
+      previewLabels[3] !== 'dev' ||
+      configuredLabels[1] !== previewLabels[1]
+    ) {
+      return null
+    }
+
+    const configuredWorker = configuredLabels[0]
+    const workerName = configuredWorker.endsWith('-staging')
+      ? configuredWorker.slice(0, -'-staging'.length)
+      : configuredWorker.replace(/^[0-9a-f]{8}-/, '')
+    const previewWorker = previewLabels[0]
+    if (!workerName || (previewWorker !== workerName && !previewWorker.endsWith(`-${workerName}`))) return null
+    return preview.origin
+  } catch {
+    return null
+  }
+}
+
+// One query loads every oauth_provider_* row. Configs are snapshotted at auth
+// instance creation: better-auth resolves social providers eagerly during its
+// context init, so per-request dynamic loading is not possible anyway. Admin
+// changes take effect on isolate recycle (CF Workers) or restart (Node).
+async function loadProviderConfigs(db: Database): Promise<ProviderConfigs> {
+  const rows = await db
+    .select({ key: systemOptions.key, value: systemOptions.value })
+    .from(systemOptions)
+    .where(like(systemOptions.key, OAUTH_PROVIDER_KEY_PATTERN))
+
+  const configs: ProviderConfigs = { oidc: [], builtin: [] }
+  for (const row of rows) {
+    const config = parseProviderConfig(row.value)
+    if (!config?.enabled) continue
+    if (config.type === 'oidc') {
+      configs.oidc.push(config)
+      continue
+    }
+    const providerId = row.key.slice(OAUTH_PROVIDER_KEY_PREFIX.length)
+    if (config.type === 'builtin' && BUILTIN_PROVIDER_IDS.includes(providerId)) {
+      configs.builtin.push({ providerId, clientId: config.clientId, clientSecret: config.clientSecret })
+    }
+  }
+  return configs
+}
+
+// Maps stored captcha config to the better-auth captcha plugin options. Lives
+// here because better-auth's CaptchaOptions type is delivery-framework-specific
+// and may not leak into the framework-free usecases/ layer.
+export function toBetterAuthCaptchaOptions(config: CaptchaConfig): CaptchaOptions {
+  const base = {
+    provider: config.provider,
+    secretKey: config.secretKey,
+    endpoints: [...CAPTCHA_AUTH_ENDPOINTS],
+  }
+
+  if (config.provider === 'google-recaptcha') {
+    return config.minScore === undefined ? base : { ...base, minScore: config.minScore }
+  }
+
+  if (config.provider === 'hcaptcha' || config.provider === 'captchafox') {
+    return { ...base, siteKey: config.siteKey }
+  }
+
+  return base
+}
+
+function dynamicCaptcha(db: Database): BetterAuthPlugin {
+  return {
+    id: 'dynamic-captcha',
+    onRequest: async (request, ctx) => {
+      // Only captcha-protected endpoints need the config — skip the DB read
+      // for everything else (notably get-session, the hottest auth route).
+      const path = new URL(request.url).pathname
+      if (!CAPTCHA_AUTH_ENDPOINTS.some((endpoint) => path.endsWith(endpoint))) return
+      const config = await loadCaptchaConfig({ systemOptions: createSystemOptionsRepo(db) })
+      if (!config) return
+      const plugin = captcha(toBetterAuthCaptchaOptions(config))
+      return plugin.onRequest?.(request, ctx)
+    },
+  }
+}
+
+const EMAIL_VERIFICATION_AUTH_PATHS = ['/sign-up/email', '/sign-in/email', '/sign-in/username'] as const
+
+function usesEmailVerificationPolicy(request: Request): boolean {
+  const path = new URL(request.url).pathname
+  return EMAIL_VERIFICATION_AUTH_PATHS.some((authPath) => path.endsWith(authPath))
+}
+
+const _INVITE_CODE_ERRORS: Record<string, string> = {
+  not_found: 'Invalid invite code',
+  already_used: 'Invite code already used',
+  expired: 'Invite code expired',
+}
+
+// Admin user disable/enable/delete now run through better-auth's admin plugin, so
+// the activity audit that the old /api/users usecases emitted is reattached here
+// via a better-auth after-hook — keyed by endpoint path so it fires only for
+// these three actions, with the acting admin as the recorded actor.
+const ADMIN_USER_AUDIT: Record<string, { action: string; status?: 'active' | 'disabled' }> = {
+  '/admin/ban-user': { action: 'user_disable', status: 'disabled' },
+  '/admin/unban-user': { action: 'user_enable', status: 'active' },
+  '/admin/remove-user': { action: 'user_delete' },
+}
+
+const ORGANIZATION_AUDIT_ACTIONS: Record<string, string> = {
+  '/organization/create': 'team_create',
+  '/organization/update': 'team_settings_update',
+  '/organization/delete': 'team_delete',
+  '/organization/remove-member': 'team_member_remove',
+  '/organization/update-member-role': 'team_member_role_update',
+  '/organization/accept-invitation': 'team_member_join',
+}
+
+async function recordOrganizationAuthAudit(
+  db: Database,
+  ctx: { path: string; body?: unknown; context: { returned?: unknown } },
+  actorId: string,
+  action: string,
+): Promise<void> {
+  const body = recordValue(ctx.body) ?? {}
+  const returned = recordValue(ctx.context.returned) ?? {}
+  const member = recordValue(returned.member) ?? (typeof returned.userId === 'string' ? returned : null)
+  const invitation = recordValue(returned.invitation)
+  const data = recordValue(body.data)
+  const orgId =
+    stringValue(body.organizationId) ??
+    stringValue(member?.organizationId) ??
+    stringValue(invitation?.organizationId) ??
+    stringValue(returned.id)
+  if (!orgId) throw new Error(`audit_organization_context_missing:${ctx.path}`)
+
+  const metadata =
+    action === 'team_member_remove'
+      ? { removedUserId: stringValue(member?.userId) }
+      : action === 'team_member_role_update'
+        ? { targetUserId: stringValue(member?.userId), newRole: stringValue(member?.role) ?? stringValue(body.role) }
+        : action === 'team_member_join'
+          ? { targetUserId: stringValue(member?.userId) ?? actorId, role: stringValue(member?.role) }
+          : data
+            ? { changedFields: Object.keys(data).sort() }
+            : undefined
+
+  await recordAuditEffect(action, () =>
+    createAuditRepo(db).record({
+      orgId,
+      userId: actorId,
+      action,
+      targetType: 'team',
+      targetId: orgId,
+      targetName: stringValue(returned.name) ?? stringValue(data?.name) ?? stringValue(body.name) ?? orgId,
+      metadata,
+    }),
+  )
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function returnedAccessToken(value: unknown): string | null {
+  const returned = recordValue(value)
+  const token = returned?.access_token
+  return typeof token === 'string' && token.length > 0 ? token : null
+}
+
+async function ensureUserRegistrationAudit(db: Database, userId: string, firstAccountId?: string): Promise<void> {
+  const [firstAccount] = await db
+    .select({ id: authSchema.account.id, providerId: authSchema.account.providerId })
+    .from(authSchema.account)
+    .where(eq(authSchema.account.userId, userId))
+    .orderBy(authSchema.account.createdAt, authSchema.account.id)
+    .limit(1)
+  if (firstAccountId && firstAccount?.id !== firstAccountId) return
+
+  const [registeredUser] = await db
+    .select({
+      id: authSchema.user.id,
+      name: authSchema.user.name,
+      email: authSchema.user.email,
+      createdAt: authSchema.user.createdAt,
+    })
+    .from(authSchema.user)
+    .where(eq(authSchema.user.id, userId))
+    .limit(1)
+  if (!registeredUser) throw new Error(`registered_user_missing:${userId}`)
+
+  await createAuditRepo(db).recordOnce(
+    {
+      orgId: '',
+      userId: registeredUser.id,
+      actorType: 'user',
+      action: 'user_register',
+      targetType: 'user',
+      targetId: registeredUser.id,
+      targetName: registeredUser.name || registeredUser.email,
+      metadata: { provider: firstAccount?.providerId || 'unknown' },
+    },
+    registeredUser.id,
+    registeredUser.createdAt,
+  )
+}
+
+function buildInvitationEmailHtml(data: {
+  email: string
+  role: string
+  organization: { name: string }
+  inviter: { user: { name: string; email: string } }
+  id: string
+}): string {
+  const orgName = escapeHtml(data.organization.name)
+  const inviterName = escapeHtml(data.inviter.user.name || data.inviter.user.email)
+  const role = escapeHtml(data.role)
+  const acceptUrl = escapeHtml(`/api/auth/organization/accept-invitation/${data.id}`)
+  return `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+<h2 style="margin:0 0 16px">You've been invited to join ${orgName}</h2>
+<p style="color:#555;line-height:1.5">${inviterName} has invited you to join <strong>${orgName}</strong> as <strong>${role}</strong>.</p>
+<a href="${acceptUrl}" style="display:inline-block;margin:24px 0;padding:12px 24px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:600">Accept Invitation</a>
+<p style="color:#999;font-size:13px">If you did not expect this invitation, you can safely ignore this email.</p>
+</div>`
+}
+
+function buildVerificationEmailHtml(url: string): string {
+  if (!url.startsWith('https://') && !url.startsWith('http://')) {
+    throw new Error(`Verification URL has unsafe protocol: ${url}`)
+  }
+  return `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+<h2 style="margin:0 0 16px">Verify your email</h2>
+<p style="color:#555;line-height:1.5">Click the button below to verify your email address and activate your account.</p>
+<a href="${url}" style="display:inline-block;margin:24px 0;padding:12px 24px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:600">Verify Email</a>
+<p style="color:#999;font-size:13px">If you didn't create an account, you can safely ignore this email.</p>
+</div>`
+}
+
+function buildResetPasswordEmailHtml(url: string): string {
+  if (!url.startsWith('https://') && !url.startsWith('http://')) {
+    throw new Error(`Reset password URL has unsafe protocol: ${url}`)
+  }
+  return `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+<h2 style="margin:0 0 16px">Reset your password</h2>
+<p style="color:#555;line-height:1.5">Click the button below to choose a new password. This link expires in 1 hour.</p>
+<a href="${url}" style="display:inline-block;margin:24px 0;padding:12px 24px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:600">Reset Password</a>
+<p style="color:#999;font-size:13px">If you didn't request a password reset, you can safely ignore this email.</p>
+</div>`
+}
+
+export async function createAuth(
+  initialSource: Database | Platform,
+  secret: string,
+  baseURL?: string,
+  trustedOrigins?: string[],
+  backgroundTaskHandler?: (promise: Promise<unknown>) => void,
+  passwordProvider: AuthPasswordProvider = productionPasswordProvider,
+) {
+  const isPlatform = 'db' in initialSource
+  const rawPlatform = isPlatform ? initialSource : null
+  const rawDb = isPlatform ? initialSource.db : initialSource
+
+  const platformProxy = rawPlatform ? createPlatformProxy(rawPlatform) : null
+  const dbProxy = platformProxy ? platformProxy.db : createDbProxy(rawDb)
+
+  const db = dbProxy
+  const downloadTokens = createDownloadTokenGateway()
+  const downloaderBootstrapCredentials = createDownloaderBootstrapCredentialRepo(db, downloadTokens)
+  // The email gateway needs a Platform for the Cloudflare EMAIL binding. On the
+  // bare-Database path (tests, Node fallbacks) there is no platform, so wrap the
+  // db proxy in a binding-free Platform — matching the previous behaviour where
+  // a Database source had no CF binding available.
+  const authPlatform: Platform = platformProxy ?? { db: dbProxy, getEnv: () => undefined, getBinding: () => undefined }
+  const systemOptionsRepo = createSystemOptionsRepo(db)
+  const email = createEmailGateway(systemOptionsRepo)
+  const providerConfigs = await loadProviderConfigs(rawDb)
+  const resourceAudience = baseURL ? `${new URL(baseURL).origin}/api` : undefined
+  const oauthProviderOptions = createOAuthProviderOptions({ db, resourceAudience })
+  const usesNativeWebDavRateLimit = Boolean(authPlatform.getBinding(WEBDAV_RATE_LIMITER_BINDING))
+  const authOptions = {
+    database: drizzleAdapter(db, { provider: 'sqlite', schema: authSchema }),
+    secret,
+    baseURL,
+    basePath: '/api/auth',
+    // Function form: better-auth merges the result with baseURL per request.
+    // Loopback/LAN origins are trusted automatically so self-hosted users can
+    // log in via 127.0.0.1 or a LAN IP without configuring TRUSTED_ORIGINS.
+    trustedOrigins: async (request?: Request) => {
+      const origin = request?.headers.get('origin')
+      const list = trustedOrigins ?? []
+      const registrationOrigins = request ? await dynamicRegistrationOrigins(request) : []
+      const previewOrigin = officialWorkersPreviewOrigin(baseURL, origin)
+      return [
+        ...list,
+        ...(origin && isLocalNetworkOrigin(origin) ? [origin] : []),
+        ...(previewOrigin ? [previewOrigin] : []),
+        ...registrationOrigins,
+      ]
+    },
+    advanced: {
+      cookiePrefix: 'zp',
+      database: { generateId: () => generateId() },
+      // Explicitly enable the origin check (production default). Without this,
+      // better-auth silently disables it under NODE_ENV=test, so tests would
+      // never exercise the real CSRF/origin behavior.
+      disableOriginCheck: false,
+      ...(backgroundTaskHandler ? { backgroundTasks: { handler: backgroundTaskHandler } } : {}),
+    },
+    user: {
+      additionalFields: {
+        lastActiveAt: { type: 'date', required: false, input: false, returned: false },
+      },
+    },
+    emailAndPassword: {
+      enabled: true,
+      password: {
+        hash: passwordProvider.hash,
+        verify: passwordProvider.verify,
+      },
+      sendResetPassword: async ({ user, url }) => {
+        if (!(await email.isConfigured(authPlatform))) return
+        await email.send(authPlatform, {
+          to: user.email,
+          subject: 'Reset your password - ZPan',
+          html: buildResetPasswordEmailHtml(url),
+        })
+      },
+    },
+    emailVerification: {
+      sendVerificationEmail: async ({ user, url }) => {
+        if (!(await email.isConfigured(authPlatform))) return
+        await email.send(authPlatform, {
+          to: user.email,
+          subject: 'Verify your email - ZPan',
+          html: buildVerificationEmailHtml(url),
+        })
+      },
+      autoSignInAfterVerification: true,
+    },
+    session: {
+      cookieCache: {
+        enabled: true,
+        maxAge: 300,
+      },
+    },
+    socialProviders: Object.fromEntries(
+      providerConfigs.builtin.map((c) => [c.providerId, { clientId: c.clientId, clientSecret: c.clientSecret }]),
+    ),
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === '/delete-user') {
+          throw new APIError('FORBIDDEN', { message: 'Self-service account deletion is not available' })
+        }
+        if (ctx.path === '/api-key/list') {
+          const session = await getSessionFromCtx(ctx)
+          if (session?.user.id) await normalizeLegacyApiKeysForUser(db, session.user.id)
+          return
+        }
+        if (ctx.path === '/device/code') {
+          const body = ctx.body as Record<string, unknown> | undefined
+          if (body?.client_id !== LEGACY_DOWNLOADER_CLIENT_ID) {
+            throw new APIError('BAD_REQUEST', { error: 'invalid_client', error_description: 'Invalid client ID' })
+          }
+          if (body.scope !== LEGACY_DOWNLOADER_REGISTER_SCOPE) {
+            throw new APIError('BAD_REQUEST', {
+              error: 'invalid_request',
+              error_description: 'Invalid downloader registration scope',
+            })
+          }
+          return
+        }
+        if (ctx.path === '/oauth2/consent') {
+          const body = ctx.body as Record<string, unknown> | undefined
+          if (body?.scope !== undefined) {
+            throw new APIError('BAD_REQUEST', {
+              error: 'invalid_request',
+              error_description: 'Partial OAuth consent is not supported',
+            })
+          }
+          return
+        }
+        if (ctx.path === '/oauth2/register') {
+          const body = ctx.body as Record<string, unknown> | undefined
+          if (body && isExternalResourceClientRegistration(body)) {
+            body.scope = OAUTH_SCOPES.join(' ')
+          }
+          return
+        }
+        if (ctx.path === '/oauth2/update-consent' || ctx.path === '/oauth2/delete-consent') {
+          throw new APIError('FORBIDDEN', {
+            error: 'invalid_request',
+            error_description: 'Manage OAuth grants from the OAuth grants API',
+          })
+        }
+        if (ctx.path !== '/api-key/create') return
+
+        const body = ctx.body as Record<string, unknown> | undefined
+        if (!body) return
+        const configId = body.configId
+        if (typeof configId !== 'string' || !API_KEY_TEMPLATES.includes(configId as ApiKeyTemplate)) return
+        const session = await getSessionFromCtx(ctx)
+        const userId = session?.user.id ?? (typeof body?.userId === 'string' ? body.userId : null)
+        if (!userId) throw new APIError('UNAUTHORIZED', { message: 'Unauthorized' })
+
+        if (configId === ApiKeyTemplate.WEBDAV) {
+          if (body?.organizationId !== undefined) {
+            throw new APIError('BAD_REQUEST', { message: 'WebDAV API keys cannot target a workspace' })
+          }
+          body.metadata = apiKeyMetadata({ mode: 'user-workspaces' })
+          return
+        }
+
+        const orgId = body?.organizationId
+        if (typeof orgId !== 'string' || !orgId) {
+          throw new APIError('BAD_REQUEST', { message: 'Organization ID is required' })
+        }
+        const orgs = createOrgRepo(db)
+        const role = await orgs.getMemberRole(orgId, userId)
+        if (role !== 'owner' && role !== 'editor') {
+          throw new APIError('FORBIDDEN', { message: 'Editor access to the workspace is required' })
+        }
+        body.metadata = apiKeyMetadata({ mode: 'workspace', orgId })
+      }),
+      // Audit admin user disable/enable (served by the admin plugin) the
+      // same way the old /api/users usecases did. This after-hook runs for every
+      // auth endpoint, so it filters by path; it also runs when the endpoint
+      // failed, so it skips anything that returned an APIError.
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.context.returned instanceof APIError) return
+        if (ctx.path === '/device/token') {
+          const accessToken = returnedAccessToken(ctx.context.returned)
+          const returned = recordValue(ctx.context.returned)
+          const body = ctx.body as Record<string, unknown> | undefined
+          if (
+            accessToken &&
+            returned?.scope === LEGACY_DOWNLOADER_REGISTER_SCOPE &&
+            typeof body?.device_code === 'string'
+          ) {
+            const [bootstrapSession] = await db
+              .select({ userId: authSchema.session.userId, expiresAt: authSchema.session.expiresAt })
+              .from(authSchema.session)
+              .where(eq(authSchema.session.token, accessToken))
+              .limit(1)
+            if (bootstrapSession) {
+              await Promise.all([
+                downloaderBootstrapCredentials.issue({
+                  platform: authPlatform,
+                  token: accessToken,
+                  userId: bootstrapSession.userId,
+                  deviceCode: body.device_code,
+                  expiresAt: bootstrapSession.expiresAt,
+                }),
+                db
+                  .update(authSchema.session)
+                  .set({ activeOrganizationId: LEGACY_DOWNLOADER_BOOTSTRAP_SESSION_ORG })
+                  .where(eq(authSchema.session.token, accessToken)),
+              ])
+            }
+          }
+        }
+        const session = await getSessionFromCtx(ctx)
+        const actorId = session?.user?.id
+        if (!actorId) return
+        await recordUserActivity(db, actorId)
+
+        const adminAudit = ADMIN_USER_AUDIT[ctx.path]
+        if (adminAudit) {
+          const targetUserId = (ctx.body as { userId?: string } | undefined)?.userId
+          const orgId = (session?.session as { activeOrganizationId?: string } | undefined)?.activeOrganizationId
+          if (!targetUserId) return
+          if (adminAudit.action === 'user_delete') {
+            await db.delete(authSchema.apikey).where(eq(authSchema.apikey.referenceId, targetUserId))
+          }
+          if (!orgId) return
+          await recordAuditEffect(adminAudit.action, () =>
+            createAuditRepo(db).record({
+              orgId,
+              userId: actorId,
+              action: adminAudit.action,
+              targetType: 'user',
+              targetId: targetUserId,
+              targetName: targetUserId,
+              metadata: adminAudit.status ? { status: adminAudit.status } : undefined,
+            }),
+          )
+          return
+        }
+
+        const action = ORGANIZATION_AUDIT_ACTIONS[ctx.path]
+        if (action) await recordOrganizationAuthAudit(db, ctx, actorId, action)
+      }),
+    },
+    plugins: [
+      admin(),
+      // Self-documents Better Auth's complete runtime surface at
+      // GET /api/auth/reference (Scalar UI) and
+      // /api/auth/open-api/generate-schema. The global product contract at
+      // /api/openapi.json admits only explicitly registered path/methods
+      // (currently the Downloader Device Flow protocol).
+      openAPI(),
+      organization({
+        roles: {
+          owner: ownerAc,
+          admin: adminAc,
+          member: memberAc,
+          editor: memberAc,
+          viewer: memberAc,
+        },
+        sendInvitationEmail: async (data) => {
+          if (!(await email.isConfigured(authPlatform))) return
+          await email.send(authPlatform, {
+            to: data.email,
+            subject: "You've been invited to join a ZPan organization",
+            html: buildInvitationEmailHtml(data),
+          })
+        },
+        organizationHooks: {
+          beforeCreateOrganization: async ({ organization, user }) => {
+            const {
+              allowed,
+              count: current_count,
+              limit,
+            } = await checkTeamLimit(
+              { memberCount: createMemberCountRepo(db), licenseBinding: createLicenseBindingRepo(db) },
+              user.id,
+            )
+            if (!allowed) {
+              throw new APIError('PAYMENT_REQUIRED', {
+                message:
+                  'Team limit reached. Free includes one personal workspace plus one extra team. Upgrade to Pro for unlimited teams.',
+                error: 'feature_not_available',
+                feature: 'teams_unlimited',
+                currentCount: current_count,
+                limit,
+              })
+            }
+            return { data: { ...organization, id: generateId() } }
+          },
+          beforeAddMember: async ({ member }) => ({ data: { ...member, id: generateId() } }),
+          beforeCreateInvitation: async ({ invitation }) => ({ data: { ...invitation, id: generateId() } }),
+          afterCreateOrganization: async ({ organization }) => {
+            const isTeam = !isPersonalOrgLike(organization)
+            await createOrgQuota(db, organization.id, new Date(), isTeam)
+          },
+          afterDeleteOrganization: async ({ organization }) => {
+            await deleteApiKeysScopedToOrganization(db, organization.id)
+          },
+          afterAcceptInvitation: async ({ user, organization }) => {
+            await createNotificationRepo(db).create({
+              userId: user.id,
+              type: 'team_join',
+              title: `You joined ${organization.name}`,
+              body: "You now have access to this team's space.",
+              refType: 'team',
+              refId: organization.id,
+              metadata: JSON.stringify({ teamName: organization.name }),
+            })
+          },
+        },
+      }),
+      username(),
+      lastLoginMethod({
+        customResolveMethod: (ctx) => (ctx.path === '/sign-in/username' ? 'username' : null),
+      }),
+      dynamicCaptcha(db),
+      genericOAuth({
+        config: providerConfigs.oidc.map((c) => ({
+          providerId: c.providerId,
+          clientId: c.clientId,
+          clientSecret: c.clientSecret,
+          discoveryUrl: c.discoveryUrl,
+          scopes: c.scopes,
+        })),
+      }),
+      bearer(),
+      deviceAuthorization({
+        schema: {},
+        verificationUri: '/device',
+        validateClient: async (clientId) => clientId === LEGACY_DOWNLOADER_CLIENT_ID,
+      }),
+      // OAuth clients obtain tokens from /oauth2/token. Signing another JWT on
+      // every session read is unused work and couples login to the JWKS secret.
+      jwt({ disableSettingJwtHeader: true }),
+      oauthPushedAuthorizationRequests(oauthProviderOptions),
+      oauthProvider(oauthProviderOptions),
+      apiKey([
+        {
+          configId: ApiKeyTemplate.IHOST,
+          customKeyGenerator: generateApiKey,
+          references: 'user',
+          enableMetadata: true,
+          rateLimit: {
+            enabled: true,
+            timeWindow: 60_000,
+            maxRequests: 60,
+          },
+          permissions: {
+            defaultPermissions: IHOST_API_KEY_PERMISSIONS,
+          },
+        },
+        {
+          configId: ApiKeyTemplate.WEBDAV,
+          customKeyGenerator: generateApiKey,
+          references: 'user',
+          enableMetadata: true,
+          // Cloudflare's native limiter remains the authoritative synchronous
+          // rate limit. Better Auth can therefore move its bookkeeping write
+          // off the response path without weakening enforcement.
+          deferUpdates: usesNativeWebDavRateLimit && backgroundTaskHandler !== undefined,
+          rateLimit: {
+            enabled: !usesNativeWebDavRateLimit,
+            // Filesystem clients such as macOS Finder issue bursts of PROPFIND
+            // and stat requests while browsing mounted folders.
+            timeWindow: WEBDAV_API_KEY_RATE_LIMIT_WINDOW_MS,
+            maxRequests: WEBDAV_API_KEY_RATE_LIMIT_MAX_REQUESTS,
+          },
+          permissions: {
+            defaultPermissions: WEBDAV_API_KEY_PERMISSIONS,
+          },
+        },
+        {
+          configId: ApiKeyTemplate.REMOTE_DOWNLOAD,
+          customKeyGenerator: generateApiKey,
+          references: 'user',
+          enableMetadata: true,
+          rateLimit: {
+            enabled: true,
+            timeWindow: 60_000,
+            maxRequests: 120,
+          },
+          permissions: {
+            defaultPermissions: REMOTE_DOWNLOAD_API_KEY_PERMISSIONS,
+          },
+        },
+      ]),
+    ],
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user, context) => {
+            const firstUser = await isFirstUser(db)
+
+            // Registration gate: skip for the very first user so bootstrap works
+            if (!firstUser) {
+              const mode = await getEffectiveSignupMode({
+                systemOptions: createSystemOptionsRepo(db),
+                licenseBinding: createLicenseBindingRepo(db),
+              })
+              const email = String(user.email ?? '')
+              const siteInvitationToken = (context?.body as { siteInvitationToken?: string })?.siteInvitationToken
+              if (mode === SignupMode.CLOSED) {
+                if (!siteInvitationToken) {
+                  throw new Error('An invitation is required to register')
+                }
+                const validation = await createSiteInvitationRepo(db).validateSiteInvitation(siteInvitationToken, email)
+                if (!validation.valid) {
+                  throw new Error(validation.error ?? 'Invalid invitation')
+                }
+              }
+              if (mode === SignupMode.INVITE_ONLY) {
+                const inviteCode = (context?.body as { inviteCode?: string })?.inviteCode
+                if (!inviteCode) {
+                  throw new Error('An invite code is required to register')
+                }
+                const validation = await createInviteRepo(db).validate(inviteCode)
+                if (!validation.valid) {
+                  throw new Error(validation.error ?? 'Invalid invite code')
+                }
+              }
+            }
+
+            // Promote the very first signup to admin BEFORE the INSERT so the
+            // role is baked into the session cookie that the response returns.
+            const data: Record<string, unknown> = firstUser ? { ...user, role: 'admin' } : { ...user }
+
+            // For OAuth sign-ups, generate username before INSERT.
+            // Email sign-ups already have username from the registration form.
+            if (!data.username) {
+              const raw = user as Record<string, unknown>
+              data.username = await generateUsername(db, {
+                oauthUsername: String(raw.preferred_username ?? raw.login ?? ''),
+                email: String(user.email ?? ''),
+              })
+              data.displayUsername = data.username
+            }
+
+            return { data }
+          },
+          after: async (user, context) => {
+            // Redeem invite code after user is created (user.id is now available)
+            const mode = await getEffectiveSignupMode({
+              systemOptions: createSystemOptionsRepo(db),
+              licenseBinding: createLicenseBindingRepo(db),
+            })
+            if (mode === SignupMode.INVITE_ONLY) {
+              const inviteCode = (context?.body as { inviteCode?: string })?.inviteCode
+              if (inviteCode) {
+                await createInviteRepo(db).redeem(inviteCode, user.id)
+              }
+            }
+
+            const siteInvitationToken = (context?.body as { siteInvitationToken?: string })?.siteInvitationToken
+            if (siteInvitationToken) {
+              const result = await createSiteInvitationRepo(db).acceptSiteInvitation(
+                siteInvitationToken,
+                user.email,
+                user.id,
+              )
+              if (result !== 'ok' && result !== 'accepted') {
+                throw new Error(`Failed to redeem site invitation: ${result}`)
+              }
+            }
+
+            // Create personal org as part of registration.
+            // This hook is deferred until after the transaction commits, so
+            // when autoSignIn is enabled the org is actually created by
+            // session.create.before (which runs earlier, inside the txn).
+            // The idempotent check ensures no duplicate is created.
+            const existing = await createOrgRepo(db).findPersonalOrg(user.id)
+            if (!existing) {
+              await createPersonalOrg(db, user)
+            }
+          },
+        },
+        delete: {
+          before: async (user) => {
+            await ensureUserRegistrationAudit(db, user.id)
+          },
+        },
+      },
+      account: {
+        create: {
+          after: async (account) => {
+            await recordAuditEffect('user_register', () => ensureUserRegistrationAudit(db, account.userId, account.id))
+          },
+        },
+      },
+      session: {
+        create: {
+          before: async (session) => {
+            // Look up existing personal org (returning users)
+            let orgId = await createOrgRepo(db).findPersonalOrg(session.userId)
+
+            // For new sign-ups the org doesn't exist yet — create it now.
+            // This runs inside the sign-up transaction, after the user row
+            // is inserted but before the session row and cookie cache are
+            // written, so activeOrganizationId is correct from the start.
+            if (!orgId) {
+              const revokedPersonalOrgId = await findPersonalOrgFromExistingSession(db, session.userId)
+              // Legacy personal orgs used a deterministic slug. Preserve the
+              // old no-duplicate behavior for rows that still exist without
+              // membership (e.g. admin revoked access).
+              const legacySlug = `personal-${session.userId}`
+              const [existing] = await db
+                .select({ id: authSchema.organization.id })
+                .from(authSchema.organization)
+                .where(eq(authSchema.organization.slug, legacySlug))
+                .limit(1)
+
+              if (!revokedPersonalOrgId && !existing) {
+                const [user] = await db
+                  .select({ id: authSchema.user.id, name: authSchema.user.name, username: authSchema.user.username })
+                  .from(authSchema.user)
+                  .where(eq(authSchema.user.id, session.userId))
+                if (user) {
+                  orgId = await createPersonalOrg(db, user)
+                }
+              }
+            }
+
+            if (orgId) {
+              return { data: { ...session, activeOrganizationId: orgId } }
+            }
+            return { data: session }
+          },
+          after: async (session) => {
+            await recordUserActivity(db, session.userId)
+          },
+        },
+      },
+    },
+  } satisfies BetterAuthOptions
+
+  const buildAuth = (requireEmailVerification: boolean) =>
+    betterAuth({
+      ...authOptions,
+      emailAndPassword: { ...authOptions.emailAndPassword, requireEmailVerification },
+      emailVerification: {
+        ...authOptions.emailVerification,
+        sendOnSignUp: requireEmailVerification,
+        sendOnSignIn: requireEmailVerification,
+      },
+    })
+
+  const createAuthInstance = async (requireEmailVerification: boolean) => {
+    const auth = buildAuth(requireEmailVerification)
+
+    // betterAuth() starts its lazy $context init synchronously, inside whichever
+    // request constructs the instance. Resolve it here so a cached instance never
+    // carries a pending promise tied to its creating request — on Cloudflare
+    // Workers such a promise never settles when awaited from a later request,
+    // which would hang every auth call in the isolate.
+    await auth.$context
+    return auth
+  }
+
+  const defaultAuth = await createAuthInstance(false)
+  let verificationAuth: typeof defaultAuth | null = null
+  const dynamicHandler = async (request: Request): Promise<Response> => {
+    const handle = (auth: typeof defaultAuth) =>
+      handleOAuthClientRegistrationManagement(request, db, (managedRequest) => auth.handler(managedRequest), baseURL)
+    if (!usesEmailVerificationPolicy(request)) return handle(defaultAuth)
+
+    const required = isEmailVerificationRequired(
+      await systemOptionsRepo.getValue(EMAIL_VERIFICATION_REQUIRED_OPTION_KEY),
+    )
+    if (!required) return handle(defaultAuth)
+
+    verificationAuth ??= await createAuthInstance(true)
+    return handle(verificationAuth)
+  }
+
+  return new Proxy(defaultAuth, {
+    get(target, property) {
+      if (property === 'handler') return dynamicHandler
+      return Reflect.get(target, property, target)
+    },
+  })
+}
+
+export type Auth = Awaited<ReturnType<typeof createAuth>>
+
+async function isFirstUser(db: Database): Promise<boolean> {
+  const [row] = await db.select({ c: count() }).from(authSchema.user)
+  if (!row) throw new Error('count(*) on user table returned no rows')
+  return row.c === 0
+}
+
+const generateRandomSuffix = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
+
+function sanitizeUsername(raw: string): string {
+  const cleaned = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 30)
+  // Must contain at least one alphanumeric character
+  return /[a-z0-9]/.test(cleaned) ? cleaned : ''
+}
+
+async function tryUsername(db: Database, candidate: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: authSchema.user.id })
+    .from(authSchema.user)
+    .where(eq(authSchema.user.username, candidate))
+    .limit(1)
+  return rows.length === 0
+}
+
+async function generateUsername(db: Database, opts: { oauthUsername?: string; email?: string }): Promise<string> {
+  // 1. Try OAuth username (OIDC: preferred_username; GitHub/Gitea: login)
+  const oauthName = sanitizeUsername(opts.oauthUsername ?? '')
+  if (oauthName.length >= 3 && (await tryUsername(db, oauthName))) return oauthName
+
+  // 2. Try email prefix
+  const emailPrefix = sanitizeUsername((opts.email ?? '').split('@')[0])
+  if (emailPrefix.length >= 3 && (await tryUsername(db, emailPrefix))) return emailPrefix
+
+  // 3. Fallback: best available prefix + random suffix
+  const base = oauthName || emailPrefix || 'user'
+  return `${base}-${generateRandomSuffix()}`
+}
+
+async function createPersonalOrg(
+  db: Database,
+  user: { id: string; name: string; username?: string | null },
+): Promise<string> {
+  const orgId = generateId()
+  const now = new Date()
+  const displayName = user.name || user.username
+  const orgName = displayName ? `${displayName}'s Space` : 'Personal Space'
+  const orgSlug = await generateUniqueOrgSlug(db, generateUserOrgSlug)
+  const quotaValues = await createOrgQuotaValues(db, orgId, now)
+  const entitlementValues = await createFreePlanEntitlementValues(db, orgId, now, false)
+  await executeWriteTransaction(db, [
+    db.insert(authSchema.organization).values({
+      id: orgId,
+      name: orgName,
+      slug: orgSlug,
+      metadata: JSON.stringify({ type: 'personal' }),
+      createdAt: now,
+    }),
+    db.insert(authSchema.member).values({
+      id: generateId(),
+      organizationId: orgId,
+      userId: user.id,
+      role: 'owner',
+      createdAt: now,
+    }),
+    db.insert(orgQuotas).values(quotaValues),
+    ...initialStorageUsageProjectionQueries(db, orgId, now),
+    ...entitlementValues.map((value) => db.insert(orgQuotaEntitlements).values(value)),
+  ])
+
+  return orgId
+}
+
+async function findPersonalOrgFromExistingSession(db: Database, userId: string): Promise<string | null> {
+  const rows = await db
+    .select({
+      orgId: authSchema.organization.id,
+      slug: authSchema.organization.slug,
+      metadata: authSchema.organization.metadata,
+    })
+    .from(authSchema.session)
+    .innerJoin(authSchema.organization, eq(authSchema.organization.id, authSchema.session.activeOrganizationId))
+    .where(eq(authSchema.session.userId, userId))
+
+  return rows.find(isPersonalOrgLike)?.orgId ?? null
+}
+
+async function createOrgQuotaValues(_db: Database, orgId: string, now: Date): Promise<typeof orgQuotas.$inferInsert> {
+  return {
+    id: generateId(),
+    orgId,
+    quota: 0,
+    used: 0,
+    trafficQuota: 0,
+    trafficUsed: 0,
+    trafficPeriod: currentTrafficPeriod(now),
+  }
+}
+
+async function createOrgQuota(db: Database, orgId: string, now: Date, isTeam = false): Promise<void> {
+  await executeWriteTransaction(db, [
+    db.insert(orgQuotas).values(await createOrgQuotaValues(db, orgId, now)),
+    ...initialStorageUsageProjectionQueries(db, orgId, now),
+    ...(await createFreePlanEntitlementValues(db, orgId, now, isTeam)).map((value) =>
+      db.insert(orgQuotaEntitlements).values(value),
+    ),
+  ])
+}
+
+async function createFreePlanEntitlementValues(
+  db: Database,
+  orgId: string,
+  now: Date,
+  isTeam: boolean,
+): Promise<(typeof orgQuotaEntitlements.$inferInsert)[]> {
+  const storageDefault = isTeam ? await getDefaultTeamQuota(db) : null
+  const defaultQuota = storageDefault?.bytes ?? (await getDefaultOrgQuota(db))
+  const storageSettingKey = storageDefault?.settingKey ?? 'default_org_quota'
+  const defaultTrafficQuota = await getDefaultOrgTrafficQuota(db)
+
+  return [
+    freePlanEntitlementValue(orgId, 'storage', defaultQuota, now, storageSettingKey),
+    freePlanEntitlementValue(orgId, 'traffic', defaultTrafficQuota, now, 'default_org_monthly_traffic_quota'),
+  ]
+}
+
+async function generateUniqueOrgSlug(db: Database, generate: () => string): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const slug = generate()
+    const rows = await db
+      .select({ id: authSchema.organization.id })
+      .from(authSchema.organization)
+      .where(eq(authSchema.organization.slug, slug))
+      .limit(1)
+    if (!rows[0]) return slug
+  }
+  throw new Error('Failed to generate a unique organization slug')
+}
+
+function freePlanEntitlementValue(
+  orgId: string,
+  resourceType: 'storage' | 'traffic',
+  bytes: number,
+  now: Date,
+  settingKey: string,
+): typeof orgQuotaEntitlements.$inferInsert {
+  return {
+    id: generateId(),
+    orgId,
+    resourceType,
+    entitlementType: 'plan',
+    source: 'free_plan',
+    sourceId: `free_plan:${orgId}`,
+    bytes,
+    startsAt: now,
+    expiresAt: null,
+    status: 'active',
+    metadata: JSON.stringify({
+      packageName: 'Free',
+      packageId: null,
+      source: 'free_plan',
+      settingKey,
+    }),
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+// Default storage quota for newly created team orgs. Returns null when the
+// option is unset so callers fall back to the personal-org default.
+async function getDefaultTeamQuota(db: Database): Promise<{ bytes: number; settingKey: string } | null> {
+  const rows = await db
+    .select({ value: systemOptions.value })
+    .from(systemOptions)
+    .where(eq(systemOptions.key, 'default_team_quota'))
+  const raw = rows[0]?.value
+  if (raw == null) return null
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return { bytes: n, settingKey: 'default_team_quota' }
+}
+
+async function getDefaultOrgQuota(db: Database): Promise<number> {
+  const rows = await db
+    .select({ value: systemOptions.value })
+    .from(systemOptions)
+    .where(eq(systemOptions.key, 'default_org_quota'))
+  const raw = rows[0]?.value
+  if (raw == null) return DEFAULT_ORG_QUOTA
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_ORG_QUOTA
+}
+
+async function getDefaultOrgTrafficQuota(db: Database): Promise<number> {
+  const rows = await db
+    .select({ value: systemOptions.value })
+    .from(systemOptions)
+    .where(eq(systemOptions.key, 'default_org_monthly_traffic_quota'))
+  const raw = rows[0]?.value
+  if (raw == null) return DEFAULT_ORG_TRAFFIC_QUOTA
+  const value = raw.trim()
+  const n = Number(value)
+  if (value === '' || !Number.isInteger(n) || n < 0)
+    throw new Error('default_org_monthly_traffic_quota must be a non-negative integer')
+  return n
+}

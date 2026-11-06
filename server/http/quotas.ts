@@ -1,0 +1,90 @@
+import { OpenAPIHono, z } from '@hono/zod-openapi'
+import { AuthorizationScope } from '@shared/authorization'
+import { opaqueIdSchema, pageSchema } from '@shared/schemas'
+import type { Env } from '../middleware/platform'
+import { notFound } from '../usecases/ports'
+import { getUserQuota, listQuotaOverview } from '../usecases/quota'
+import { authRoute, errorResponse, jsonContent } from './openapi'
+
+// Quota types are already wire-shaped (timestamps are ISO strings, not Date), so
+// the schemas match the usecase return types directly — no DTO mapper needed.
+const currentStoragePlanSchema = z.object({
+  sourceId: z.string(),
+  packageId: z.string().nullable(),
+  name: z.string(),
+  storageBytes: z.number().int(),
+  trafficBytes: z.number().int(),
+  trafficOveragePriceCents: z.number().int().nullable(),
+  expiresAt: z.string().nullable(),
+  subscription: z.boolean(),
+})
+
+const effectiveQuotaSchema = z
+  .object({
+    orgId: opaqueIdSchema,
+    baseQuota: z.number().int(),
+    entitlementQuota: z.number().int(),
+    quota: z.number().int(),
+    used: z.number().int(),
+    baseTrafficQuota: z.number().int(),
+    entitlementTrafficQuota: z.number().int(),
+    trafficQuota: z.number().int(),
+    trafficUsed: z.number().int(),
+    trafficPeriod: z.string(),
+    storagePlanName: z.string().nullable(),
+    storageExtraNames: z.array(z.string()),
+    trafficPlanName: z.string().nullable(),
+    trafficExtraNames: z.array(z.string()),
+    currentPlan: currentStoragePlanSchema.nullable(),
+  })
+  .openapi('EffectiveQuota')
+
+const quotaOverviewItemSchema = effectiveQuotaSchema
+  .extend({ id: opaqueIdSchema, orgName: z.string(), orgType: z.string() })
+  .openapi('QuotaOverviewItem')
+
+const quotaOverviewSchema = pageSchema(quotaOverviewItemSchema, 'QuotaOverview')
+
+const listQuotaOverviewRoute = authRoute(
+  { scopes: [AuthorizationScope.QUOTA_READ], siteRole: 'admin' },
+  {
+    operationId: 'listQuotaOverview',
+    summary: 'List quota overview across all spaces',
+    tags: ['Quotas'],
+    method: 'get',
+    path: '/',
+    responses: { 200: jsonContent(quotaOverviewSchema, 'Quota overview') },
+  },
+)
+
+const getMyQuotaRoute = authRoute(
+  { scopes: [AuthorizationScope.QUOTA_READ], minTeamRole: 'viewer' },
+  {
+    operationId: 'getMyQuota',
+    summary: "Get the current user's effective quota",
+    tags: ['Quotas'],
+    method: 'get',
+    path: '/me',
+    responses: {
+      200: jsonContent(effectiveQuotaSchema, 'Effective quota'),
+      404: errorResponse('No organization found'),
+    },
+  },
+)
+
+// Quota overview across all orgs (personal + team), used by the admin dashboard.
+// Per-team entitlement management lives under /api/teams.
+const adminQuotas = new OpenAPIHono<Env>().openapi(listQuotaOverviewRoute, async (c) => {
+  // The overview returns every space in one shot rather than paging, so the page
+  // metadata mirrors the full result.
+  const { items, total } = await listQuotaOverview(c.get('deps'))
+  return c.json({ items, total, page: 1, pageSize: items.length }, 200)
+})
+
+const userQuotas = new OpenAPIHono<Env>().openapi(getMyQuotaRoute, async (c) => {
+  const quota = await getUserQuota(c.get('deps'), { userId: c.get('userId')!, orgId: c.get('orgId') ?? undefined })
+  if (!quota) throw notFound('No organization found')
+  return c.json(quota, 200)
+})
+
+export { adminQuotas, userQuotas }

@@ -1,0 +1,559 @@
+import { describe, expect, it } from 'vitest'
+import { adminHeaders, authedHeaders, createTestApp, seedProLicense } from '../../test/setup.js'
+import { auditActorIdentityKey } from '../../usecases/ports.js'
+
+describe('GET /api/site/audit-events — auth guards', () => {
+  it('returns 401 without auth [spec: audit/auth-required]', async () => {
+    const { app } = await createTestApp()
+    const res = await app.request('/api/site/audit-events')
+    expect(res.status).toBe(401)
+  })
+
+  it('returns 403 for authenticated non-admin [spec: audit/admin-only]', async () => {
+    const { app } = await createTestApp()
+    await adminHeaders(app)
+    const headers = await authedHeaders(app, 'user@example.com')
+    const res = await app.request('/api/site/audit-events', { headers })
+    expect(res.status).toBe(403)
+  })
+
+  it('returns 402 when admin lacks audit_log feature [spec: audit/feature-gated]', async () => {
+    const { app } = await createTestApp()
+    const headers = await adminHeaders(app)
+    // No Pro license seeded — feature gate should block
+    const res = await app.request('/api/site/audit-events', { headers })
+    expect(res.status).toBe(402)
+    const body = (await res.json()) as { error: { details: { reason: string; metadata?: { feature?: string } }[] } }
+    expect(body.error.details[0]?.reason).toBe('FEATURE_NOT_AVAILABLE')
+    expect(body.error.details[0]?.metadata?.feature).toBe('audit_log')
+  })
+})
+
+describe('GET /api/site/audit-events — licensed admin', () => {
+  it('normalizes the historical OAuth actor type', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+    const { auditEvents } = await import('../../db/schema.js')
+    await db.insert(auditEvents).values({
+      id: 'evt-legacy-oauth',
+      orgId: 'org-oauth',
+      userId: 'oauth-user',
+      actorType: ['agent', 'oauth'].join('_'),
+      actorRef: 'controller-1',
+      action: 'objects_list',
+      targetType: 'file',
+      targetId: null,
+      targetName: 'OAuth request',
+      metadata: null,
+      createdAt: new Date(),
+    })
+
+    const res = await app.request('/api/site/audit-events?action=objects_list', { headers })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      items: Array<{ actorType: string; user: { name: string }; actor: { name: string; resolved: boolean } }>
+    }
+    expect(body.items[0]).toMatchObject({
+      actorType: 'oauth',
+      user: { name: 'OAuth:controller-1' },
+      actor: { name: 'Agent · controller-1', resolved: false },
+    })
+  })
+
+  it('returns the API key name as the actor instead of the delegated user', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+    const { apikey } = await import('../../db/auth-schema.js')
+    const { auditEvents } = await import('../../db/schema.js')
+    await db.insert(apikey).values({
+      id: 'key-cme',
+      configId: 'remote-download',
+      name: 'CME downloader',
+      referenceId: 'admin-user',
+      key: 'hashed-secret',
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    })
+    await db.insert(auditEvents).values({
+      id: 'evt-api-key',
+      orgId: 'org-cme',
+      userId: 'admin-user',
+      actorType: 'api_key',
+      actorRef: 'key-cme',
+      action: 'download_task_created',
+      targetType: 'download_task',
+      targetId: 'task-1',
+      targetName: 'task-1',
+      createdAt: new Date(),
+    })
+
+    const res = await app.request('/api/site/audit-events?action=download_task_created', { headers })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      items: Array<{ user: { name: string }; actor: { name: string; image: string | null; resolved: boolean } }>
+    }
+    expect(body.items[0].actor).toEqual({ name: 'API key · CME downloader', image: null, resolved: true })
+    expect(body.items[0].user.name).not.toBe(body.items[0].actor.name)
+  })
+
+  it('returns the registered device name and normalizes the legacy downloader actor type', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+    const { auditEvents, downloaders } = await import('../../db/schema.js')
+    await db.insert(downloaders).values({
+      id: 'device-office-mac',
+      name: 'Office Mac',
+      tokenHash: 'hashed-device-token',
+      tokenJti: 'device-token-jti',
+      createdBy: 'admin-user',
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    })
+    await db.insert(auditEvents).values({
+      id: 'evt-device-upload',
+      orgId: 'org-device',
+      userId: 'admin-user',
+      actorType: 'downloader',
+      actorRef: 'device-office-mac',
+      action: 'upload_confirm',
+      targetType: 'file',
+      targetId: 'file-device-upload',
+      targetName: 'downloaded.txt',
+      createdAt: new Date(),
+    })
+
+    const res = await app.request('/api/site/audit-events?action=upload_confirm', { headers })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      items: Array<{
+        actorType: string
+        actorRef: string
+        actor: { name: string; image: string | null; resolved: boolean }
+      }>
+    }
+    expect(body.items[0]).toMatchObject({
+      actorType: 'device',
+      actorRef: 'device-office-mac',
+      actor: { name: 'Device · Office Mac', image: null, resolved: true },
+    })
+
+    await db.delete(downloaders)
+    const missingDeviceRes = await app.request('/api/site/audit-events?action=upload_confirm', { headers })
+    const missingDeviceBody = (await missingDeviceRes.json()) as {
+      items: Array<{ actor: { name: string; resolved: boolean } }>
+    }
+    expect(missingDeviceBody.items[0].actor).toEqual({
+      name: 'Device · device-office-mac',
+      image: null,
+      resolved: false,
+    })
+  })
+
+  it('returns the resolved Agent name and image while retaining the delegated user', async () => {
+    const { app, db, deps } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+    const { auditEvents } = await import('../../db/schema.js')
+    const identity = { type: 'oauth', ref: 'agt_1', issuer: 'https://id.realmroot.dev/api/auth' } as const
+    deps.auditActorDirectory.listTrustedAgentIssuerOrigins = async () => new Set(['https://id.realmroot.dev'])
+    deps.agentInfo.resolve = async () =>
+      new Map([
+        [
+          auditActorIdentityKey(identity),
+          {
+            name: 'Mac Agent',
+            image: 'https://id.realmroot.dev/agent-picture-v1.svg',
+            resolved: true,
+          },
+        ],
+      ])
+    await db.insert(auditEvents).values({
+      id: 'evt-agent',
+      orgId: 'org-agent',
+      userId: 'admin-user',
+      actorType: 'oauth',
+      actorRef: identity.ref,
+      actorIssuer: identity.issuer,
+      action: 'upload',
+      targetType: 'file',
+      targetId: 'file-1',
+      targetName: 'agent.txt',
+      createdAt: new Date(),
+    })
+
+    const res = await app.request('/api/site/audit-events?action=upload', { headers })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      items: Array<{ user: { name: string }; actor: { name: string; image: string | null; resolved: boolean } }>
+    }
+    expect(body.items[0].actor).toEqual({
+      name: 'Mac Agent',
+      image: 'https://id.realmroot.dev/agent-picture-v1.svg',
+      resolved: true,
+    })
+    expect(body.items[0].user.name).not.toBe(body.items[0].actor.name)
+  })
+
+  it('returns an empty list when no events match the filter [spec: audit/empty]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    const res = await app.request('/api/site/audit-events?action=does_not_exist', { headers })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: unknown[]; total: number; page: number; pageSize: number }
+    expect(body.items).toEqual([])
+    expect(body.total).toBe(0)
+    expect(body.page).toBe(1)
+    expect(body.pageSize).toBe(20)
+  })
+
+  it('lists events across multiple orgs, newest first [spec: audit/list-newest-first]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    // Seed events in different orgs
+    const earlier = new Date('2026-01-01T00:00:00Z')
+    const later = new Date('2026-06-01T00:00:00Z')
+
+    await db.insert((await import('../../db/schema.js')).auditEvents).values([
+      {
+        id: 'evt-a',
+        orgId: 'org-a',
+        userId: 'user-1',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'a.pdf',
+        metadata: null,
+        createdAt: earlier,
+      },
+      {
+        id: 'evt-b',
+        orgId: 'org-b',
+        userId: 'user-2',
+        action: 'delete',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'b.pdf',
+        metadata: null,
+        createdAt: later,
+      },
+    ])
+
+    const res = await app.request('/api/site/audit-events?targetType=file', { headers })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: Array<{ id: string }>; total: number }
+    expect(body.total).toBe(2)
+    // newest first
+    expect(body.items[0].id).toBe('evt-b')
+    expect(body.items[1].id).toBe('evt-a')
+  })
+
+  it('filters by orgId [spec: audit/filter-org]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    const { auditEvents } = await import('../../db/schema.js')
+    await db.insert(auditEvents).values([
+      {
+        id: 'evt-1',
+        orgId: 'OrgX',
+        userId: 'u1',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'x.pdf',
+        metadata: null,
+        createdAt: new Date(),
+      },
+      {
+        id: 'evt-2',
+        orgId: 'org-y',
+        userId: 'u2',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'y.pdf',
+        metadata: null,
+        createdAt: new Date(),
+      },
+    ])
+
+    const res = await app.request('/api/site/audit-events?orgId=OrgX', { headers })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { items: Array<{ orgId: string }>; total: number }
+    expect(body.total).toBe(1)
+    expect(body.items[0].orgId).toBe('OrgX')
+  })
+
+  it('filters by userId [spec: audit/filter-user]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    const { auditEvents } = await import('../../db/schema.js')
+    await db.insert(auditEvents).values([
+      {
+        id: 'evt-3',
+        orgId: 'org-z',
+        userId: 'alice',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'a.pdf',
+        metadata: null,
+        createdAt: new Date(),
+      },
+      {
+        id: 'evt-4',
+        orgId: 'org-z',
+        userId: 'bob',
+        action: 'delete',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'b.pdf',
+        metadata: null,
+        createdAt: new Date(),
+      },
+    ])
+
+    const res = await app.request('/api/site/audit-events?userId=alice', { headers })
+    const body = (await res.json()) as { items: Array<{ userId: string }>; total: number }
+    expect(body.total).toBe(1)
+    expect(body.items[0].userId).toBe('alice')
+  })
+
+  it('filters by action [spec: audit/filter-action]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    const { auditEvents } = await import('../../db/schema.js')
+    await db.insert(auditEvents).values([
+      {
+        id: 'evt-5',
+        orgId: 'org-1',
+        userId: 'u1',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'a.pdf',
+        metadata: null,
+        createdAt: new Date(),
+      },
+      {
+        id: 'evt-6',
+        orgId: 'org-1',
+        userId: 'u1',
+        action: 'delete',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'b.pdf',
+        metadata: null,
+        createdAt: new Date(),
+      },
+    ])
+
+    const res = await app.request('/api/site/audit-events?action=upload', { headers })
+    const body = (await res.json()) as { items: Array<{ action: string }>; total: number }
+    expect(body.total).toBe(1)
+    expect(body.items[0].action).toBe('upload')
+  })
+
+  it('filters by action and created-at range [spec: audit/filter-action-created-range]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    const { auditEvents } = await import('../../db/schema.js')
+    await db.insert(auditEvents).values([
+      {
+        id: 'evt-range-match',
+        orgId: 'org-1',
+        userId: 'u1',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'match.pdf',
+        metadata: null,
+        createdAt: new Date('2026-02-15T12:00:00.000Z'),
+      },
+      {
+        id: 'evt-range-wrong-action',
+        orgId: 'org-1',
+        userId: 'u1',
+        action: 'delete',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'wrong-action.pdf',
+        metadata: null,
+        createdAt: new Date('2026-02-15T12:00:00.000Z'),
+      },
+      {
+        id: 'evt-range-too-old',
+        orgId: 'org-1',
+        userId: 'u1',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'too-old.pdf',
+        metadata: null,
+        createdAt: new Date('2026-01-31T23:59:59.000Z'),
+      },
+      {
+        id: 'evt-range-too-new',
+        orgId: 'org-1',
+        userId: 'u1',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'too-new.pdf',
+        metadata: null,
+        createdAt: new Date('2026-03-01T00:00:01.000Z'),
+      },
+    ])
+
+    const query = new URLSearchParams({
+      action: 'upload',
+      createdFrom: '2026-02-01T00:00:00.000Z',
+      createdTo: '2026-03-01T00:00:00.000Z',
+    })
+    const res = await app.request(`/api/site/audit-events?${query}`, { headers })
+    const body = (await res.json()) as { items: Array<{ id: string }>; total: number }
+    expect(body.total).toBe(1)
+    expect(body.items.map((item) => item.id)).toEqual(['evt-range-match'])
+  })
+
+  it('rejects an inverted created-at range [spec: audit/filter-created-range-validation]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    const query = new URLSearchParams({
+      createdFrom: '2026-03-01T00:00:00.000Z',
+      createdTo: '2026-02-01T00:00:00.000Z',
+    })
+    const res = await app.request(`/api/site/audit-events?${query}`, { headers })
+    const body = (await res.json()) as { error: { details: Array<{ reason: string }> } }
+    expect(res.status).toBe(400)
+    expect(body.error.details[0]?.reason).toBe('INVALID_TIME_RANGE')
+  })
+
+  it('filters by targetType [spec: audit/filter-target-type]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    const { auditEvents } = await import('../../db/schema.js')
+    await db.insert(auditEvents).values([
+      {
+        id: 'evt-7',
+        orgId: 'org-1',
+        userId: 'u1',
+        action: 'create',
+        targetType: 'folder',
+        targetId: null,
+        targetName: 'docs',
+        metadata: null,
+        createdAt: new Date(),
+      },
+      {
+        id: 'evt-8',
+        orgId: 'org-1',
+        userId: 'u1',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: 'a.pdf',
+        metadata: null,
+        createdAt: new Date(),
+      },
+    ])
+
+    const res = await app.request('/api/site/audit-events?targetType=folder', { headers })
+    const body = (await res.json()) as { items: Array<{ targetType: string }>; total: number }
+    expect(body.total).toBe(1)
+    expect(body.items[0].targetType).toBe('folder')
+  })
+
+  it('respects pagination params and returns correct page/pageSize [spec: audit/pagination]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    const { auditEvents } = await import('../../db/schema.js')
+    // Insert 3 events
+    await db.insert(auditEvents).values(
+      [1, 2, 3].map((i) => ({
+        id: `pg-evt-${i}`,
+        orgId: 'OrgPg',
+        userId: 'u1',
+        action: 'upload',
+        targetType: 'file',
+        targetId: null,
+        targetName: `file-${i}.pdf`,
+        metadata: null,
+        createdAt: new Date(Date.now() - i * 1000),
+      })),
+    )
+
+    const res = await app.request('/api/site/audit-events?page=2&pageSize=2&orgId=OrgPg', { headers })
+    const body = (await res.json()) as {
+      items: Array<{ id: string }>
+      total: number
+      page: number
+      pageSize: number
+    }
+    expect(body.total).toBe(3)
+    expect(body.page).toBe(2)
+    expect(body.pageSize).toBe(2)
+    expect(body.items).toHaveLength(1)
+  })
+
+  it('response items include actor display info and orgName [spec: audit/actor-info]', async () => {
+    const { app, db } = await createTestApp()
+    await seedProLicense(db)
+    const headers = await adminHeaders(app)
+
+    // Get admin user ID via sign-in
+    const signInRes = await app.request('/api/auth/sign-in/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@example.com', password: 'password123456' }),
+    })
+    const session = (await signInRes.json()) as { user?: { id: string } }
+    const userId = session.user?.id ?? 'unknown'
+
+    const { auditEvents } = await import('../../db/schema.js')
+    await db.insert(auditEvents).values({
+      id: 'actor-evt-1',
+      orgId: 'some-org',
+      userId,
+      action: 'upload',
+      targetType: 'file',
+      targetId: null,
+      targetName: 'test.pdf',
+      metadata: null,
+      createdAt: new Date(),
+    })
+
+    const res = await app.request('/api/site/audit-events?action=upload', { headers })
+    const body = (await res.json()) as { items: Array<Record<string, unknown>>; total: number }
+    expect(body.total).toBe(1)
+    const item = body.items[0]
+    expect(item).toHaveProperty('user')
+    expect((item.user as Record<string, unknown>).name).toBeTruthy()
+    expect(item).toHaveProperty('actor')
+    expect(item.actor).toEqual({ name: 'Test User', image: null, resolved: true })
+    expect(item).toHaveProperty('orgName')
+  })
+})

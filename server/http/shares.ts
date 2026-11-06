@@ -1,0 +1,593 @@
+import { OpenAPIHono, z } from '@hono/zod-openapi'
+import { AuthorizationScope } from '@shared/authorization'
+import type { Context } from 'hono'
+import { getCookie, setCookie } from 'hono/cookie'
+import { ZPAN_CLOUD_URL_DEFAULT } from '../../shared/constants'
+import { cursorPageSchema, opaqueIdSchema, opaqueTokenSchema, shareTokenSchema } from '../../shared/schemas'
+import {
+  createShareRequestSchema,
+  listSharesQuerySchema,
+  saveShareRequestSchema,
+  shareObjectsResponseSchema,
+  shareReadmeResponseSchema,
+  shareRecipientViewSchema,
+} from '../../shared/schemas/share'
+import { transferAuditActor } from '../middleware/audit-transfers'
+import { authzActorIdentity, boundWorkspaceOrgId, type Env } from '../middleware/platform'
+import type { Matter, ShareListItem } from '../usecases/ports'
+import { notFound } from '../usecases/ports'
+import {
+  createShare,
+  downloadShareObject,
+  listShareObjects,
+  listShares,
+  readShareReadme,
+  revokeShare,
+  type ShareCreatorDto,
+  type ShareViewerDto,
+  saveShare,
+  setSharePrivacy,
+  verifySharePassword,
+  viewShare,
+} from '../usecases/share'
+import { recordDownloadIssued } from '../usecases/transfer-activity'
+import { authRoute, errorResponse, jsonBody, jsonContent } from './openapi'
+import {
+  createdAtIdCursorCodec,
+  decodeOptionalPageToken,
+  directoryCursorCodec,
+  encodeNextPageToken,
+  pageQueryFingerprint,
+} from './page-token'
+import { cookieName, decodeChildRef, readUserId, viewCookieName } from './share-utils'
+
+function shareUrls(kind: string, token: string): { landing?: string; direct?: string } {
+  return kind === 'landing' ? { landing: `/s/${token}` } : { direct: `/r/${token}` }
+}
+
+const VIEW_DEDUP_TTL_SECS = 30
+const cloudBaseUrl = (c: Context<Env>) => c.get('platform').getEnv('ZPAN_CLOUD_URL') ?? ZPAN_CLOUD_URL_DEFAULT
+
+// ─── Schemas ─────────────────────────────────────────────────────────────────
+const shareViewSchema = z
+  .object({
+    token: shareTokenSchema,
+    kind: z.string(),
+    status: z.string(),
+    expiresAt: z.string().nullable(),
+    downloadLimit: z.number().int().nullable(),
+    matter: z.object({
+      name: z.string(),
+      type: z.string(),
+      size: z.number().int().nullable(),
+      isFolder: z.boolean(),
+    }),
+    creatorName: z.string(),
+    creatorUsername: z.string().nullable(),
+    requiresPassword: z.boolean(),
+    expired: z.boolean(),
+    exhausted: z.boolean(),
+    accessibleByUser: z.boolean(),
+    downloads: z.number().int(),
+    views: z.number().int(),
+    rootRef: z.string(),
+    // creator-only fields
+    id: opaqueIdSchema.optional(),
+    matterId: opaqueIdSchema.optional(),
+    orgId: opaqueIdSchema.optional(),
+    creatorId: opaqueIdSchema.optional(),
+    createdAt: z.string().optional(),
+    recipients: z.array(shareRecipientViewSchema).optional(),
+  })
+  .openapi('ShareView')
+
+function toShareViewDTO(dto: ShareViewerDto | ShareCreatorDto): z.infer<typeof shareViewSchema> {
+  const base = {
+    token: dto.token,
+    kind: dto.kind,
+    status: dto.status,
+    expiresAt: dto.expiresAt ? dto.expiresAt.toISOString() : null,
+    downloadLimit: dto.downloadLimit,
+    matter: dto.matter,
+    creatorName: dto.creatorName,
+    creatorUsername: dto.creatorUsername,
+    requiresPassword: dto.requiresPassword,
+    expired: dto.expired,
+    exhausted: dto.exhausted,
+    accessibleByUser: dto.accessibleByUser,
+    downloads: dto.downloads,
+    views: dto.views,
+    rootRef: dto.rootRef,
+  }
+  if ('createdAt' in dto) {
+    return {
+      ...base,
+      id: dto.id,
+      matterId: dto.matterId,
+      orgId: dto.orgId,
+      creatorId: dto.creatorId,
+      createdAt: dto.createdAt.toISOString(),
+      recipients: dto.recipients.map((recipient) => ({
+        ...recipient,
+        createdAt: recipient.createdAt.toISOString(),
+      })),
+    }
+  }
+  return base
+}
+
+const shareListItemSchema = z
+  .object({
+    id: opaqueIdSchema,
+    token: shareTokenSchema,
+    kind: z.string(),
+    matterId: opaqueIdSchema,
+    orgId: opaqueIdSchema,
+    creatorId: opaqueIdSchema,
+    expiresAt: z.string().nullable(),
+    downloadLimit: z.number().int().nullable(),
+    views: z.number().int(),
+    downloads: z.number().int(),
+    status: z.string(),
+    private: z.boolean(),
+    createdAt: z.string(),
+    matter: z.object({ name: z.string(), type: z.string(), dirtype: z.number().int() }),
+    recipientCount: z.number().int(),
+    creatorName: z.string().optional(),
+  })
+  .openapi('ShareListItem')
+
+function toShareListItemDTO(s: ShareListItem): z.infer<typeof shareListItemSchema> {
+  return {
+    ...s,
+    expiresAt: s.expiresAt ? s.expiresAt.toISOString() : null,
+    createdAt: s.createdAt.toISOString(),
+  }
+}
+
+const shareListSchema = cursorPageSchema(shareListItemSchema, 'ShareList')
+
+const shareObjectsSchema = shareObjectsResponseSchema.openapi('ShareObjects')
+
+const createdShareSchema = z
+  .object({
+    token: shareTokenSchema,
+    kind: z.string(),
+    urls: z.object({ landing: z.string().optional(), direct: z.string().optional() }),
+    expiresAt: z.string().nullable(),
+    downloadLimit: z.number().int().nullable(),
+    private: z.boolean(),
+  })
+  .openapi('CreatedShare')
+
+// `saved` carries full Matter records; serialized inline (the named `Matter`
+// component is owned by the objects router).
+const savedMatterSchema = z.object({
+  id: opaqueIdSchema,
+  orgId: opaqueIdSchema,
+  alias: opaqueTokenSchema,
+  name: z.string(),
+  type: z.string(),
+  size: z.number().int().nullable(),
+  dirtype: z.number().int().nullable(),
+  parent: z.string(),
+  object: z.string(),
+  storageId: opaqueIdSchema,
+  status: z.string(),
+  trashedAt: z.number().int().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+function toSavedMatterDTO(m: Matter): z.infer<typeof savedMatterSchema> {
+  return { ...m, createdAt: m.createdAt.toISOString(), updatedAt: m.updatedAt.toISOString() }
+}
+
+const saveShareResultSchema = z
+  .object({
+    saved: z.array(savedMatterSchema),
+    skipped: z.array(z.object({ name: z.string(), reason: z.string() })),
+  })
+  .openapi('SaveShareResult')
+
+const listObjectsQuerySchema = z.object({
+  parent: z.string().optional(),
+  pageToken: z.string().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
+})
+
+const verifyPasswordSchema = z.object({ password: z.string() })
+
+// ─── PUBLIC SEGMENT ──────────────────────────────────────────────────────────
+const viewShareRoute = authRoute(
+  { public: true },
+  {
+    operationId: 'getShare',
+    summary: 'View a share',
+    tags: ['Shares'],
+    method: 'get',
+    path: '/{token}',
+    request: { params: z.object({ token: shareTokenSchema }) },
+    responses: {
+      200: jsonContent(shareViewSchema, 'Share'),
+      404: errorResponse('Share not found or revoked'),
+      410: errorResponse('File no longer available'),
+    },
+  },
+)
+
+const verifyShareRoute = authRoute(
+  { public: true },
+  {
+    operationId: 'verifySharePassword',
+    summary: 'Verify a share password',
+    tags: ['Shares'],
+    method: 'post',
+    path: '/{token}/sessions',
+    request: { params: z.object({ token: shareTokenSchema }), ...jsonBody(verifyPasswordSchema) },
+    responses: {
+      200: jsonContent(z.object({ ok: z.literal(true) }), 'Verified'),
+      403: errorResponse('Invalid password'),
+      404: errorResponse('Share not found or revoked'),
+    },
+  },
+)
+
+const listShareObjectsRoute = authRoute(
+  { public: true },
+  {
+    operationId: 'listShareObjects',
+    summary: 'List objects in a folder share',
+    tags: ['Shares'],
+    method: 'get',
+    path: '/{token}/objects',
+    request: { params: z.object({ token: shareTokenSchema }), query: listObjectsQuerySchema },
+    responses: {
+      200: jsonContent(shareObjectsSchema, 'Share objects'),
+      400: errorResponse('Bad request'),
+      401: errorResponse('Password required'),
+      404: errorResponse('Share not found'),
+      410: errorResponse('Share expired or unavailable'),
+    },
+  },
+)
+
+const readShareReadmeRoute = authRoute(
+  { public: true },
+  {
+    operationId: 'readShareReadme',
+    summary: 'Read a shared folder README',
+    tags: ['Shares'],
+    method: 'get',
+    path: '/{token}/readme',
+    request: { params: z.object({ token: shareTokenSchema }) },
+    responses: {
+      200: jsonContent(shareReadmeResponseSchema, 'README.md content'),
+      400: errorResponse('README.md is not valid UTF-8'),
+      401: errorResponse('Password required'),
+      404: errorResponse('README.md not found'),
+      410: errorResponse('Share expired'),
+      413: errorResponse('README.md is too large'),
+    },
+  },
+)
+
+const pub = new OpenAPIHono<Env>()
+
+// GET /{token}/objects/{ref} resolves a download to a 302 redirect (or a presigned
+// URL when ?downloadUrl=1). It is a redirect endpoint, not a JSON resource, so it
+// stays a plain route, excluded from the OpenAPI document.
+pub.get('/:token/objects/:ref', async (c) => {
+  const token = c.req.param('token')
+  if (!shareTokenSchema.safeParse(token).success) throw notFound()
+  const ref = c.req.param('ref')
+  const returnUrl = c.req.query('downloadUrl') === '1'
+  const viewerId = await readUserId(c)
+
+  const out = await downloadShareObject(c.get('deps'), {
+    token,
+    matterId: decodeChildRef(token, ref),
+    viewerId,
+    accessCookie: getCookie(c, cookieName(token)),
+    cloudBaseUrl: cloudBaseUrl(c),
+  })
+  if (out.ok) {
+    await recordDownloadIssued(
+      c.get('deps'),
+      transferAuditActor(c.get('principal')),
+      'share_download',
+      {
+        orgId: out.receipt.orgId,
+        targetType: 'share',
+        targetId: out.receipt.shareId,
+        targetName: out.receipt.matterName,
+        bytes: out.receipt.bytes,
+        source: 'landing_share',
+        metadata: {
+          shareId: out.receipt.shareId,
+          creatorId: out.receipt.creatorId,
+          anonymous: !c.get('principal'),
+          matterId: out.receipt.matterId,
+          storageId: out.receipt.storageId,
+        },
+      },
+      out.receipt.trafficEventId,
+    )
+    if (returnUrl) {
+      const res = c.json({ downloadUrl: out.url })
+      res.headers.set('Cache-Control', 'no-store')
+      return res
+    }
+    const res = c.redirect(out.url, 302)
+    res.headers.set('Cache-Control', 'no-store')
+    return res
+  }
+  throw out.error
+})
+
+export const publicShares = pub
+  .openapi(viewShareRoute, async (c) => {
+    const token = c.req.valid('param').token
+    const viewerId = await readUserId(c)
+    const out = await viewShare(c.get('deps'), {
+      token,
+      viewerId,
+      viewCookie: getCookie(c, viewCookieName(token)),
+      accessCookie: getCookie(c, cookieName(token)),
+    })
+    if (out.ok) {
+      if (out.setViewCookie) {
+        setCookie(c, viewCookieName(token), 'seen', {
+          httpOnly: true,
+          sameSite: 'Lax',
+          secure: true,
+          maxAge: VIEW_DEDUP_TTL_SECS,
+        })
+      }
+      return c.json(toShareViewDTO(out.dto), 200)
+    }
+    throw out.error
+  })
+  .openapi(verifyShareRoute, async (c) => {
+    const token = c.req.valid('param').token
+    const { password } = c.req.valid('json')
+    const viewerId = await readUserId(c)
+    const out = await verifySharePassword(c.get('deps'), { token, password, viewerId })
+    if (out.ok) {
+      setCookie(c, cookieName(token), 'ok', {
+        httpOnly: true,
+        sameSite: 'Lax',
+        secure: true,
+        expires: out.setAccessCookieExpiry,
+      })
+      return c.json({ ok: true as const }, 200)
+    }
+    throw out.error
+  })
+  .openapi(listShareObjectsRoute, async (c) => {
+    const token = c.req.valid('param').token
+    const viewerId = await readUserId(c)
+    const { parent: relativePath = '', pageToken, pageSize } = c.req.valid('query')
+    const fingerprint = await pageQueryFingerprint({ token, relativePath, pageSize })
+    const after = await decodeOptionalPageToken(c.get('platform'), pageToken, {
+      query: fingerprint,
+      codec: directoryCursorCodec,
+    })
+
+    const out = await listShareObjects(c.get('deps'), {
+      token,
+      viewerId,
+      accessCookie: getCookie(c, cookieName(token)),
+      relativePath,
+      pageSize,
+      after,
+    })
+    if (out.ok) {
+      return c.json(
+        {
+          items: out.result.items,
+          breadcrumb: out.result.breadcrumb,
+          nextPageToken: await encodeNextPageToken(c.get('platform'), out.result.nextBoundary, {
+            query: fingerprint,
+            codec: directoryCursorCodec,
+          }),
+        },
+        200,
+      )
+    }
+    throw out.error
+  })
+  .openapi(readShareReadmeRoute, async (c) => {
+    const token = c.req.valid('param').token
+    const viewerId = await readUserId(c)
+    const out = await readShareReadme(c.get('deps'), {
+      token,
+      viewerId,
+      accessCookie: getCookie(c, cookieName(token)),
+    })
+    if (out.ok) return c.json({ content: out.content }, 200)
+    throw out.error
+  })
+
+// ─── AUTHED SEGMENT ─────────────────────────────────────────────────────────
+const listSharesRoute = authRoute(
+  { scopes: [AuthorizationScope.SHARES_READ], minTeamRole: 'viewer' },
+  {
+    operationId: 'listShares',
+    summary: 'List my shares',
+    tags: ['Shares'],
+    method: 'get',
+    path: '/',
+    request: { query: listSharesQuerySchema },
+    responses: { 200: jsonContent(shareListSchema, 'Shares') },
+  },
+)
+
+const createShareRoute = authRoute(
+  { scopes: [AuthorizationScope.SHARES_CREATE], minTeamRole: 'editor' },
+  {
+    operationId: 'createShare',
+    summary: 'Create a share',
+    tags: ['Shares'],
+    method: 'post',
+    path: '/',
+    request: jsonBody(createShareRequestSchema),
+    responses: {
+      201: jsonContent(createdShareSchema, 'Created share'),
+      400: errorResponse('Invalid share configuration'),
+      404: errorResponse('Matter not found'),
+    },
+  },
+)
+
+const revokeShareRoute = authRoute(
+  { scopes: [AuthorizationScope.SHARES_DELETE], minTeamRole: 'editor' },
+  {
+    operationId: 'revokeShare',
+    summary: 'Revoke a share',
+    tags: ['Shares'],
+    method: 'put',
+    path: '/{token}/status',
+    request: {
+      params: z.object({ token: shareTokenSchema }),
+      ...jsonBody(z.object({ status: z.literal('revoked') })),
+    },
+    responses: {
+      200: jsonContent(shareViewSchema, 'Revoked share'),
+      403: errorResponse('Forbidden'),
+      404: errorResponse('Not found'),
+    },
+  },
+)
+
+const sharePrivacySchema = z.object({ private: z.boolean() }).openapi('SharePrivacy')
+
+const putSharePrivacyRoute = authRoute(
+  { scopes: [AuthorizationScope.SHARES_CREATE], minTeamRole: 'editor' },
+  {
+    operationId: 'putSharePrivacy',
+    summary: 'Set whether a share is hidden from the owner public profile',
+    tags: ['Shares'],
+    method: 'put',
+    path: '/{token}/privacy',
+    request: {
+      params: z.object({ token: shareTokenSchema }),
+      ...jsonBody(sharePrivacySchema),
+    },
+    responses: {
+      200: jsonContent(sharePrivacySchema, 'Share privacy'),
+      400: errorResponse('Share does not have configurable privacy'),
+      403: errorResponse('Forbidden'),
+      404: errorResponse('Not found'),
+    },
+  },
+)
+
+const saveShareRoute = authRoute(
+  { scopes: [AuthorizationScope.OBJECTS_CREATE], minTeamRole: 'editor' },
+  {
+    operationId: 'saveShare',
+    summary: 'Save a share to my drive',
+    tags: ['Shares'],
+    method: 'post',
+    path: '/{token}/objects',
+    request: { params: z.object({ token: shareTokenSchema }), ...jsonBody(saveShareRequestSchema) },
+    responses: {
+      201: jsonContent(saveShareResultSchema, 'Saved'),
+      400: errorResponse('Bad request'),
+      401: errorResponse('Authentication required'),
+      403: errorResponse('Forbidden'),
+      404: errorResponse('Share not found'),
+      410: errorResponse('Share target deleted'),
+      422: errorResponse('Quota exceeded'),
+    },
+  },
+)
+
+const authedApp = new OpenAPIHono<Env>()
+
+export const authedShares = authedApp
+  .openapi(listSharesRoute, async (c) => {
+    const userId = c.get('userId')!
+    const { pageToken, pageSize, status, box } = c.req.valid('query')
+    const fingerprint = await pageQueryFingerprint({ userId, box, status: status ?? null, pageSize })
+    const after = await decodeOptionalPageToken(c.get('platform'), pageToken, {
+      query: fingerprint,
+      codec: createdAtIdCursorCodec,
+    })
+    const result = await listShares(c.get('deps'), {
+      userId,
+      box,
+      pageSize,
+      status,
+      boundOrgId: boundWorkspaceOrgId(c.get('authzContext')),
+      after,
+    })
+    return c.json(
+      {
+        items: result.items.map(toShareListItemDTO),
+        nextPageToken: await encodeNextPageToken(c.get('platform'), result.nextBoundary, {
+          query: fingerprint,
+          codec: createdAtIdCursorCodec,
+        }),
+      },
+      200,
+    )
+  })
+  .openapi(createShareRoute, async (c) => {
+    const out = await createShare(c.get('deps'), c.get('platform'), {
+      orgId: c.get('orgId')!,
+      userId: c.get('userId')!,
+      input: c.req.valid('json'),
+    })
+    if (out.ok) {
+      return c.json(
+        {
+          token: out.share.token,
+          kind: out.share.kind,
+          urls: shareUrls(out.share.kind, out.share.token),
+          expiresAt: out.share.expiresAt ? out.share.expiresAt.toISOString() : null,
+          downloadLimit: out.share.downloadLimit,
+          private: out.share.private,
+        },
+        201,
+      )
+    }
+    throw out.error
+  })
+  .openapi(putSharePrivacyRoute, async (c) => {
+    const out = await setSharePrivacy(c.get('deps'), {
+      token: c.req.valid('param').token,
+      userId: c.get('userId')!,
+      boundOrgId: boundWorkspaceOrgId(c.get('authzContext')),
+      private: c.req.valid('json').private,
+    })
+    if (out.ok) return c.json({ private: out.private }, 200)
+    throw out.error
+  })
+  .openapi(revokeShareRoute, async (c) => {
+    const out = await revokeShare(c.get('deps'), {
+      token: c.req.valid('param').token,
+      userId: c.get('userId')!,
+      boundOrgId: boundWorkspaceOrgId(c.get('authzContext')),
+    })
+    if (out.ok) return c.json(toShareViewDTO(out.dto), 200)
+    throw out.error
+  })
+  .openapi(saveShareRoute, async (c) => {
+    const token = c.req.valid('param').token
+    const { targetOrgId, targetParent } = c.req.valid('json')
+    const createdBy = authzActorIdentity(c.get('authzContext'))
+    if (!createdBy) throw new Error('authenticated_actor_missing')
+    const out = await saveShare(c.get('deps'), {
+      token,
+      currentUserId: c.get('userId')!,
+      targetOrgId,
+      boundTargetOrgId: boundWorkspaceOrgId(c.get('authzContext')),
+      targetParent,
+      accessCookie: getCookie(c, cookieName(token)),
+      createdBy,
+    })
+    if (out.ok) return c.json({ saved: out.result.saved.map(toSavedMatterDTO), skipped: out.result.skipped }, 201)
+    throw out.error
+  })
