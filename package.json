@@ -143,7 +143,7 @@
   "cloudflare": {
     "bindings": {
       "ZPAN_USERNAME": {
-        "description": "Single-admin login identity (email). Also used with ZPAN_PASSWORD to derive BETTER_AUTH_SECRET via HMAC-SHA256."
+        "description": "Single-admin login identity (username or email). Also used with ZPAN_PASSWORD to derive BETTER_AUTH_SECRET via HMAC-SHA256."
       },
       "ZPAN_PASSWORD": {
         "description": "Single-admin password. Also used with ZPAN_USERNAME to derive BETTER_AUTH_SECRET via HMAC-SHA256."

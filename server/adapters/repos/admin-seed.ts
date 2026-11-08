@@ -7,6 +7,7 @@
 
 import { count } from 'drizzle-orm'
 import { generateId } from '../../../shared/ids'
+import { normalizeLoginIdentifier } from '../../../shared/login-identifier'
 import { account, user } from '../../db/auth-schema'
 import { hashPassword } from '../../lib/password'
 import type { Platform } from '../../platform/interface'
@@ -17,10 +18,19 @@ export interface AdminSeedResult {
 }
 
 export async function ensureAdminSeed(platform: Platform): Promise<AdminSeedResult> {
-  // The login form uses an email input, so ZPAN_USERNAME is an email address.
-  const email = platform.getEnv('ZPAN_USERNAME')?.trim()
+  // ZPAN_USERNAME may be a plain username ("admin") or a full email address.
+  // Both are normalised to the same lower-cased email-shaped identifier that
+  // the sign-in form sends to Better Auth (which lower-cases on lookup).
+  const rawUsername = platform.getEnv('ZPAN_USERNAME')?.trim()
   const password = platform.getEnv('ZPAN_PASSWORD')
-  if (!email || !password) return { created: false, reason: 'missing_env' }
+  const identifier = rawUsername ? normalizeLoginIdentifier(rawUsername) : null
+  if (rawUsername && !identifier) {
+    console.error(
+      'admin.seed.invalid_username: ZPAN_USERNAME must be a username (letters, digits, ., _, -) or a full email address',
+    )
+  }
+  if (!identifier || !password) return { created: false, reason: 'missing_env' }
+  const email = identifier.email
 
   const db = platform.db
   const [row] = await db.select({ c: count() }).from(user)

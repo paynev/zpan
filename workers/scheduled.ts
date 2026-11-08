@@ -15,8 +15,14 @@ export interface ScheduledEnv {
   [key: string]: unknown
 }
 
+// These three expressions must stay in sync with [triggers].crons in
+// wrangler.toml. Any cron registered there without a matching branch below is
+// a no-op invocation that still consumes the account's cron trigger quota
+// (5 on Workers Free, shared across all Workers on the account).
 const STATS_ROLLUP_CRON = '10 * * * *'
 const TRASH_PURGE_CRON = '0 4 * * *'
+// INSTANCE_TELEMETRY_CRON ('0 */12 * * *') is imported from
+// server/usecases/site/instance-telemetry.ts.
 type ScheduledTrigger = Pick<ScheduledEvent, 'cron'>
 
 function envAllowsIp(value: string | undefined): boolean {

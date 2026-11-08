@@ -69,6 +69,14 @@ function readWrangler() {
   return readFileSync(WRANGLER_TOML, 'utf8')
 }
 
+// Workers Free caps cron triggers at 5 per ACCOUNT (all Workers combined).
+// `wrangler deploy` fails at the very end of a deploy when this is exceeded,
+// after the Worker has already been uploaded, so catch it before deploying.
+function readCronTriggers(source) {
+  const line = source.match(/^\s*crons\s*=\s*\[([^\]]*)\]/m)?.[1] ?? ''
+  return [...line.matchAll(/"([^"]+)"/g)].map((match) => match[1])
+}
+
 // Returns the text of the first top-level binding block, without its header.
 function topLevelBody(source, binding) {
   const start = source.indexOf(binding.header)
@@ -192,6 +200,16 @@ function check() {
     if (binding.required && current === null) {
       throw new Error(`${binding.label} is required: rate limiting namespaces are not auto-provisioned`)
     }
+  }
+  const crons = readCronTriggers(source)
+  const cronLimit = Number.parseInt(process.env.ZPAN_CRON_LIMIT ?? '5', 10)
+  console.log(`[workers-builds] cron triggers: ${crons.length} [${crons.join(', ')}]`)
+  if (crons.length > cronLimit) {
+    throw new Error(
+      `wrangler.toml registers ${crons.length} cron triggers but the account limit is ${cronLimit} ` +
+        '(Workers Free allows 5 per account, shared by all Workers). Remove unused crons, or set ' +
+        'ZPAN_CRON_LIMIT if the account is on Workers Paid.',
+    )
   }
   if (existsSync(GENERATED_CONFIG)) {
     verifyGeneratedConfig()

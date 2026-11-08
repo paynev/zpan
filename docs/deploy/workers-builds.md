@@ -21,7 +21,7 @@ You do **not** need to create the D1 database or the KV namespace by hand. Since
 ```toml
 [[d1_databases]]
 binding = "DB"
-database_name = "zpan-db"
+database_name = "zpan-dba"
 
 [[kv_namespaces]]
 binding = "CACHE_KV"
@@ -33,11 +33,11 @@ How it behaves:
 
 - On the first deploy, Wrangler calls the Cloudflare API to create the D1 database and KV namespace (named with the Worker name as prefix) and binds them to the Worker.
 - When deploying from the dashboard / GitHub, the generated IDs are visible in the dashboard but are **not written back to the repository**. That is expected: Wrangler keeps the resources linked by name across future deploys, so nothing needs committing. A local `wrangler deploy` will write the IDs back into the config file instead.
-- `wrangler dev` likewise creates local resources automatically, persisted between runs. See [Local development](#7-local-development).
+- `wrangler dev` likewise creates local resources automatically, persisted between runs. See [Local development](#6-local-development).
 
-**Not auto-provisioned:** `WEBDAV_RATE_LIMITER` (`[[ratelimits]]`). Rate limiting bindings are not in the supported list — and they do not need creating. `namespace_id` is simply an arbitrary positive integer you choose, unique within your Cloudflare account; it is a namespace label, not a pre-created resource. The committed `2801` works on any account. Change it only if it collides with another Worker on the same account (same `namespace_id` = shared counters).
+**Not auto-provisioned:** `WEBDAV_RATE_LIMITER` (`[[ratelimits]]`). Rate limiting bindings are not in the supported list — and they do not need creating. `namespace_id` is simply an arbitrary positive integer you choose, unique within your Cloudflare account; it is a namespace label, not a pre-created resource. The committed `2802` works on any account. Change it only if it collides with another Worker on the same account (same `namespace_id` = shared counters).
 
-**Optional — pin existing resources.** If you want to reuse a D1 database / KV namespace you already created, set the build variables `ZPAN_D1_DATABASE_ID`, `ZPAN_KV_NAMESPACE_ID` (and `ZPAN_RATELIMIT_NAMESPACE_ID` for a different namespace label), or commit the IDs back into `wrangler.toml`. The build phase upserts them into the **top-level** binding blocks only; the `[previews]` block is left untouched. With no overrides set, the script prints `Auto-provisioning mode` and does nothing to the config.
+**Optional — pin existing resources.** If you want to reuse a D1 database / KV namespace you already created, set the build variables `ZPAN_D1_DATABASE_ID`, `ZPAN_KV_NAMESPACE_ID` (and `ZPAN_RATELIMIT_NAMESPACE_ID` for a different namespace label), or commit the IDs back into `wrangler.toml`. The build phase upserts them into the **first** (top-level) binding block only. With no overrides set, the script prints `Auto-provisioning mode` and does nothing to the config.
 
 ### Grant the build token D1 access (if needed)
 
@@ -51,12 +51,39 @@ In the Worker's **Settings → Variables and Secrets** (not Build variables — 
 
 | Name | Value |
 | --- | --- |
-| `ZPAN_USERNAME` | Single administrator login identity (an email address) |
+| `ZPAN_USERNAME` | Single administrator login name — a plain username (e.g. `admin`) **or** an email address |
 | `ZPAN_PASSWORD` | Single administrator password |
 
 Set them **before the first request**. `ensureAdminSeed` creates the admin only when the `user` table is empty, and the seed promise is cached per isolate — adding secrets later requires a new deployment. Do **not** set `BETTER_AUTH_SECRET`: the app derives a stable 64-character signing key from these two values with HMAC-SHA256. An older deployment that still has an explicit `BETTER_AUTH_SECRET` secret will override the derived value; remove it with `pnpm exec wrangler secret delete BETTER_AUTH_SECRET` (this invalidates existing sessions).
 
-The `cloudflare.bindings` descriptions in `package.json` and `.dev.vars.example` let the Deploy-to-Cloudflare setup page prompt for these values.
+`ZPAN_USERNAME` accepts a username (letters, digits, dots, hyphens, underscores) or a full email address. A plain username is mapped to `<name>@zpan.local` internally because Better Auth's credential sign-in requires an email-shaped identifier; the seed and the sign-in form share the same normalisation, and both lower-case the value (Better Auth looks users up with `email.toLowerCase()`). No email is ever sent — outbound email was removed. So `admin` and `admin@zpan.local` denote the same account. Keep the value stable: it also derives the signing key, so changing it logs everyone out.
+
+The `cloudflare.bindings` descriptions in `package.json` and `.dev.vars.example` let the Deploy-to-Cloudflare setup page prompt for these values. Do **not** also declare them under `[vars]` in `wrangler.toml`: a same-named plaintext var collides with the secret binding and would be committed to git. Only non-sensitive settings such as `ZPAN_CACHE_MODE` belong in `[vars]`.
+
+### Cron triggers and the Free plan quota
+
+Workers Free allows **5 cron triggers per account** — shared by every Worker on the account, not 5 per Worker. Workers Paid allows 250. Wrangler registers `[triggers].crons` at the very end of a deploy, so exceeding the quota fails **after** the Worker has already been uploaded:
+
+```text
+✘ [ERROR] Trigger configuration for "zpan" was only partially updated:
+- This account has reached the Workers Free limit of 5 cron triggers per account. [code: 10072]
+Successful trigger changes were not rolled back.
+Failed: error occurred while running deploy command
+```
+
+This repo registers exactly three crons, each with a matching branch in `workers/scheduled.ts`:
+
+| Cron | Job |
+| --- | --- |
+| `10 * * * *` | Hourly stats rollup, expired WebDAV lock and resource-change cleanup |
+| `0 4 * * *` | Purge expired trash |
+| `0 */12 * * *` | Instance telemetry heartbeat |
+
+Older releases registered six (including `*/10 * * * *`, `0 */6 * * *`, `0 0 1 * *`); those three had no handler branch after the background-jobs / quota features were removed, so they were dropped. Never add a cron without a matching branch — it consumes quota and wakes the Worker for nothing.
+
+`pnpm workers-builds:check` prints the cron count and fails if it exceeds 5; set the build variable `ZPAN_CRON_LIMIT` on Workers Paid. If other Workers on the account already use cron triggers, budget accordingly or remove their unused ones in **Workers & Pages → &lt;Worker&gt; → Settings → Triggers**. A failed partial update leaves triggers registered and is not rolled back, so check that page after a failed deploy. If three is still too many, all three jobs can be folded into one hourly cron by branching on the UTC hour inside `workers/scheduled.ts`.
+
+A failed trigger update also aborts the rest of `pnpm workers-builds:deploy`: `wrangler deploy` exits non-zero, so the remote D1 migration step is skipped. Re-run the deployment (push again) after fixing the config — the new cron list replaces the partial one, and migrations will then run.
 
 ### Build variables
 
@@ -65,6 +92,7 @@ The `cloudflare.bindings` descriptions in `package.json` and `.dev.vars.example`
 | `NODE_VERSION` | `24` | `engines` requires Node >= 24; the Cloudflare build VM does not honour the Volta pin |
 | `CLOUDFLARE_ACCOUNT_ID` | your account ID | Needed by the remote D1 migration; the script warns if it is absent |
 | `ZPAN_D1_DATABASE_ID` / `ZPAN_KV_NAMESPACE_ID` | optional | Pin existing resources instead of auto-provisioning |
+| `ZPAN_CRON_LIMIT` | optional | Cron trigger ceiling checked by `workers-builds:check`; defaults to `5` (Workers Free), raise it on Workers Paid |
 | `ZPAN_SYNC_WEBDAV` | `1` | Optional WebDAV post-processing (see below) |
 
 `packageManager` is already an exact semver (`pnpm@10.30.2`), which is what corepack/Workers Builds needs to provision the right pnpm; `PNPM_VERSION` is not required.
@@ -103,7 +131,7 @@ Leaving the other platform workflows in place is harmless.
 
 ## 4. Preview builds
 
-Keep them disabled. The `[previews]` bindings in `wrangler.toml` and `wrangler.preview-migrations.json` still carry the upstream account's staging D1/KV/ratelimit IDs, and the Cloud staging / GitHub OAuth / Stripe / `preview-tasks` sections of [worker-previews.md](worker-previews.md) describe features that have since been removed. Unlike the top-level bindings, these preview blocks have explicit IDs and therefore will **not** be auto-provisioned. If you enable Previews, remove those IDs or replace them with your own first.
+Keep them disabled. `wrangler.toml` has no `[previews]` block, and the leftover `wrangler.preview-migrations.json` plus the Cloud staging / GitHub OAuth / Stripe / `preview-tasks` sections of [worker-previews.md](worker-previews.md) describe an upstream topology whose features have since been removed. Preview builds would also register their own cron triggers against the same 5-per-account Free quota. If you ever enable Previews, define the preview bindings explicitly first.
 
 ## 5. Optional: dedicated WebDAV domain
 
@@ -119,6 +147,7 @@ Prerequisites: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` available to t
 
 | Symptom | Fix |
 | --- | --- |
+| `Workers Free limit of 5 cron triggers per account` (code 10072) at the end of deploy | The Worker was uploaded but the deploy command failed and **D1 migrations did not run**. Keep `[triggers].crons` at 3 (see [Cron triggers](#cron-triggers-and-the-free-plan-quota)), delete leftover triggers in the dashboard, then re-run the deployment |
 | 403 / authorization error while creating D1 or migrating | Add `Account → D1 → Edit` to the `Workers Builds` token |
 | `D1 database not found` on the very first deploy | Migrations must run **after** `wrangler deploy`; use `pnpm workers-builds:deploy` rather than an older `pnpm deploy` ordering |
 | Rate limit counters shared with another Worker | `WEBDAV_RATE_LIMITER` `namespace_id` is an arbitrary account-local integer; pick a unique one |
@@ -128,7 +157,8 @@ Prerequisites: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` available to t
 | `ERR_PNPM_IGNORED_BUILDS` | pnpm 10 blocks dependency build scripts; this repo declares `onlyBuiltDependencies` — verify the lockfile is unchanged |
 | Deploy succeeds but nobody can sign in | Runtime secrets missing or set too late; set them under **Variables and Secrets**, then redeploy |
 | `Generated config is missing the DB or CACHE_KV binding` | Build phase did not run, or `wrangler.toml` top-level bindings were renamed |
-| Login works locally but not on the deployment | `ZPAN_USERNAME` must be an email address; both values also derive the signing key, so changing either logs everyone out |
+| `pnpm test:cf` fails locally: `requires compatibility date ... newest date supported by this server binary is ...` | The workerd binary bundled with `vitest-pool-workers` is older than `compatibility_date` in `wrangler.toml`. Production is unaffected (a deploy uploads the Worker; it does not boot a local runtime). Temporarily lower `compatibility_date` for local tests, or update the pool/workerd packages |
+| Login works locally but not on the deployment | Runtime secrets are build-time only or were added after the first seed; both values also derive the signing key, so changing either logs everyone out. Plain usernames are allowed (`admin` → `admin@zpan.local`) |
 
 ## References
 
@@ -137,3 +167,4 @@ Prerequisites: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` available to t
 - [Deploy to Cloudflare buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
 - [Workers Builds configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
 - [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+- [Workers platform limits](https://developers.cloudflare.com/workers/platform/limits/) (cron triggers: 5 per account on Free, 250 on Paid)

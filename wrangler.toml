@@ -42,9 +42,11 @@ namespace_id = "2802"
 limit = 3600
 period = 60
 
+# ZPAN_USERNAME / ZPAN_PASSWORD are runtime SECRETS set in the dashboard.
+# Do not declare them as [vars]: a same-named plaintext var collides with the
+# secret binding, and the committed value would be public in git.
 [vars]
 ZPAN_CACHE_MODE = "distributed"
-ZPAN_USERNAME = "admin"
 
 [observability]
 enabled = true
@@ -53,7 +55,14 @@ enabled = true
 enabled = true
 head_sampling_rate = 0.1
 
+# Workers Free allows 5 cron triggers per ACCOUNT (shared by every Worker on
+# the account), Workers Paid allows 250. Keep this list minimal: each entry is
+# matched by a branch in workers/scheduled.ts, and an unmatched cron only burns
+# quota while waking the Worker for nothing.
+#   10 * * * *   hourly stats rollup + WebDAV lock / resource-change cleanup
+#   0 4 * * *    expired trash purge
+#   0 */12 * * * instance telemetry heartbeat
 [triggers]
-crons = ["*/10 * * * *", "10 * * * *", "0 */6 * * *", "0 */12 * * *", "0 0 1 * *", "0 4 * * *"]
+crons = ["10 * * * *", "0 4 * * *", "0 */12 * * *"]
 
 

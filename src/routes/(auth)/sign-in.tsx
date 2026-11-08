@@ -1,4 +1,5 @@
 import { DEFAULT_SITE_NAME } from '@shared/constants'
+import { normalizeLoginIdentifier } from '@shared/login-identifier'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -33,9 +34,16 @@ function SignIn() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
+    // Better Auth requires an email-shaped identifier. A plain username is
+    // mapped to the same synthetic address the startup seed uses.
+    const identifier = normalizeLoginIdentifier(email)
+    if (!identifier) {
+      setError(t('auth.invalidLoginIdentifier'))
+      return
+    }
     setLoading(true)
     try {
-      const result = await signIn.email({ email, password, callbackURL })
+      const result = await signIn.email({ email: identifier.email, password, callbackURL })
       if (result.error) {
         setError(
           result.error.code === 'EMAIL_NOT_VERIFIED'
@@ -67,10 +75,13 @@ function SignIn() {
             <Label htmlFor="email">{t('auth.emailOrUsername')}</Label>
             <Input
               id="email"
-              type="email"
+              type="text"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder={t('auth.emailOrUsernamePlaceholder')}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               required
             />
           </div>

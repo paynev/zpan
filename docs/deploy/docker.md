@@ -89,9 +89,11 @@ Or create one in the [Turso dashboard](https://app.turso.tech).
 
 ZPan is single-admin: self-service sign-up is disabled entirely.
 
-- `ZPAN_USERNAME` (an email address) and `ZPAN_PASSWORD` are **required**. They
-  seed the administrator on first start, only when the user table is empty;
-  later restarts are a no-op.
+- `ZPAN_USERNAME` (a plain username such as `admin`, or an email address) and
+  `ZPAN_PASSWORD` are **required**. They seed the administrator on first start,
+  only when the user table is empty; later restarts are a no-op. Plain usernames
+  are mapped internally to `<name>@zpan.local` and lower-cased; allowed
+  characters are letters, digits, dots, hyphens and underscores.
 - The same pair derives `BETTER_AUTH_SECRET` with HMAC-SHA256, producing a stable
   64-character hex signing key. No separate secret needs to be generated,
   mounted or backed up. An explicit `BETTER_AUTH_SECRET` overrides the derived

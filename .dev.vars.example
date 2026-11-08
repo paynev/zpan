@@ -2,10 +2,12 @@
 # Copy this file to `.dev.vars` (gitignored) and fill in real values.
 
 # Required: the single administrator account, seeded on first boot only.
-# ZPAN_USERNAME is the login identity — the sign-in form uses an email input,
-# so use an email address. Set both before the first start; self-service
-# sign-up is disabled afterwards.
-ZPAN_USERNAME=admin@example.com
+# ZPAN_USERNAME is the login identity: a plain username (e.g. "admin") or a
+# full email address. Plain usernames are mapped internally to <name>@zpan.local
+# and may contain letters, digits, dots, hyphens and underscores only. Values
+# are lower-cased before seeding/sign-in. Set both before the first start;
+# self-service sign-up is disabled afterwards.
+ZPAN_USERNAME=admin
 ZPAN_PASSWORD=
 
 # BETTER_AUTH_SECRET is derived automatically from the two values above with

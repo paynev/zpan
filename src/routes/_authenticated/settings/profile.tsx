@@ -1,4 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod'
+import { displayLoginIdentifier } from '@shared/login-identifier'
 import { useMutation } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { ExternalLink } from 'lucide-react'
@@ -110,7 +111,9 @@ export function UsernameCard() {
 function EmailCard() {
   const { t } = useTranslation()
   const { data: session } = useSession()
-  const email = session?.user?.email ?? ''
+  // A username-only admin is seeded with a synthetic `user.email`; show the
+  // login name the administrator actually types instead of that address.
+  const loginIdentifier = displayLoginIdentifier(session?.user?.email ?? '')
 
   return (
     <Card>
@@ -119,7 +122,7 @@ function EmailCard() {
         <CardDescription>{t('settings.profile.email.description')}</CardDescription>
       </CardHeader>
       <CardContent>
-        <Input value={email} disabled />
+        <Input value={loginIdentifier} disabled />
       </CardContent>
       <CardFooter className="border-t bg-muted/30">
         <p className="text-sm text-muted-foreground">{t('settings.profile.emailReadonly')}</p>
