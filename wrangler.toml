@@ -47,6 +47,7 @@ period = 60
 # secret binding, and the committed value would be public in git.
 [vars]
 ZPAN_CACHE_MODE = "distributed"
+ZPAN_USERNAME = "admin"
 
 [observability]
 enabled = true
