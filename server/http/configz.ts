@@ -40,7 +40,6 @@ export const configz = new OpenAPIHono<Env>().openapi(getRoute, async (c) => {
         ...storedConfig.services.webdav,
         ...(previewOrigin ? { url: `${previewOrigin}/dav/` } : {}),
       },
-      archive: { enabled: c.get('platform').getEnv('ZPAN_ARCHIVE_JOBS_ENABLED') !== 'false' },
     },
   }
   const body = JSON.stringify(config)

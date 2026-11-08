@@ -110,7 +110,8 @@ function openApiSecurity(auth: RouteAuthorizationDeclaration): { security?: Reco
   return { security: openApiPolicySecurity(auth) }
 }
 
-function openApiPolicySecurity(policy: ScopedAuthorizationPolicy): Record<string, string[]>[] {
-  if (policy.credential === 'downloader') return [{ bearerAuth: [] }]
-  return [...(policy.oauth === false ? [] : [{ oauth2: [...policy.scopes] }]), { bearerAuth: [] }, { cookieAuth: [] }]
+function openApiPolicySecurity(_policy: ScopedAuthorizationPolicy): Record<string, string[]>[] {
+  // OAuth2 is no longer supported; every authenticated route accepts a session
+  // cookie or a bearer API key.
+  return [{ bearerAuth: [] }, { cookieAuth: [] }]
 }

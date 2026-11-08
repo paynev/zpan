@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { pairAndApprove, signInAsAdmin, signUpAndGoToFiles, unbindCurrentCloudBinding } from './helpers'
+import { signInAsAdmin, signUpAndGoToFiles } from './helpers'
 
 test.describe('Site announcements', () => {
   test('admin publishes an announcement and user sees it in the announcement modal @desktop', async ({ page }) => {
@@ -11,7 +11,6 @@ test.describe('Site announcements', () => {
 
     try {
       await signInAsAdmin(page)
-      await pairAndApprove(page)
       await page.goto('/admin/announcement')
       await expect(page).toHaveURL(/admin\/announcement/, { timeout: 10000 })
 
@@ -68,7 +67,6 @@ test.describe('Site announcements', () => {
         }, announcementId)
         expect(deleteResult).toBe(204)
       }
-      await unbindCurrentCloudBinding()
     }
   })
 })

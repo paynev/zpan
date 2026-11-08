@@ -57,27 +57,14 @@ export async function resolveActorProfiles(
     }
   }
 
-  const deviceActors = identities.flatMap((identity) =>
-    identity.type === 'device' && identity.ref ? [{ identity, ref: identity.ref }] : [],
-  )
-  if (deviceActors.length > 0) {
-    const names = await deps.auditActorDirectory.findDeviceNames(deviceActors.map((actor) => actor.ref))
-    for (const actor of deviceActors) {
-      const name = names.get(actor.ref)
-      if (name)
-        profiles.set(auditActorIdentityKey(actor.identity), {
-          name: `Device · ${name}`,
-          image: null,
-          resolved: true,
-        })
-    }
-  }
-
   const agentActors = identities.filter(
     (identity) => (identity.type === 'oauth' || identity.type === 'agent') && identity.ref && identity.issuer,
   )
   if (agentActors.length > 0) {
-    const trustedOrigins = await deps.auditActorDirectory.listTrustedAgentIssuerOrigins()
+    // OAuth client registrations were removed with the licensing/OAuth stack, so
+    // there is no trusted-issuer directory anymore; agent profiles fall back to
+    // the stable issuer/subject display handled by the gateway.
+    const trustedOrigins: ReadonlySet<string> = new Set()
     const agentProfiles = await deps.agentInfo.resolve(agentActors, trustedOrigins)
     for (const [key, profile] of agentProfiles) profiles.set(key, profile)
   }

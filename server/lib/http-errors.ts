@@ -7,15 +7,7 @@ import {
   type ErrorResponse,
 } from '@shared/schemas'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import {
-  AppError,
-  BackgroundJobError,
-  DownloadError,
-  NameConflictError,
-  ObjectUploadSessionError,
-  StorageQuotaExceededError,
-  WebDavPathError,
-} from '../usecases/ports'
+import { AppError, NameConflictError, ObjectUploadSessionError, WebDavPathError } from '../usecases/ports'
 
 // Per-error overrides for the AIP-193 body. `reason` defaults to the canonical
 // `status`; `status` defaults to the HTTP-status mapping; `domain` to zpan.dev.
@@ -75,9 +67,6 @@ export function mapDomainError(error: unknown): DomainErrorMapping | null {
       metadata: error.meta.metadata,
     })
   }
-  if (error instanceof StorageQuotaExceededError) {
-    return mapping(422, 'Quota exceeded', { reason: ErrorReason.QUOTA_EXCEEDED, status: 'RESOURCE_EXHAUSTED' })
-  }
   if (error instanceof NameConflictError) {
     const metadata: Record<string, string> = { conflictingName: error.conflictingName }
     if (error.conflictingId) metadata.conflictingId = error.conflictingId
@@ -94,21 +83,6 @@ export function mapDomainError(error: unknown): DomainErrorMapping | null {
   }
   if (error instanceof WebDavPathError) {
     return mapping(error.status as ContentfulStatusCode, error.message)
-  }
-  if (error instanceof DownloadError) {
-    const reason = error.code.toUpperCase()
-    if (error.code === 'not_found') return mapping(404, 'Not found', { reason })
-    if (error.code === 'forbidden') return mapping(403, 'Forbidden', { reason })
-    return mapping(409, error.message, { reason })
-  }
-  if (error instanceof BackgroundJobError) {
-    if (error.code === 'not_cancelable') {
-      return mapping(409, 'Background job cannot be canceled', { reason: 'NOT_CANCELABLE' })
-    }
-    if (error.code === 'not_retryable') {
-      return mapping(409, 'Background job cannot be retried', { reason: 'NOT_RETRYABLE' })
-    }
-    return mapping(404, 'Not found')
   }
   return null
 }

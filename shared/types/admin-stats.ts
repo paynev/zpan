@@ -1,12 +1,3 @@
-export interface AdminUsageBySpace {
-  orgId: string
-  orgName: string
-  orgType: string
-  usedBytes: number
-  quotaBytes: number
-  utilization: number | null
-}
-
 export interface AdminTopShare {
   id: string
   token: string
@@ -129,7 +120,6 @@ export interface AdminDashboardStorageStats extends AdminStatsRange {
   typeBreakdown: Array<{ type: string; bytes: number; files: number; percent: number }>
   sizeBreakdown: Array<{ name: string; bytes: number; files: number; percent: number }>
   ageBreakdown: Array<{ name: string; bytes: number; files: number; percent: number }>
-  topSpaces: AdminUsageBySpace[]
 }
 
 export interface AdminDashboardTrafficStats extends AdminStatsRange {

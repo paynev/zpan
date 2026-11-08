@@ -1,6 +1,6 @@
 import { DirType } from '@shared/constants'
 import type { StorageObject } from '@shared/types'
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
   getCoreRowModel,
@@ -23,10 +23,9 @@ import { Card } from '@/components/ui/card'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { UploadDropzone, type UploadDropzoneHandle } from '@/components/upload/upload-dropzone'
 import type { UploadRunnerContext } from '@/components/upload/upload-queue'
-import { useSiteConfig } from '@/hooks/use-site-config'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 import { useServerEventSubscription } from '@/hooks/useServerEvents'
-import { createBackgroundJob, deleteObject, getObject, listObjectsByPath, updateObject } from '@/lib/api'
+import { deleteObject, getObject, listObjectsByPath, updateObject } from '@/lib/api'
 import { runSequentialOperation } from '@/lib/sequential-operation'
 import { cn } from '@/lib/utils'
 import { getColumns } from './columns'
@@ -40,7 +39,6 @@ import { FilesToolbar } from './files-toolbar'
 import { useConflictResolver, withConflictRetry } from './hooks/use-conflict-resolver'
 import { useFileMutations } from './hooks/use-file-mutations'
 import { useViewMode } from './hooks/use-view-mode'
-import { TransferSpaceDialog } from './transfer-space-dialog'
 import type { BreadcrumbItem, FileActionHandlers } from './types'
 
 const FILES_PAGE_SIZE = 100
@@ -135,12 +133,10 @@ interface FileManagerProps {
     rename?: boolean
     copy?: boolean
     move?: boolean
-    transfer?: boolean
     trash?: boolean
     share?: boolean
     copyUrl?: boolean
     delete?: boolean
-    archive?: boolean
   }
   emptyStateLabel?: string
   getThumbnailUrl?: (item: StorageObject) => string | null
@@ -171,8 +167,6 @@ export function FileManager({
   const { t } = useTranslation()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { data: siteConfig } = useSiteConfig()
-  const archivesEnabled = siteConfig?.services.archive?.enabled !== false
   const dropzoneRef = useRef<UploadDropzoneHandle>(null)
 
   const currentPath = initialPath ?? ''
@@ -190,14 +184,12 @@ export function FileManager({
       rename: capabilities?.rename ?? !dataSource,
       copy: capabilities?.copy ?? !dataSource,
       move: capabilities?.move ?? !dataSource,
-      transfer: capabilities?.transfer ?? !dataSource,
       trash: capabilities?.trash ?? !dataSource,
       share: capabilities?.share ?? !dataSource,
       copyUrl: capabilities?.copyUrl ?? false,
       delete: capabilities?.delete ?? false,
-      archive: archivesEnabled && (capabilities?.archive ?? !dataSource),
     }),
-    [capabilities, dataSource, archivesEnabled],
+    [capabilities, dataSource],
   )
 
   const [viewMode, setViewMode] = useViewMode(viewModeStorageKey)
@@ -224,7 +216,6 @@ export function FileManager({
   const [moveTargetIds, setMoveTargetIds] = useState<string[]>([])
   const [showNewFolder, setShowNewFolder] = useState(false)
   const [shareTarget, setShareTarget] = useState<StorageObject | null>(null)
-  const [transferTarget, setTransferTarget] = useState<StorageObject | null>(null)
   const [detailsTarget, setDetailsTarget] = useState<StorageObject | null>(null)
   const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -252,29 +243,6 @@ export function FileManager({
   })
   const operationCancelRef = useRef(false)
   const [operationState, setOperationState] = useState<OperationProgressState | null>(null)
-  const archiveMutation = useMutation({
-    mutationFn: (
-      input: { type: 'archive_compress'; matterIds: string[] } | { type: 'archive_extract'; matterId: string },
-    ) => createBackgroundJob(input),
-    onMutate: () => {
-      queryClient.setQueryData<number>(['background-jobs', 'active-count'], (count) => (count ?? 0) + 1)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['objects'] })
-      queryClient.invalidateQueries({ queryKey: ['background-jobs'] })
-      toast.success(t('tasks.created'), {
-        action: {
-          label: t('tasks.viewTasks'),
-          onClick: () => navigate({ to: '/tasks' }),
-        },
-      })
-    },
-    onError: (err) => {
-      queryClient.setQueryData<number>(['background-jobs', 'active-count'], (count) => Math.max(0, (count ?? 1) - 1))
-      toast.error(err.message)
-    },
-  })
-
   // biome-ignore lint/correctness/useExhaustiveDependencies: clear selection when path changes
   useEffect(() => {
     setRowSelection({})
@@ -368,16 +336,9 @@ export function FileManager({
           }
         : undefined,
       onMove: resolvedCapabilities.move ? (item) => setMoveTargetIds([item.id]) : undefined,
-      onTransfer: resolvedCapabilities.transfer ? (item) => setTransferTarget(item) : undefined,
       onDownload: handleDownload,
       onShare: resolvedCapabilities.share ? (item) => setShareTarget(item) : undefined,
       onCopyUrl: resolvedCapabilities.copyUrl && onCopyUrl ? onCopyUrl : undefined,
-      onCompress: resolvedCapabilities.archive
-        ? (item) => archiveMutation.mutate({ type: 'archive_compress', matterIds: [item.id] })
-        : undefined,
-      onExtract: resolvedCapabilities.archive
-        ? (item) => archiveMutation.mutate({ type: 'archive_extract', matterId: item.id })
-        : undefined,
     }),
     [
       handleOpen,
@@ -385,7 +346,6 @@ export function FileManager({
       resolvedCapabilities,
       onDeleteItems,
       onCopyUrl,
-      archiveMutation,
       mutations.copyMutation,
       conflict.prompt,
       conflict.reset,
@@ -419,10 +379,6 @@ export function FileManager({
     const item = items.find((i) => i.id === id) ?? null
     setShareTarget(item)
   }, [selectedIds, items])
-
-  const handleBatchCompress = useCallback(() => {
-    archiveMutation.mutate({ type: 'archive_compress', matterIds: selectedIds })
-  }, [archiveMutation, selectedIds])
 
   const runFileOperation = useCallback(
     async (
@@ -630,7 +586,6 @@ export function FileManager({
           totalItems={items.length}
           onBatchTrash={resolvedCapabilities.trash ? () => setDeleteTargetIds(selectedIds) : undefined}
           onBatchMove={resolvedCapabilities.move ? () => setMoveTargetIds(selectedIds) : undefined}
-          onBatchCompress={resolvedCapabilities.archive ? handleBatchCompress : undefined}
           onClearSelection={resolvedCapabilities.selection ? () => setRowSelection({}) : undefined}
           onShare={resolvedCapabilities.share ? handleToolbarShare : undefined}
         />
@@ -744,14 +699,6 @@ export function FileManager({
           conflictDialogState={conflict.dialogState}
         />
       ) : null}
-
-      <TransferSpaceDialog
-        item={transferTarget}
-        onOpenChange={(open) => {
-          if (!open) setTransferTarget(null)
-        }}
-        onCompleted={() => mutations.invalidate()}
-      />
 
       <FilePreviewDialog file={previewFile} open={previewOpen} onOpenChange={setPreviewOpen} />
       <FileDetailsSheet

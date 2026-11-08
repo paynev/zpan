@@ -1,8 +1,19 @@
 # Local development secrets for `wrangler dev` / `vite dev`.
 # Copy this file to `.dev.vars` (gitignored) and fill in real values.
 
-# Required: better-auth signing secret. Generate with: openssl rand -base64 32
-BETTER_AUTH_SECRET=
+# Required: the single administrator account, seeded on first boot only.
+# ZPAN_USERNAME is the login identity — the sign-in form uses an email input,
+# so use an email address. Set both before the first start; self-service
+# sign-up is disabled afterwards.
+ZPAN_USERNAME=admin@example.com
+ZPAN_PASSWORD=
+
+# BETTER_AUTH_SECRET is derived automatically from the two values above with
+# HMAC-SHA256, producing a stable 64-character hex signing key. Do not set it
+# unless you need to override the derived value (e.g. migrating an existing
+# deployment). Changing either credential rotates the key and invalidates all
+# existing sessions.
+# BETTER_AUTH_SECRET=
 
 # Local ZPan URL.
 BETTER_AUTH_URL=http://localhost:5185
@@ -10,15 +21,6 @@ TRUSTED_ORIGINS=http://localhost:5185
 # Optional comma-separated hosts accepted by the Vite development server.
 # Cloudflare Quick Tunnel (*.trycloudflare.com) is already allowed in development.
 ZPAN_DEV_ALLOWED_HOSTS=
-
-# Local ZPan Cloud URL.
-ZPAN_CLOUD_URL=http://localhost:5186
-
-# Trusted license signing public keys (PASERK k4.public.*, comma-separated).
-# Dev keys are configured here — NOT hardcoded in source — so a leaked dev key is
-# rotated via config and never trusted by production builds. Pair this with the
-# matching LICENSE_SIGNING_KEY in zpan-cloud/.dev.vars (run `npm run gen-keypair`).
-ZPAN_LICENSE_PUBLIC_KEYS=
 
 # Explicit Node runtime only; Workers always use simulated D1.
 # DATABASE_URL=./.local/node/zpan.db

@@ -1,7 +1,7 @@
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { ApiKeyTemplate, WEBDAV_RATE_LIMITER_BINDING } from '../../shared/api-key-templates'
-import { DirType, ZPAN_CLOUD_URL_DEFAULT } from '../../shared/constants'
+import { DirType } from '../../shared/constants'
 import { encodeDavPathSegment, joinMatterPath, workspaceHref } from '../domain/webdav'
 import { WEBDAV_AUTH_CHALLENGE, type WebDavMountPath, webDavPublicUrl } from '../domain/webdav-public-url'
 import {
@@ -26,13 +26,13 @@ import { isDownloadFailureStatus, transferAuditActor, transferFailureReason } fr
 import type { Env } from '../middleware/platform'
 import {
   ApiKeyRateLimitError,
-  insufficientCredits,
   type RecordAuditEventInput,
   type StorageRecord,
   WebDavPathError,
   type WebDavTarget,
 } from '../usecases/ports'
 import {
+  createTrafficEventId,
   recordAuditEvent,
   recordDownloadFailure,
   recordDownloadIssued,
@@ -53,12 +53,9 @@ import {
   invalidateWebDavPaths,
   listDeadPropertiesForResources,
   listUserWebDavWorkspaces,
-  meterWebDavDownload,
   moveWebDavMatter,
   putWebDavFile,
-  recordWebDavDownloadIssued,
   refreshWebDavLock,
-  refundWebDavTraffic,
   removeWebDavLock,
   resolveExistingWebDavPath,
   resolveWebDavAuth,
@@ -107,8 +104,6 @@ interface NativeRateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>
 }
 
-const cloudBaseUrl = (c: DavContext): string => c.get('platform').getEnv('ZPAN_CLOUD_URL') ?? ZPAN_CLOUD_URL_DEFAULT
-
 async function requireWebDavApiKey(c: DavContext): Promise<DavAuth | Response> {
   const method = c.req.method.toUpperCase()
   const requiredScope = WEBDAV_METHOD_SCOPES[method]
@@ -130,7 +125,6 @@ async function requireWebDavApiKey(c: DavContext): Promise<DavAuth | Response> {
   const result = await resolveWebDavAuth(c.get('deps'), {
     auth: c.get('auth'),
     db: c.get('platform').db,
-    username: credentials.username,
     password: credentials.password,
     requiredScopes: requiredScope,
     configId: ApiKeyTemplate.WEBDAV,
@@ -146,9 +140,7 @@ async function requireWebDavApiKey(c: DavContext): Promise<DavAuth | Response> {
     kind: 'api-key',
     keyId: result.keyId,
     configId: result.configId,
-    orgId: null,
     userId: result.userId,
-    scope: { mode: 'user-workspaces' },
     permissions: result.permissions,
     authMethod: 'api-key',
   })
@@ -551,7 +543,7 @@ async function targetActiveLocks(c: DavContext, target: WebDavTarget) {
   const key = `${workspace.id}\0${path}`
   const cached = c.get('webDavLocksByResource').get(key)
   if (cached) return cached
-  const locks = await activeLocks(c.get('deps'), { orgId: workspace.id, resourcePath: path })
+  const locks = await activeLocks(c.get('deps'), { resourcePath: path })
   c.get('webDavLocksByResource').set(key, locks)
   return locks
 }
@@ -643,11 +635,9 @@ async function davEntries(c: DavContext, targets: WebDavTarget[], request: Propf
       const paths = workspaceTargets.map(resourcePath)
       const [deadPropertiesByPath, locksByPath] = await Promise.all([
         needsDeadProperties
-          ? listDeadPropertiesForResources(c.get('deps'), { orgId: workspace.id, resourcePaths: paths })
+          ? listDeadPropertiesForResources(c.get('deps'), { resourcePaths: paths })
           : Promise.resolve(new Map()),
-        needsLocks
-          ? activeLocksForResources(c.get('deps'), { orgId: workspace.id, resourcePaths: paths })
-          : Promise.resolve(new Map()),
+        needsLocks ? activeLocksForResources(c.get('deps'), { resourcePaths: paths }) : Promise.resolve(new Map()),
       ])
       return workspaceTargets.map((target) => {
         const path = resourcePath(target)
@@ -764,7 +754,6 @@ async function resolveWebDavActionAudit(
     const created = await resolveExistingWebDavPath(c.get('deps'), { userId, rawPath: davPath(c) })
     if (!created.matter) return null
     return {
-      orgId: workspace.id,
       action: 'create',
       targetType: 'folder',
       targetId: created.matter.id,
@@ -777,7 +766,6 @@ async function resolveWebDavActionAudit(
   const targetType = matter.dirtype === DirType.FILE ? 'file' : 'folder'
   if (prepared.method === 'DELETE') {
     return {
-      orgId: workspace.id,
       action: 'delete',
       targetType,
       targetId: matter.id,
@@ -789,7 +777,6 @@ async function resolveWebDavActionAudit(
   const destination = await resolveExistingWebDavPath(c.get('deps'), { userId, rawPath: prepared.destination })
   if (!destination.matter) return null
   return {
-    orgId: workspace.id,
     action: prepared.method === 'MOVE' ? 'object_update' : 'object_copy',
     targetType,
     targetId: destination.matter.id,
@@ -829,7 +816,6 @@ function putAuditTarget(target: WebDavTarget | null): TransferAuditTarget | null
   if (!target) return null
   if (!target.workspace || !target.name) return null
   return {
-    orgId: target.workspace.id,
     targetType: 'file',
     targetId: target.matter?.id,
     targetName: target.matter?.name ?? target.name,
@@ -963,14 +949,13 @@ async function proppatch(c: DavContext, auth: DavAuth): Promise<Response> {
   try {
     const target = await resolveWebDavPath(c.get('deps'), { userId: auth.userId, rawPath: davPath(c) })
     if (target.name && !target.matter) throw new WebDavPathError('Not found', 404)
-    const workspace = requireWorkspace(target)
+    requireWorkspace(target)
     const locked = await lockPrecondition(c, target)
     if (locked) return locked
     const ifFailed = await ifHeaderPrecondition(c, auth, target)
     if (ifFailed) return ifFailed
     const operations = parseProppatchXml(await c.req.text())
     await applyWebDavDeadProperties(c.get('deps'), {
-      orgId: workspace.id,
       resourcePath: resourcePath(target),
       operations,
       matterId: target.matter?.id ?? null,
@@ -1005,9 +990,8 @@ async function readFile(c: DavContext, auth: DavAuth): Promise<Response> {
           return c.text('Storage not found', 404)
       }
     }
-    const { matter, workspace, storage } = resolved
+    const { matter, storage } = resolved
     c.set('webDavDownloadAuditTarget', {
-      orgId: workspace.id,
       targetType: 'file',
       targetId: matter.id,
       targetName: matter.name,
@@ -1037,46 +1021,27 @@ async function readFile(c: DavContext, auth: DavAuth): Promise<Response> {
 
     if (rangeRequest.action === 'none' || rangeRequest.action === 'ignore') {
       startedAt = performance.now()
-      const reservation = await reserveWebDavTraffic(c, auth.userId, workspace.id, matter, storage, size)
-      c.get('webDavTrace').push(`traffic:${Math.round(performance.now() - startedAt)}`)
-      if (reservation.error) return reservation.error
-      try {
-        startedAt = performance.now()
-        const body = await getWebDavObjectBody(c.get('deps'), { storage, object: matter.object })
-        c.get('webDavTrace').push(`s3:${Math.round(performance.now() - startedAt)}`)
-        startedAt = performance.now()
-        await waitUntilOrAwait(
-          c,
-          'download_finish',
-          finishWebDavDownload(c, {
-            orgId: workspace.id,
-            userId: auth.userId,
-            matterId: matter.id,
-            matterName: matter.name,
-            storageId: storage.id,
-            bytes: size,
-            trafficEventId: reservation.trafficEventId,
-          }),
-        )
-        c.get('webDavTrace').push(`finish:${Math.round(performance.now() - startedAt)}`)
-        return new Response(fixedLengthResponseBody(body, size), { headers })
-      } catch (e) {
-        await refundWebDavTraffic(c.get('deps'), {
-          orgId: workspace.id,
+      const body = await getWebDavObjectBody(c.get('deps'), { storage, object: matter.object })
+      c.get('webDavTrace').push(`s3:${Math.round(performance.now() - startedAt)}`)
+      startedAt = performance.now()
+      await waitUntilOrAwait(
+        c,
+        'download_finish',
+        finishWebDavDownload(c, {
+          userId: auth.userId,
+          matterId: matter.id,
+          matterName: matter.name,
+          storageId: storage.id,
           bytes: size,
-          trafficEventId: reservation.trafficEventId,
-        })
-        throw e
-      }
+        }),
+      )
+      c.get('webDavTrace').push(`finish:${Math.round(performance.now() - startedAt)}`)
+      return new Response(fixedLengthResponseBody(body, size), { headers })
     }
 
     if (rangeRequest.action === 'reject') return rangeNotSatisfiable(size)
     if (rangeRequest.action !== 'serve') throw new Error('Unexpected range request action')
     const trafficBytes = rangeContentBytes(rangeRequest.ranges)
-    startedAt = performance.now()
-    const reservation = await reserveWebDavTraffic(c, auth.userId, workspace.id, matter, storage, trafficBytes)
-    c.get('webDavTrace').push(`traffic:${Math.round(performance.now() - startedAt)}`)
-    if (reservation.error) return reservation.error
     if (rangeRequest.ranges.length > 1) {
       const boundary = `zpan-webdav-${matter.id}`
       const contentLength = multipartRangeContentLength(boundary, matter.type, rangeRequest.ranges, size)
@@ -1084,78 +1049,46 @@ async function readFile(c: DavContext, auth: DavAuth): Promise<Response> {
       headers.set('Content-Type', `multipart/byteranges; boundary=${boundary}`)
       headers.set('Content-Length', String(contentLength))
       headers.delete('Content-Range')
-      try {
-        startedAt = performance.now()
-        await waitUntilOrAwait(
-          c,
-          'download_finish',
-          finishWebDavDownload(c, {
-            orgId: workspace.id,
-            userId: auth.userId,
-            matterId: matter.id,
-            matterName: matter.name,
-            storageId: storage.id,
-            bytes: trafficBytes,
-            trafficEventId: reservation.trafficEventId,
-          }),
-        )
-        c.get('webDavTrace').push(`finish:${Math.round(performance.now() - startedAt)}`)
-      } catch (error) {
-        await refundWebDavTraffic(c.get('deps'), {
-          orgId: workspace.id,
-          bytes: trafficBytes,
-          trafficEventId: reservation.trafficEventId,
-        })
-        throw error
-      }
-      return new Response(fixedLengthResponseBody(body, contentLength), { status: 206, headers })
-    }
-
-    const [range] = rangeRequest.ranges
-    const contentLength = range.end - range.start + 1
-    let body: BodyInit
-    try {
-      startedAt = performance.now()
-      body = await getWebDavObjectBody(c.get('deps'), {
-        storage,
-        object: matter.object,
-        range: `bytes=${range.start}-${range.end}`,
-      })
-      c.get('webDavTrace').push(`s3:${Math.round(performance.now() - startedAt)}`)
-    } catch (e) {
-      await refundWebDavTraffic(c.get('deps'), {
-        orgId: workspace.id,
-        bytes: contentLength,
-        trafficEventId: reservation.trafficEventId,
-      })
-      throw e
-    }
-    headers.set('Content-Length', String(contentLength))
-    headers.set('Content-Range', `bytes ${range.start}-${range.end}/${size}`)
-    try {
       startedAt = performance.now()
       await waitUntilOrAwait(
         c,
         'download_finish',
         finishWebDavDownload(c, {
-          orgId: workspace.id,
           userId: auth.userId,
           matterId: matter.id,
           matterName: matter.name,
           storageId: storage.id,
-          bytes: contentLength,
-          trafficEventId: reservation.trafficEventId,
+          bytes: trafficBytes,
         }),
       )
       c.get('webDavTrace').push(`finish:${Math.round(performance.now() - startedAt)}`)
-    } catch (error) {
-      await refundWebDavTraffic(c.get('deps'), {
-        orgId: workspace.id,
-        bytes: contentLength,
-        trafficEventId: reservation.trafficEventId,
-      })
-      throw error
+      return new Response(fixedLengthResponseBody(body, contentLength), { status: 206, headers })
     }
+
+    const [range] = rangeRequest.ranges
+    const contentLength = range.end - range.start + 1
+    startedAt = performance.now()
+    const body = await getWebDavObjectBody(c.get('deps'), {
+      storage,
+      object: matter.object,
+      range: `bytes=${range.start}-${range.end}`,
+    })
+    c.get('webDavTrace').push(`s3:${Math.round(performance.now() - startedAt)}`)
+    headers.set('Content-Length', String(contentLength))
+    headers.set('Content-Range', `bytes ${range.start}-${range.end}/${size}`)
+    startedAt = performance.now()
+    await waitUntilOrAwait(
+      c,
+      'download_finish',
+      finishWebDavDownload(c, {
+        userId: auth.userId,
+        matterId: matter.id,
+        matterName: matter.name,
+        storageId: storage.id,
+        bytes: contentLength,
+      }),
+    )
+    c.get('webDavTrace').push(`finish:${Math.round(performance.now() - startedAt)}`)
     return new Response(fixedLengthResponseBody(body, contentLength), { status: 206, headers })
   } catch (e) {
     return davError(c, e)
@@ -1165,36 +1098,30 @@ async function readFile(c: DavContext, auth: DavAuth): Promise<Response> {
 async function finishWebDavDownload(
   c: DavContext,
   params: {
-    orgId: string
     userId: string
     matterId: string
     matterName: string
     storageId: string
     bytes: number
-    trafficEventId: string
   },
 ): Promise<void> {
-  await Promise.all([
-    recordWebDavDownloadIssued(c.get('deps'), params),
-    recordDownloadIssued(
-      c.get('deps'),
-      transferAuditActor(c.get('principal')),
-      'webdav_download',
-      {
-        orgId: params.orgId,
-        targetType: 'file',
-        targetId: params.matterId,
-        targetName: params.matterName,
-        bytes: params.bytes,
-        source: 'webdav_download',
-        metadata: {
-          matterId: params.matterId,
-          storageId: params.storageId,
-        },
+  await recordDownloadIssued(
+    c.get('deps'),
+    transferAuditActor(c.get('principal')),
+    'webdav_download',
+    {
+      targetType: 'file',
+      targetId: params.matterId,
+      targetName: params.matterName,
+      bytes: params.bytes,
+      source: 'webdav_download',
+      metadata: {
+        matterId: params.matterId,
+        storageId: params.storageId,
       },
-      params.trafficEventId,
-    ),
-  ])
+    },
+    createTrafficEventId(),
+  )
 }
 
 async function waitUntilOrAwait(c: DavContext, operation: string, task: Promise<void>): Promise<void> {
@@ -1216,33 +1143,6 @@ function errorMessage(error: unknown): string {
 function isExpectedStreamCancellation(error: unknown): boolean {
   const message = errorMessage(error)
   return message === 'Network connection lost.' || message.includes('destination stream aborted')
-}
-
-// Meters a WebDAV download (consume traffic quota → report egress) and renders
-// the 422 / 402 responses. Returns null when metering succeeded (or the read is
-// zero bytes) and the caller should proceed to stream the body.
-async function reserveWebDavTraffic(
-  c: DavContext,
-  userId: string,
-  orgId: string,
-  matter: NonNullable<WebDavTarget['matter']>,
-  storage: StorageRecord,
-  bytes: number,
-): Promise<{ error: Response | null; trafficEventId: string }> {
-  const trafficEventId = `traffic_${crypto.randomUUID()}`
-  const outcome = await meterWebDavDownload(c.get('deps'), {
-    cloudBaseUrl: cloudBaseUrl(c),
-    orgId,
-    userId,
-    matterId: matter.id,
-    matterName: matter.name,
-    storage,
-    bytes,
-    trafficEventId,
-  })
-  if (outcome.ok) return { error: null, trafficEventId }
-  if (outcome.reason === 'quota_exceeded') return { error: c.text('Traffic quota exceeded', 422), trafficEventId }
-  throw insufficientCredits('Insufficient credits', { metadata: { resource: 'storage_egress' } })
 }
 
 async function putFile(c: DavContext, auth: DavAuth): Promise<Response> {
@@ -1274,7 +1174,6 @@ async function putFile(c: DavContext, auth: DavAuth): Promise<Response> {
     try {
       startedAt = performance.now()
       const result = await putWebDavFile(c.get('deps'), {
-        orgId: workspace.id,
         userId: auth.userId,
         target,
         fileName: target.name,
@@ -1288,7 +1187,6 @@ async function putFile(c: DavContext, auth: DavAuth): Promise<Response> {
       c.get('webDavTrace').push(`upload:${Math.round(performance.now() - startedAt)}`)
       if (!result.ok) return c.text('Storage not found', 404)
       c.set('webDavUploadAuditTarget', {
-        orgId: workspace.id,
         targetType: 'file',
         targetId: result.matterId,
         targetName: target.name,
@@ -1323,7 +1221,6 @@ async function makeCollection(c: DavContext, auth: DavAuth): Promise<Response> {
     if (ifFailed) return ifFailed
     await ensureParentCollection(c, auth.userId, workspace.slug, target.parent)
     await createWebDavCollection(c.get('deps'), {
-      orgId: workspace.id,
       userId: auth.userId,
       name: target.name,
       parent: target.parent,
@@ -1338,7 +1235,7 @@ async function makeCollection(c: DavContext, auth: DavAuth): Promise<Response> {
 async function deleteMatter(c: DavContext, auth: DavAuth): Promise<Response> {
   try {
     const target = await resolveExistingWebDavPath(c.get('deps'), { userId: auth.userId, rawPath: davPath(c) })
-    const workspace = requireWorkspace(target)
+    requireWorkspace(target)
     const matter = target.matter
     if (!matter) throw new WebDavPathError('Not found', 404)
     const locked = await lockPrecondition(c, target)
@@ -1346,10 +1243,8 @@ async function deleteMatter(c: DavContext, auth: DavAuth): Promise<Response> {
     const ifFailed = await ifHeaderPrecondition(c, auth, target)
     if (ifFailed) return ifFailed
     await deleteWebDavMatter(c.get('deps'), {
-      orgId: workspace.id,
       resourcePath: resourcePath(target),
       matterId: matter.id,
-      userId: auth.userId,
     })
     return new Response(null, { status: 204 })
   } catch (e) {
@@ -1390,7 +1285,6 @@ async function moveMatter(c: DavContext, auth: DavAuth): Promise<Response> {
     }
     await ensureParentCollection(c, auth.userId, targetWorkspace.slug, target.parent)
     await moveWebDavMatter(c.get('deps'), {
-      orgId: sourceWorkspace.id,
       userId: auth.userId,
       sourceMatterId: source.matter.id,
       sourceResourcePath: resourcePath(source),
@@ -1437,7 +1331,6 @@ async function copyMatterRoute(c: DavContext, auth: DavAuth): Promise<Response> 
       if (depth !== '0' && depth !== 'infinity') return xmlResponse(errorXml('bad-depth'), 400)
       try {
         const result = await copyWebDavCollection(c.get('deps'), {
-          orgId: sourceWorkspace.id,
           userId: auth.userId,
           sourceMatter,
           sourceRoot: oldPath,
@@ -1461,7 +1354,6 @@ async function copyMatterRoute(c: DavContext, auth: DavAuth): Promise<Response> 
 
     try {
       const result = await copyWebDavFile(c.get('deps'), {
-        orgId: sourceWorkspace.id,
         userId: auth.userId,
         sourceMatter,
         sourceResourcePath: resourcePath(source),
@@ -1497,7 +1389,6 @@ async function lockMatter(c: DavContext, auth: DavAuth): Promise<Response> {
     if (existingToken) {
       if (body.length > 0) return xmlResponse(errorXml('lock-token-submitted'), 400)
       const refreshed = await refreshWebDavLock(c.get('deps'), {
-        orgId: workspace.id,
         resourcePath: resourcePath(target),
         token: existingToken,
         timeoutSeconds: parseTimeout(c.req.header('Timeout')),
@@ -1521,7 +1412,6 @@ async function lockMatter(c: DavContext, auth: DavAuth): Promise<Response> {
     }
     startedAt = performance.now()
     const acquired = await createWebDavLock(c.get('deps'), {
-      orgId: workspace.id,
       userId: auth.userId,
       resourcePath: path,
       target,
@@ -1544,12 +1434,11 @@ async function unlockMatter(c: DavContext, auth: DavAuth): Promise<Response> {
     let startedAt = performance.now()
     const target = await resolveExistingWebDavPath(c.get('deps'), { userId: auth.userId, rawPath: davPath(c) })
     c.get('webDavTrace').push(`resolve:${Math.round(performance.now() - startedAt)}`)
-    const workspace = requireWorkspace(target)
+    requireWorkspace(target)
     const token = lockTokenHeader(c)
     if (!token) return xmlResponse(errorXml('lock-token-submitted'), 400)
     startedAt = performance.now()
     const removed = await removeWebDavLock(c.get('deps'), {
-      orgId: workspace.id,
       resourcePath: resourcePath(target),
       token,
     })

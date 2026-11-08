@@ -8,6 +8,9 @@ const CHANGE_BATCH_SIZE = 100
 // invocations and trace trees bounded without creating an event-delivery gap.
 const MAX_STREAM_DURATION_MS = 5 * 60_000
 
+// Single-admin instance: one global site feed plus the caller's user feed.
+const SITE_FEED = { scopeType: 'site' as const, scopeId: 'default' }
+
 export type EventsMessage = { event: string; data: unknown; id?: number }
 export type EventsEmit = (message: EventsMessage) => void
 
@@ -18,8 +21,6 @@ type ChangeFeed = {
 }
 
 export type EventsParams = {
-  scope: 'user' | 'download-tasks-only'
-  orgId: string | null
   userId: string | null
   afterSequence?: number
   pollIntervalMs?: number
@@ -43,15 +44,8 @@ const delay = (ms: number, signal: AbortSignal): Promise<void> =>
   })
 
 function feedsFor(params: EventsParams): ChangeFeed[] {
-  const feeds: ChangeFeed[] = []
-  if (params.orgId) {
-    feeds.push({
-      scopeType: 'organization',
-      scopeId: params.orgId,
-      resourceTypes: params.scope === 'download-tasks-only' ? ['download_task'] : undefined,
-    })
-  }
-  if (params.scope === 'user' && params.userId) {
+  const feeds: ChangeFeed[] = [SITE_FEED]
+  if (params.userId) {
     feeds.push({ scopeType: 'user', scopeId: params.userId })
   }
   return feeds

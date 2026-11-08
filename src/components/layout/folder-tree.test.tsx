@@ -24,14 +24,9 @@ vi.mock('@/lib/api', () => ({
   listObjectsByPath: vi.fn(),
 }))
 
-vi.mock('@/lib/auth-client', () => ({
-  useActiveOrganization: () => ({ data: { id: 'org-1' } }),
-}))
-
 function folder(id: string, name: string, parent = '', hasChildren = false): ObjectListItem {
   return {
     id,
-    orgId: 'org-1',
     alias: '',
     name,
     type: 'folder',

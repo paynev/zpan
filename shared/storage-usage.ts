@@ -5,7 +5,6 @@ export const STORAGE_USAGE_CATEGORIES = [
   'documents',
   'archives',
   'other',
-  'image_hosting',
   'trash',
 ] as const
 
@@ -40,7 +39,7 @@ const DOCUMENT_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ])
 
-export function classifyStorageUsage(mimeType: string): Exclude<StorageUsageCategory, 'image_hosting' | 'trash'> {
+export function classifyStorageUsage(mimeType: string): Exclude<StorageUsageCategory, 'trash'> {
   const normalized = mimeType.trim().toLowerCase()
   if (normalized.startsWith('image/')) return 'photos'
   if (normalized.startsWith('video/')) return 'videos'
@@ -76,5 +75,5 @@ export interface StorageUsageItem {
   type: string
   size: number
   updatedAt: string
-  source: 'files' | 'image_hosting' | 'trash'
+  source: 'files' | 'trash'
 }

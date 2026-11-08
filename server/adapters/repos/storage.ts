@@ -38,8 +38,7 @@ const STORAGE_CACHE_POLICY: CachePolicy<StorageRecord | null> = {
 }
 
 function toRecord(row: StorageRow): StorageRecord {
-  const { customHost: _legacyCustomHost, ...record } = row
-  return record as StorageRecord
+  return row as StorageRecord
 }
 
 export function createStorageRepo(db: Database, cache?: CacheService): StorageRepo {
@@ -78,11 +77,7 @@ export function createStorageRepo(db: Database, cache?: CacheService): StorageRe
         accessKey: input.accessKey,
         secretKey: input.secretKey,
         filePath: '',
-        customHost: '',
         capacity: input.capacity ?? 0,
-        egressCreditBillingEnabled: input.egressCreditBillingEnabled ?? false,
-        egressCreditUnitBytes: input.egressCreditUnitBytes ?? 104857600,
-        egressCreditPerUnit: input.egressCreditPerUnit ?? 1,
         forcePathStyle: input.forcePathStyle ?? true,
         used: 0,
         enabled: true,

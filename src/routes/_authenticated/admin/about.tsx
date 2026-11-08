@@ -1,8 +1,8 @@
-import { ZPAN_CLOUD_URL_DEFAULT, ZPAN_GITHUB_URL } from '@shared/constants'
+import { ZPAN_GITHUB_URL } from '@shared/constants'
 import type { InstanceInfo } from '@shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { ArrowUpCircle, BadgeCheck, ExternalLink, Github, RefreshCw, Server, Sparkles, Star } from 'lucide-react'
+import { ArrowUpCircle, ExternalLink, Github, RefreshCw, Server, Star } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdminPageHeader } from '@/components/admin/admin-page-header'
@@ -11,9 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { licenseBindingQueryKey, useEntitlement } from '@/hooks/useEntitlement'
-import { getChangelog, getInstanceInfo, getLicensingStatus } from '@/lib/api'
-import { EDITION_COLORS, editionKey } from '@/lib/license-edition'
+import { getChangelog, getInstanceInfo } from '@/lib/api'
 
 export const Route = createFileRoute('/_authenticated/admin/about')({
   component: AboutPage,
@@ -46,7 +44,6 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
 
 function AboutPage() {
   const { t } = useTranslation()
-  const { bound, active, edition } = useEntitlement()
   const [changelogOpen, setChangelogOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const queryClient = useQueryClient()
@@ -59,11 +56,6 @@ function AboutPage() {
     queryKey: ['system', 'changelog'],
     queryFn: () => getChangelog(),
     staleTime: 60 * 60 * 1000,
-  })
-  const { data: binding } = useQuery({
-    queryKey: licenseBindingQueryKey,
-    queryFn: getLicensingStatus,
-    staleTime: 60 * 1000,
   })
 
   // Bypass the server-side cache (?refresh=true) and replace the cached data so
@@ -80,17 +72,7 @@ function AboutPage() {
 
   if (isLoading || !instance) return null
 
-  const key = editionKey(bound, edition)
-  const editionLabel = t(`admin.licenseRibbon.${key}`)
   const os = instance.server?.os
-
-  // When the instance holds a valid license, deep-link the cloud CTA straight to
-  // the certificate detail page; otherwise nudge toward upgrading.
-  const licenseId = binding?.license_id
-  const cloudDashboardUrl = binding?.cloud_dashboard_url
-  const cloudBase = cloudDashboardUrl?.replace(/\/dashboard\/?$/, '') ?? ZPAN_CLOUD_URL_DEFAULT
-  const authorized = bound && active && Boolean(licenseId)
-  const cloudUrl = authorized ? `${cloudBase}/licenses/${licenseId}` : (cloudDashboardUrl ?? ZPAN_CLOUD_URL_DEFAULT)
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -159,14 +141,6 @@ function AboutPage() {
               <code className="font-mono text-xs">{instance.commit}</code>
             </InfoRow>
           )}
-          <InfoRow label={t('admin.about.edition')}>
-            <Badge style={{ backgroundColor: EDITION_COLORS[key], color: '#fff' }} className="border-transparent">
-              {editionLabel}
-            </Badge>
-            {bound && !active && (
-              <span className="ml-2 text-xs text-muted-foreground">{t('admin.about.inactive')}</span>
-            )}
-          </InfoRow>
           {instance.runtime && <InfoRow label={t('admin.about.runtime')}>{RUNTIME_LABELS[instance.runtime]}</InfoRow>}
           {instance.platform && (
             <InfoRow label={t('admin.about.platform')}>{PLATFORM_LABELS[instance.platform]}</InfoRow>
@@ -194,26 +168,6 @@ function AboutPage() {
               <a href={ZPAN_GITHUB_URL} target="_blank" rel="noopener noreferrer">
                 <Star className="mr-2 h-4 w-4" />
                 {t('admin.about.github.cta')}
-              </a>
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              {authorized ? <BadgeCheck className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
-              {t('admin.about.cloud.title')}
-            </CardTitle>
-            <CardDescription>
-              {t(authorized ? 'admin.about.cloud.descriptionBound' : 'admin.about.cloud.description')}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button className="w-full" style={{ backgroundColor: '#1A73E8' }} asChild>
-              <a href={cloudUrl} target="_blank" rel="noopener noreferrer">
-                {authorized ? <BadgeCheck className="mr-2 h-4 w-4" /> : <ExternalLink className="mr-2 h-4 w-4" />}
-                {t(authorized ? 'admin.about.cloud.viewCert' : 'admin.about.cloud.cta')}
               </a>
             </Button>
           </CardContent>

@@ -15,7 +15,6 @@ export type ObjectUploadSessionRecord = Omit<ObjectUploadSession, 'expiresAt' | 
 }
 
 export interface CreateObjectUploadSessionInput {
-  orgId: string
   objectId: string
   storageId: string
   storageKey: string
@@ -41,6 +40,6 @@ export class ObjectUploadSessionError extends Error {
 
 export interface ObjectUploadSessionRepo {
   create(input: CreateObjectUploadSessionInput): Promise<ObjectUploadSessionRecord>
-  get(orgId: string, objectId: string, id: string): Promise<ObjectUploadSessionRecord | null>
+  get(objectId: string, id: string): Promise<ObjectUploadSessionRecord | null>
   setStatus(id: string, status: 'completed' | 'aborted'): Promise<void>
 }

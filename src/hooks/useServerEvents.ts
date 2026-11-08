@@ -26,9 +26,6 @@ export function useServerEvents() {
 
     source.addEventListener('resource-change', (event) => {
       const change = JSON.parse((event as MessageEvent<string>).data) as { resourceType: string }
-      if (change.resourceType === 'background_job') {
-        void queryClient.invalidateQueries({ queryKey: ['background-jobs'] })
-      }
       if (change.resourceType === 'notification') {
         void queryClient.invalidateQueries({ queryKey: ['notifications'] })
       }

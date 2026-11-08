@@ -3,8 +3,8 @@
 // header parsing (Depth, Destination, Range, If, Lock-Token, Overwrite, the
 // basic-auth header). What lives here is every business decision that reaches a
 // port: identity resolution, path/lock/dead-property state, matter
-// create/move/copy/delete/touch, storage selection, the upload-body
-// persistence, and the download metering + refund.
+// create/move/copy/delete/touch, storage selection, and the upload-body
+// persistence.
 //
 // All port access lives here: the handler never reaches into `deps.<port>`. The
 // handler calls these functions (passing `deps` whole) and maps the returned
@@ -17,7 +17,6 @@ import { joinMatterPath } from '../domain/webdav'
 import { assertObjectKeyOwner, buildObjectKey, fileExt } from '../lib/path-template'
 import type { Database } from '../platform/interface'
 import type { Deps } from './deps'
-import { assertFolderNotUsedByDownload } from './downloads/download-folders'
 import {
   type ActorIdentity,
   type ApiKeyAuth,
@@ -32,17 +31,11 @@ import {
   type WebDavWorkspace,
 } from './ports'
 import { withStorageUsageReservation } from './storage-usage'
-import {
-  confirmDownloadTraffic,
-  type DownloadTrafficStorage,
-  meterDownloadTraffic,
-  reverseDownloadTraffic,
-  type TrafficReportSource,
-} from './store/traffic-metering'
 
 // ─── Auth resolution ──────────────────────────────────────────────────────────
 // The middleware parses the Authorization header (http) and renders the 401 / 429;
-// this resolves identity via the api-key gateway + the username match (deps).
+// this resolves identity via the api-key gateway (deps). The acting user is the
+// key's referenceId — the key belongs to exactly one user.
 
 export type WebDavAuthOutcome =
   | { ok: true; userId: string; keyId: string; configId: string; permissions: Record<string, string[]> | null }
@@ -50,11 +43,10 @@ export type WebDavAuthOutcome =
   | { ok: false; reason: 'rate_limited'; retryAfterMs?: number; message: string }
 
 export async function resolveWebDavAuth(
-  deps: Pick<Deps, 'apiKeys' | 'userAdmin'>,
+  deps: Pick<Deps, 'apiKeys'>,
   params: {
     auth: ApiKeyAuth
     db: Database
-    username: string
     password: string
     requiredScopes: Array<{ resource: string; action: string }>
     configId: string
@@ -63,18 +55,15 @@ export async function resolveWebDavAuth(
   const [firstScope, ...additionalScopes] = params.requiredScopes
   if (!firstScope) return { ok: false, reason: 'unauthorized' }
   try {
-    const [key, activeUserId] = await Promise.all([
-      deps.apiKeys.verifyApiKeyForPermission(
-        params.auth,
-        params.db,
-        params.password,
-        firstScope.resource,
-        firstScope.action,
-        params.configId,
-      ),
-      deps.userAdmin.findActiveUserIdByUsername(params.username),
-    ])
-    if (!key || activeUserId !== key.referenceId) {
+    const key = await deps.apiKeys.verifyApiKeyForPermission(
+      params.auth,
+      params.db,
+      params.password,
+      firstScope.resource,
+      firstScope.action,
+      params.configId,
+    )
+    if (!key) {
       return { ok: false, reason: 'unauthorized' }
     }
     if (
@@ -130,11 +119,8 @@ export function listUserWebDavWorkspaces(deps: Pick<Deps, 'webdavPath'>, userId:
   return deps.webdavPath.listUserWorkspaces(userId)
 }
 
-export function listWebDavChildren(
-  deps: Pick<Deps, 'webdavPath'>,
-  params: { orgId: string; parent: string },
-): Promise<Matter[]> {
-  return deps.webdavPath.listChildren(params.orgId, params.parent)
+export function listWebDavChildren(deps: Pick<Deps, 'webdavPath'>, params: { parent: string }): Promise<Matter[]> {
+  return deps.webdavPath.listChildren(params.parent)
 }
 
 // Ensures a non-empty parent path resolves to an existing collection. Throws the
@@ -151,38 +137,35 @@ export async function ensureParentCollection(
 
 // ─── Lock + dead-property state ────────────────────────────────────────────────
 
-export function activeLocks(
-  deps: Pick<Deps, 'webdavState'>,
-  params: { orgId: string; resourcePath: string },
-): Promise<DavLock[]> {
-  return deps.webdavState.activeLocks(params.orgId, params.resourcePath)
+export function activeLocks(deps: Pick<Deps, 'webdavState'>, params: { resourcePath: string }): Promise<DavLock[]> {
+  return deps.webdavState.activeLocks(params.resourcePath)
 }
 
 export function listDeadPropertiesForResources(
   deps: Pick<Deps, 'webdavState'>,
-  params: { orgId: string; resourcePaths: string[] },
+  params: { resourcePaths: string[] },
 ): Promise<Map<string, DavDeadProperty[]>> {
-  return deps.webdavState.listDeadPropertiesForResources(params.orgId, params.resourcePaths)
+  return deps.webdavState.listDeadPropertiesForResources(params.resourcePaths)
 }
 
 export function activeLocksForResources(
   deps: Pick<Deps, 'webdavState'>,
-  params: { orgId: string; resourcePaths: string[] },
+  params: { resourcePaths: string[] },
 ): Promise<Map<string, DavLock[]>> {
-  return deps.webdavState.activeLocksForResources(params.orgId, params.resourcePaths)
+  return deps.webdavState.activeLocksForResources(params.resourcePaths)
 }
 
 // ─── PROPPATCH ─────────────────────────────────────────────────────────────────
 
 export async function applyWebDavDeadProperties(
   deps: Pick<Deps, 'webdavState' | 'matter'>,
-  params: { orgId: string; resourcePath: string; operations: DeadPropertyUpdate[]; matterId: string | null },
+  params: { resourcePath: string; operations: DeadPropertyUpdate[]; matterId: string | null },
 ): Promise<void> {
-  await deps.webdavState.applyDeadPropertyUpdate(params.orgId, params.resourcePath, params.operations)
-  if (params.matterId) await deps.matter.touch(params.orgId, params.matterId)
+  await deps.webdavState.applyDeadPropertyUpdate(params.resourcePath, params.operations)
+  if (params.matterId) await deps.matter.touch(params.matterId)
 }
 
-// ─── GET download (metering + streaming) ───────────────────────────────────────
+// ─── GET download (streaming) ──────────────────────────────────────────────────
 // The handler frames every Response (FixedLengthStream, single/multi range,
 // status, headers); it only ever obtains the underlying body through these.
 
@@ -194,8 +177,7 @@ export type ResolveDownloadOutcome =
   | { ok: false; reason: 'storage_not_found' }
 
 // Resolves a GET/HEAD target to its matter + storage. Mirrors readFile's guards
-// (404 missing, 404 missing workspace, 405 collection, 404 storage). No metering
-// happens here — HEAD must not meter — so the handler meters separately.
+// (404 missing, 404 missing workspace, 405 collection, 404 storage).
 export async function resolveWebDavDownload(
   deps: Pick<Deps, 'webdavPath' | 'storages'>,
   params: { userId: string; rawPath: string },
@@ -207,70 +189,6 @@ export async function resolveWebDavDownload(
   const storage = await deps.storages.get(matter.storageId)
   if (!storage) return { ok: false, reason: 'storage_not_found' }
   return { ok: true, matter, workspace, storage }
-}
-
-export type WebDavTrafficOutcome =
-  | { ok: true }
-  | { ok: false; reason: 'quota_exceeded' }
-  | { ok: false; reason: 'insufficient_credits' }
-
-type WebDavTrafficDeps = Pick<Deps, 'quota' | 'licenseBinding' | 'licensingCloud' | 'cloudTrafficReports'>
-
-// Meters a download: consume the org's traffic quota, then report egress to
-// Cloud (refunding the quota on a block). The handler renders the 422 / 402.
-export async function meterWebDavDownload(
-  deps: WebDavTrafficDeps,
-  params: {
-    cloudBaseUrl: string
-    orgId: string
-    userId: string
-    matterId: string
-    matterName: string
-    storage: DownloadTrafficStorage
-    bytes: number
-    trafficEventId: string
-  },
-): Promise<WebDavTrafficOutcome> {
-  const outcome = await meterDownloadTraffic(deps, {
-    cloudBaseUrl: params.cloudBaseUrl,
-    orgId: params.orgId,
-    bytes: params.bytes,
-    storage: params.storage,
-    source: WEBDAV_DOWNLOAD_SOURCE,
-    sourceId: params.matterId,
-    eventId: params.trafficEventId,
-    eventIdIsNew: true,
-  })
-  return outcome
-}
-
-const WEBDAV_DOWNLOAD_SOURCE: TrafficReportSource = 'webdav_download'
-
-export async function recordWebDavDownloadIssued(
-  deps: Pick<Deps, 'cloudTrafficReports'>,
-  params: {
-    orgId: string
-    userId: string
-    matterId: string
-    matterName: string
-    storageId: string
-    bytes: number
-    trafficEventId: string
-  },
-): Promise<void> {
-  await confirmDownloadTraffic(deps, { eventId: params.trafficEventId })
-}
-
-// Refunds previously-consumed traffic quota when an S3 read throws after metering.
-export function refundWebDavTraffic(
-  deps: Pick<Deps, 'quota' | 'cloudTrafficReports'>,
-  params: { orgId: string; bytes: number; trafficEventId: string },
-): Promise<void> {
-  return reverseDownloadTraffic(deps, {
-    orgId: params.orgId,
-    bytes: params.bytes,
-    eventId: params.trafficEventId,
-  })
 }
 
 // Returns the S3 body for streaming (optionally a byte range). The handler wraps
@@ -292,16 +210,14 @@ export type PutWebDavOutcome =
   | { ok: true; status: 201 | 204; matterId: string; storageId: string; bytes: number }
   | { ok: false; reason: 'no_storage' }
 
-// Persists a PUT body to storage and the matter row, reserving quota for the
-// (known) size delta and rolling back the S3 write if the row write fails. When
-// the size is unknown (no Content-Length) it reserves the measured size after
-// the streamed upload completes; on a shrink it reconciles usage. Returns 201 on
-// create, 204 on overwrite. Surfaces no_storage (404); quota / conflict errors
-// throw (the handler maps them via mapDomainError).
+// Persists a PUT body to storage and the matter row, rolling back the S3 write
+// if the row write fails. When the size is unknown (no Content-Length) and the
+// upload shrinks an existing file it reconciles usage. Returns 201 on create,
+// 204 on overwrite. Surfaces no_storage (404); conflict errors throw (the
+// handler maps them via mapDomainError).
 export async function putWebDavFile(
-  deps: Pick<Deps, 'matter' | 'storages' | 's3' | 'quota' | 'storageUsage'>,
+  deps: Pick<Deps, 'matter' | 'storages' | 's3' | 'storageUsage'>,
   params: {
-    orgId: string
     userId: string
     target: WebDavTarget
     fileName: string
@@ -313,8 +229,8 @@ export async function putWebDavFile(
     onTiming?: (phase: 'storage' | 's3' | 'persist', durationMs: number) => void
   },
 ): Promise<PutWebDavOutcome> {
-  const { orgId, userId, target, fileName, parent, contentType, contentLength, body } = params
-  assertObjectKeyOwner({ orgId, uid: userId })
+  const { userId, target, fileName, parent, contentType, contentLength, body } = params
+  assertObjectKeyOwner({ uid: userId })
   let startedAt = performance.now()
   const storage = target.matter ? await deps.storages.get(target.matter.storageId) : await deps.storages.select()
   params.onTiming?.('storage', performance.now() - startedAt)
@@ -323,59 +239,33 @@ export async function putWebDavFile(
   const objectKey =
     target.matter?.object && contentLength !== null
       ? target.matter.object
-      : buildObjectKey({ uid: userId, orgId, rawExt: fileExt(fileName) })
+      : buildObjectKey({ uid: userId, rawExt: fileExt(fileName) })
 
-  const knownSizeDelta =
-    contentLength === null ? 0 : target.matter ? contentLength - (target.matter.size ?? 0) : contentLength
+  const persisted = await withStorageUsageReservation(deps, {}, async (ctx) => {
+    startedAt = performance.now()
+    const uploadedSize = await deps.s3.putObject(storage, objectKey, body, contentType, contentLength ?? undefined)
+    params.onTiming?.('s3', performance.now() - startedAt)
+    const sizeDelta = target.matter ? uploadedSize - (target.matter.size ?? 0) : uploadedSize
 
-  const persisted = await withStorageUsageReservation(
-    deps,
-    { orgId, storageId: storage.id, bytes: Math.max(0, knownSizeDelta) },
-    async (ctx) => {
-      startedAt = performance.now()
-      const uploadedSize = await deps.s3.putObject(storage, objectKey, body, contentType, contentLength ?? undefined)
-      params.onTiming?.('s3', performance.now() - startedAt)
-      const sizeDelta = target.matter ? uploadedSize - (target.matter.size ?? 0) : uploadedSize
+    if (!target.matter || objectKey !== target.matter.object) {
+      ctx.onRollback(() => deps.s3.deleteObject(storage, objectKey))
+    }
 
-      if (!target.matter || objectKey !== target.matter.object) {
-        ctx.onRollback(() => deps.s3.deleteObject(storage, objectKey))
-      }
-
-      if (contentLength === null && sizeDelta > 0) {
-        return withStorageUsageReservation(deps, { orgId, storageId: storage.id, bytes: sizeDelta }, () =>
-          timedPersist(params.onTiming, () =>
-            persistWebDavUpload(deps, {
-              orgId,
-              target,
-              fileName,
-              parent,
-              storage,
-              objectKey,
-              contentType,
-              uploadedSize,
-              createdBy: params.createdBy,
-            }),
-          ),
-        )
-      }
-
-      const result = await timedPersist(params.onTiming, () =>
-        persistWebDavUpload(deps, {
-          orgId,
-          target,
-          fileName,
-          parent,
-          storage,
-          objectKey,
-          contentType,
-          uploadedSize,
-          createdBy: params.createdBy,
-        }),
-      )
-      if (sizeDelta < 0) await deps.storageUsage.reconcile(orgId, [storage.id])
-      return result
-    },
-  )
+    const result = await timedPersist(params.onTiming, () =>
+      persistWebDavUpload(deps, {
+        target,
+        fileName,
+        parent,
+        storage,
+        objectKey,
+        contentType,
+        uploadedSize,
+        createdBy: params.createdBy,
+      }),
+    )
+    if (sizeDelta < 0) await deps.storageUsage.reconcile([storage.id])
+    return result
+  })
   return {
     ok: true,
     status: persisted.status,
@@ -398,7 +288,6 @@ async function timedPersist<T>(
 async function persistWebDavUpload(
   deps: Pick<Deps, 'matter' | 's3'>,
   params: {
-    orgId: string
     target: WebDavTarget
     fileName: string
     parent: string
@@ -409,15 +298,14 @@ async function persistWebDavUpload(
     createdBy: ActorIdentity
   },
 ): Promise<{ status: 201 | 204; matterId: string; bytes: number }> {
-  const { orgId, target, fileName, parent, storage, objectKey, contentType, uploadedSize } = params
+  const { target, fileName, parent, storage, objectKey, contentType, uploadedSize } = params
   if (target.matter) {
-    await deps.matter.applyUpload(orgId, target.matter, { type: contentType, size: uploadedSize, object: objectKey })
+    await deps.matter.applyUpload(target.matter, { type: contentType, size: uploadedSize, object: objectKey })
     if (objectKey !== target.matter.object) await deps.s3.deleteObject(storage, target.matter.object)
     return { status: 204, matterId: target.matter.id, bytes: uploadedSize }
   }
 
   const matter = await deps.matter.create({
-    orgId,
     name: fileName,
     type: contentType,
     size: uploadedSize,
@@ -437,11 +325,10 @@ async function persistWebDavUpload(
 
 export async function createWebDavCollection(
   deps: Pick<Deps, 'matter' | 'storages'>,
-  params: { orgId: string; userId: string; name: string; parent: string; createdBy: ActorIdentity },
+  params: { userId: string; name: string; parent: string; createdBy: ActorIdentity },
 ): Promise<void> {
   const storage = await deps.storages.select()
   await deps.matter.create({
-    orgId: params.orgId,
     name: params.name,
     type: 'folder',
     size: 0,
@@ -459,13 +346,11 @@ export async function createWebDavCollection(
 // ─── DELETE ────────────────────────────────────────────────────────────────────
 
 export async function deleteWebDavMatter(
-  deps: Pick<Deps, 'webdavState' | 'matter' | 'downloadTasks'>,
-  params: { orgId: string; resourcePath: string; matterId: string; userId: string },
+  deps: Pick<Deps, 'webdavState' | 'matter'>,
+  params: { resourcePath: string; matterId: string },
 ): Promise<void> {
-  const matter = await deps.matter.get(params.matterId, params.orgId)
-  if (matter) await assertFolderNotUsedByDownload(deps, { orgId: params.orgId, folder: matter })
-  await deps.webdavState.deleteWebDavState(params.orgId, params.resourcePath)
-  await deps.matter.trash(params.orgId, params.matterId)
+  await deps.webdavState.deleteWebDavState(params.resourcePath)
+  await deps.matter.trash(params.matterId)
 }
 
 // ─── MOVE ──────────────────────────────────────────────────────────────────────
@@ -475,9 +360,8 @@ export async function deleteWebDavMatter(
 // already validated workspace scope, locks, If/preconditions, and the
 // self/descendant guards.
 export async function moveWebDavMatter(
-  deps: Pick<Deps, 'webdavState' | 'matter' | 'downloadTasks'>,
+  deps: Pick<Deps, 'webdavState' | 'matter'>,
   params: {
-    orgId: string
     userId: string
     sourceMatterId: string
     sourceResourcePath: string
@@ -487,20 +371,16 @@ export async function moveWebDavMatter(
     replacedMatterId: string | null
   },
 ): Promise<void> {
-  const source = await deps.matter.get(params.sourceMatterId, params.orgId)
-  if (source) await assertFolderNotUsedByDownload(deps, { orgId: params.orgId, folder: source })
   const newPath = joinMatterPath(params.targetParent, params.targetName)
   if (params.replacedMatterId) {
-    const replaced = await deps.matter.get(params.replacedMatterId, params.orgId)
-    if (replaced) await assertFolderNotUsedByDownload(deps, { orgId: params.orgId, folder: replaced })
-    await deps.webdavState.deleteWebDavState(params.orgId, params.targetResourcePath)
-    await deps.matter.trash(params.orgId, params.replacedMatterId)
+    await deps.webdavState.deleteWebDavState(params.targetResourcePath)
+    await deps.matter.trash(params.replacedMatterId)
   }
-  await deps.matter.update(params.sourceMatterId, params.orgId, {
+  await deps.matter.update(params.sourceMatterId, {
     name: params.targetName,
     parent: params.targetParent,
   })
-  await deps.webdavState.moveWebDavState(params.orgId, params.sourceResourcePath, newPath)
+  await deps.webdavState.moveWebDavState(params.sourceResourcePath, newPath)
 }
 
 // ─── COPY (file) ───────────────────────────────────────────────────────────────
@@ -509,14 +389,13 @@ export type CopyWebDavFileOutcome =
   | { ok: true; status: 201 | 204; location: string }
   | { ok: false; reason: 'storage_not_found' }
 
-// Copies a single file matter: reserves quota for the source size, copies the S3
-// object (rolling it back on failure), trashes an overwritten destination, then
-// copies the matter row + its dead properties. Returns the new resource path so
-// the handler can build the Location header. Conflict/quota errors throw.
+// Copies a single file matter: copies the S3 object (rolling it back on
+// failure), trashes an overwritten destination, then copies the matter row + its
+// dead properties. Returns the new resource path so the handler can build the
+// Location header. Conflict errors throw.
 export async function copyWebDavFile(
-  deps: Pick<Deps, 'matter' | 'storages' | 's3' | 'quota' | 'storageUsage' | 'webdavState' | 'downloadTasks'>,
+  deps: Pick<Deps, 'matter' | 'storages' | 's3' | 'webdavState' | 'storageUsage'>,
   params: {
-    orgId: string
     userId: string
     sourceMatter: Matter
     sourceResourcePath: string
@@ -528,27 +407,21 @@ export async function copyWebDavFile(
     createdBy: ActorIdentity
   },
 ): Promise<CopyWebDavFileOutcome> {
-  const { orgId, userId, sourceMatter } = params
+  const { userId, sourceMatter } = params
   const storage = sourceMatter.object ? await deps.storages.get(sourceMatter.storageId) : null
   if (sourceMatter.object && !storage) return { ok: false, reason: 'storage_not_found' }
-  const bytes = sourceMatter.size ?? 0
 
-  if (params.replacedMatterId) {
-    const replaced = await deps.matter.get(params.replacedMatterId, params.orgId)
-    if (replaced) await assertFolderNotUsedByDownload(deps, { orgId: params.orgId, folder: replaced })
-  }
-
-  return withStorageUsageReservation(deps, { orgId, storageId: sourceMatter.storageId, bytes }, async (ctx) => {
+  return withStorageUsageReservation(deps, {}, async (ctx) => {
     let newObject = ''
     if (sourceMatter.object && storage) {
-      newObject = buildObjectKey({ uid: userId, orgId, rawExt: fileExt(params.targetName) })
+      newObject = buildObjectKey({ uid: userId, rawExt: fileExt(params.targetName) })
       await deps.s3.copyObject(storage, sourceMatter.object, storage, newObject)
       ctx.onRollback(() => deps.s3.deleteObject(storage, newObject))
     }
 
     if (params.replacedMatterId) {
-      await deps.webdavState.deleteWebDavState(orgId, params.targetResourcePath)
-      await deps.matter.trash(orgId, params.replacedMatterId)
+      await deps.webdavState.deleteWebDavState(params.targetResourcePath)
+      await deps.matter.trash(params.replacedMatterId)
     }
     const copy = await deps.matter.copy({ ...sourceMatter, name: params.targetName }, params.targetParent, newObject, {
       onConflict: 'fail',
@@ -557,7 +430,7 @@ export async function copyWebDavFile(
       createdByActorIssuer: params.createdBy.issuer,
     })
     const copyPath = joinMatterPath(copy.parent, copy.name)
-    await deps.webdavState.copyDeadProperties(orgId, params.sourceResourcePath, copyPath)
+    await deps.webdavState.copyDeadProperties(params.sourceResourcePath, copyPath)
     return { ok: true, status: params.replacingTarget ? 204 : 201, location: copyPath } as const
   })
 }
@@ -568,19 +441,15 @@ export type CopyWebDavCollectionOutcome =
   | { ok: true; status: 201 | 204; location: string }
   | { ok: false; reason: 'storage_not_found' }
 
-// Recursively copies a collection subtree. Reserves quota for every file's
-// bytes, copies each S3 object (rolling back on failure), trashes an overwritten
-// destination subtree, then copies the root + descendants + their dead
-// properties. On failure it trashes anything it created and restores the
-// overwritten destination rows. The handler validated depth, locks, and the
-// self/descendant guard. depth='0' copies only the root (ordered is empty).
+// Recursively copies a collection subtree. Copies each S3 object (rolling back
+// on failure), trashes an overwritten destination subtree, then copies the root
+// + descendants + their dead properties. On failure it trashes anything it
+// created and restores the overwritten destination rows. The handler validated
+// depth, locks, and the self/descendant guard. depth='0' copies only the root
+// (ordered is empty).
 export async function copyWebDavCollection(
-  deps: Pick<
-    Deps,
-    'matter' | 'storages' | 's3' | 'quota' | 'storageUsage' | 'webdavPath' | 'webdavState' | 'downloadTasks'
-  >,
+  deps: Pick<Deps, 'matter' | 'storages' | 's3' | 'webdavPath' | 'webdavState' | 'storageUsage'>,
   params: {
-    orgId: string
     userId: string
     sourceMatter: Matter
     sourceRoot: string
@@ -593,11 +462,10 @@ export async function copyWebDavCollection(
     createdBy: ActorIdentity
   },
 ): Promise<CopyWebDavCollectionOutcome> {
-  const { orgId, userId, sourceMatter, sourceRoot, targetMatter } = params
-  if (targetMatter) await assertFolderNotUsedByDownload(deps, { orgId, folder: targetMatter })
+  const { userId, sourceMatter, sourceRoot, targetMatter } = params
   const targetRoot = joinMatterPath(params.targetParent, params.targetName)
-  const children = await deps.webdavPath.listChildren(orgId, sourceRoot)
-  const descendants = await deps.matter.listActiveDescendants(orgId, sourceRoot)
+  const children = await deps.webdavPath.listChildren(sourceRoot)
+  const descendants = await deps.matter.listActiveDescendants(sourceRoot)
   const ordered =
     params.depth === 'infinity' ? [...children, ...descendants].sort((a, b) => a.parent.length - b.parent.length) : []
   const preparedCopies: Array<{ item: Matter; targetParent: string; objectKey: string }> = []
@@ -606,19 +474,16 @@ export async function copyWebDavCollection(
     targetMatter && targetMatter.dirtype !== DirType.FILE
       ? [
           targetMatter,
-          ...(await deps.webdavPath.listChildren(orgId, params.targetResourcePath)),
-          ...(await deps.matter.listActiveDescendants(orgId, params.targetResourcePath)),
+          ...(await deps.webdavPath.listChildren(params.targetResourcePath)),
+          ...(await deps.matter.listActiveDescendants(params.targetResourcePath)),
         ]
       : targetMatter
         ? [targetMatter]
         : []
-  const reservationInputs = ordered
-    .filter((item) => item.dirtype === DirType.FILE && item.object && (item.size ?? 0) > 0)
-    .map((item) => ({ orgId, storageId: item.storageId, bytes: item.size ?? 0 }))
 
   let missingStorage = false
   try {
-    const result = await withStorageUsageReservation(deps, reservationInputs, async (ctx) => {
+    const result = await withStorageUsageReservation(deps, {}, async (ctx) => {
       for (const item of ordered) {
         const targetParent =
           item.parent === sourceRoot ? targetRoot : `${targetRoot}${item.parent.slice(sourceRoot.length)}`
@@ -629,7 +494,7 @@ export async function copyWebDavCollection(
             missingStorage = true
             return null
           }
-          objectKey = buildObjectKey({ uid: userId, orgId, rawExt: fileExt(item.name) })
+          objectKey = buildObjectKey({ uid: userId, rawExt: fileExt(item.name) })
           await deps.s3.copyObject(storage, item.object, storage, objectKey)
           ctx.onRollback(() => deps.s3.deleteObject(storage, objectKey))
         }
@@ -637,8 +502,8 @@ export async function copyWebDavCollection(
       }
 
       if (targetMatter) {
-        await deps.webdavState.deleteWebDavState(orgId, params.targetResourcePath)
-        await deps.matter.trash(orgId, targetMatter.id)
+        await deps.webdavState.deleteWebDavState(params.targetResourcePath)
+        await deps.matter.trash(targetMatter.id)
       }
 
       const rootCopy = await deps.matter.copy({ ...sourceMatter, name: params.targetName }, params.targetParent, '', {
@@ -648,7 +513,7 @@ export async function copyWebDavCollection(
         createdByActorIssuer: params.createdBy.issuer,
       })
       createdIds.push(rootCopy.id)
-      await deps.webdavState.copyDeadProperties(orgId, sourceRoot, joinMatterPath(rootCopy.parent, rootCopy.name))
+      await deps.webdavState.copyDeadProperties(sourceRoot, joinMatterPath(rootCopy.parent, rootCopy.name))
 
       for (const prepared of preparedCopies) {
         const copy = await deps.matter.copy(prepared.item, prepared.targetParent, prepared.objectKey, {
@@ -659,7 +524,6 @@ export async function copyWebDavCollection(
         })
         createdIds.push(copy.id)
         await deps.webdavState.copyDeadProperties(
-          orgId,
           joinMatterPath(prepared.item.parent, prepared.item.name),
           joinMatterPath(copy.parent, copy.name),
         )
@@ -671,14 +535,11 @@ export async function copyWebDavCollection(
     return { ok: true, status: params.replacingTarget ? 204 : 201, location: result as string }
   } catch (error) {
     if (createdIds.length > 0) {
-      await deps.matter.trashByIds(orgId, createdIds)
-      await deps.webdavState.deleteWebDavState(orgId, targetRoot)
+      await deps.matter.trashByIds(createdIds)
+      await deps.webdavState.deleteWebDavState(targetRoot)
     }
     if (targetRows.length > 0) {
-      await deps.matter.restoreActiveByIds(
-        orgId,
-        targetRows.map((r) => r.id),
-      )
+      await deps.matter.restoreActiveByIds(targetRows.map((r) => r.id))
     }
     throw error
   }
@@ -688,23 +549,23 @@ export async function copyWebDavCollection(
 
 export function conflictingLocks(
   deps: Pick<Deps, 'webdavState'>,
-  params: { orgId: string; resourcePath: string },
+  params: { resourcePath: string },
 ): Promise<DavLock[]> {
-  return deps.webdavState.conflictingLocks(params.orgId, params.resourcePath)
+  return deps.webdavState.conflictingLocks(params.resourcePath)
 }
 
 export function refreshWebDavLock(
   deps: Pick<Deps, 'webdavState'>,
-  params: { orgId: string; resourcePath: string; token: string; timeoutSeconds: number },
+  params: { resourcePath: string; token: string; timeoutSeconds: number },
 ): Promise<DavLock | null> {
-  return deps.webdavState.refreshLock(params.orgId, params.resourcePath, params.token, params.timeoutSeconds)
+  return deps.webdavState.refreshLock(params.resourcePath, params.token, params.timeoutSeconds)
 }
 
 export function removeWebDavLock(
   deps: Pick<Deps, 'webdavState'>,
-  params: { orgId: string; resourcePath: string; token: string },
+  params: { resourcePath: string; token: string },
 ): Promise<boolean> {
-  return deps.webdavState.removeLock(params.orgId, params.resourcePath, params.token)
+  return deps.webdavState.removeLock(params.resourcePath, params.token)
 }
 
 // Lazily creates the empty file a LOCK targets when it does not yet exist (LOCK
@@ -713,7 +574,6 @@ export function removeWebDavLock(
 export async function createWebDavLock(
   deps: Pick<Deps, 'webdavState' | 'matter' | 'storages' | 's3'>,
   params: {
-    orgId: string
     userId: string
     resourcePath: string
     target: WebDavTarget
@@ -723,11 +583,10 @@ export async function createWebDavLock(
     createdBy: ActorIdentity
   },
 ): Promise<{ lock: DavLock; created: boolean } | null> {
-  const { orgId, userId, target } = params
+  const { userId, target } = params
   const created = !target.matter && Boolean(target.name)
   if (!created) {
     const lock = await deps.webdavState.tryCreateLock({
-      orgId,
       resourcePath: params.resourcePath,
       owner: params.owner,
       depth: params.depth,
@@ -736,14 +595,13 @@ export async function createWebDavLock(
     return lock ? { lock, created: false } : null
   }
 
-  const conflicts = await deps.webdavState.conflictingLocks(orgId, params.resourcePath)
+  const conflicts = await deps.webdavState.conflictingLocks(params.resourcePath)
   if (conflicts.length > 0) return null
 
   const storage = await deps.storages.select()
-  const objectKey = buildObjectKey({ uid: userId, orgId, rawExt: fileExt(target.name) })
+  const objectKey = buildObjectKey({ uid: userId, rawExt: fileExt(target.name) })
   await deps.s3.putObject(storage, objectKey, new Uint8Array(), 'application/octet-stream')
   await deps.matter.create({
-    orgId,
     name: target.name,
     type: 'application/octet-stream',
     size: 0,
@@ -757,7 +615,6 @@ export async function createWebDavLock(
     createdByActorIssuer: params.createdBy.issuer,
   })
   const lock = await deps.webdavState.createLock({
-    orgId,
     resourcePath: params.resourcePath,
     owner: params.owner,
     depth: params.depth,

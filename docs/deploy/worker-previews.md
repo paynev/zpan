@@ -1,5 +1,11 @@
 # Worker Previews
 
+> **Self-hosted instances:** this page documents the upstream ZPan Cloud
+> preview topology (shared staging data, OAuth/Stripe callbacks, `preview-tasks`
+> endpoints), which no longer applies to the single-admin build. For deploying
+> your own repository with Cloudflare Workers Builds, see
+> [Deploy with Cloudflare Workers Builds](workers-builds.md) instead.
+
 Use Cloudflare Workers Builds for production and branch previews. There is no
 separately deployed `zpan-staging` Worker in the target setup.
 
@@ -34,7 +40,7 @@ against the shared database.
 4. Deploy and verify the new Previews before removing the old Worker. Check
    login, database and storage isolation, and cross-project integration.
 5. Remove the old `zpan-staging` Worker only after its callers and callback
-   registrations have moved. Preserve staging D1, KV, and R2 data.
+   registrations have moved. Preserve staging D1 and KV data.
 
 A Preview URL stays stable while its Preview exists. Keep the Cloud `staging`
 branch active and retain its Preview. Cloudflare can evict least-recently-deployed
@@ -60,15 +66,14 @@ secrets explicitly when rotating them.
 
 ## Preview limitations
 
-Previews do not receive Cron events or consume Queue messages. ZPan Previews omit
-the archive Queue binding and explicitly reject archive creation/retries before
-persisting tasks. The file manager hides archive actions. Node/local execution
-and production Queue handling remain available.
+Previews do not receive Cron events. Node/local execution and production
+scheduled work remain available.
 
-Cloud maintenance is run on demand as described below. ZPan's automatic license
-refresh, usage reconciliation and other scheduled tasks are not automatically
-executed in Previews. Request-driven functionality is still available; record
-this limitation in preview verification reports.
+Cloud maintenance is run on demand as described below. Scheduled tasks such as
+statistics rollups, WebDAV lock expiry, resource-change retention, trash purge,
+and instance telemetry are not automatically executed in Previews.
+Request-driven functionality is still available; record this limitation in
+preview verification reports.
 
 ## Run Cloud maintenance manually
 

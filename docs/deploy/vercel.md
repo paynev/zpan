@@ -83,40 +83,18 @@ The app will be available at `http://localhost:3000`.
 - `/api/*` and `/health` → Vercel Function
 - All other paths → `dist/index.html` (SPA)
 
-## Entitlement Refresh (License Cert)
+## Background work
 
-ZPan refreshes its entitlement certificate every 6 hours. On Vercel there is no persistent process, so you need to trigger a refresh via an external scheduler.
+Serverless targets have no persistent process, so the recurring maintenance jobs
+that Node/Docker run on intervals (hourly statistics rollups, WebDAV lock expiry,
+resource-change retention, and daily trash purge) do not run automatically on
+this target. They are maintenance-only and can be left to a scheduled invocation
+if needed.
 
-### Setup
-
-1. **Generate a secret:**
-   ```sh
-   openssl rand -hex 32
-   ```
-
-2. **Add the env var** in your Vercel project settings (**Project → Settings → Environment Variables**):
-   | Variable | Value |
-   |----------|-------|
-   | `REFRESH_CRON_SECRET` | The random string from step 1 |
-   | `CRON_SECRET` | The same value; Vercel sends it as the scheduler Bearer token |
-
-3. **Schedule the call** using [Vercel Cron Jobs](https://vercel.com/docs/cron-jobs). Add a `crons` entry to your `vercel.json`:
-   ```json
-   {
-     "crons": [
-       {
-         "path": "/api/internal/licensing/refresh-runs",
-         "schedule": "0 */6 * * *"
-       },
-       {
-         "path": "/api/internal/traffic-sync-runs",
-         "schedule": "*/10 * * * *"
-       }
-     ]
-   }
-   ```
-Send `Authorization: Bearer <REFRESH_CRON_SECRET>` with every scheduler request. If `REFRESH_CRON_SECRET` is not set, the endpoint returns `401` for all requests.
-
+Optional instance telemetry is exposed at
+`POST /api/internal/instance-telemetry/report` and is gated by
+`ZPAN_INTERNAL_API_TOKEN`. The single-admin build has no license refresh or
+metered traffic sync endpoints.
 ## Pricing Notes
 
 - **Hobby (free)** — suitable for personal and non-commercial use. 100 GB-hours of function compute per month.

@@ -10,7 +10,7 @@ directory contains behavior specifications and their conventions.
 
 ## Convention
 
-- One `.feature` file per capability (`storages.feature`, `site-invitations.feature`, …).
+- One `.feature` file per capability (`storages.feature`, `shares.feature`, …).
 - Each scenario carries two tags: the **id** `@<capability>/<slug>` and the **layer**
   that proves it (`@domain` / `@usecase` / `@web` / `@api` / `@e2e`):
 
@@ -44,6 +44,14 @@ have a referencing test, and every `[spec: id]` breadcrumb must match a real sce
 Specs are authored capability-by-capability alongside the clean-architecture
 migration (see `docs/clean-arch-migration.md`). Migrated capabilities are specced
 and traced here; the rest land as their slices migrate.
+
+The single-admin build removed organizations, teams, quotas, licensing/Pro
+entitlements, remote downloads, the cloud store, invite codes, site invitations,
+OAuth providers, username sign-up and public profiles. Their `.feature` files
+were retired, and scenarios that lost their dedicated integration suites were
+pruned; the surviving behaviours are traced to the Cloudflare contract tests
+and usecase tests. Every scenario in this directory currently has a referencing
+test — `pnpm lint:spec` is green.
 
 ## Escalation
 

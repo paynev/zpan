@@ -6,7 +6,6 @@ import {
   pageSchema,
   patchStorageSchema,
   replaceStorageSchema,
-  updateStorageEgressBillingSchema,
 } from '@shared/schemas'
 import type { Env } from '../../middleware/platform'
 import { type StorageRecord, storageNotFound } from '../../usecases/ports'
@@ -17,7 +16,6 @@ import {
   listStorages,
   patchStorage,
   replaceStorage,
-  updateStorageEgressBilling,
 } from '../../usecases/site/storage'
 import { authRoute, errorResponse, jsonBody, jsonContent } from '../openapi'
 
@@ -33,9 +31,6 @@ const storageSchema = z
     accessKey: z.string(),
     filePath: z.string(),
     capacity: z.number().int(),
-    egressCreditBillingEnabled: z.boolean(),
-    egressCreditUnitBytes: z.number().int(),
-    egressCreditPerUnit: z.number().int(),
     forcePathStyle: z.boolean(),
     used: z.number().int(),
     enabled: z.boolean(),
@@ -86,7 +81,6 @@ const createStorageRoute = authRoute(
     request: jsonBody(createStorageSchema),
     responses: {
       201: jsonContent(storageSchema, 'Created storage'),
-      402: errorResponse('Feature not available'),
     },
   },
 )
@@ -118,7 +112,6 @@ const replaceStorageRoute = authRoute(
     request: { params: z.object({ id: opaqueIdSchema }), ...jsonBody(replaceStorageSchema) },
     responses: {
       200: jsonContent(storageSchema, 'Replaced storage'),
-      402: errorResponse('Feature not available'),
       404: errorResponse('Storage not found'),
     },
   },
@@ -135,24 +128,6 @@ const patchStorageRoute = authRoute(
     request: { params: z.object({ id: opaqueIdSchema }), ...jsonBody(patchStorageSchema) },
     responses: {
       200: jsonContent(storageSchema, 'Updated storage'),
-      402: errorResponse('Feature not available'),
-      404: errorResponse('Storage not found'),
-    },
-  },
-)
-
-const updateStorageEgressBillingRoute = authRoute(
-  { scopes: [AuthorizationScope.STORAGES_UPDATE], siteRole: 'admin' },
-  {
-    operationId: 'updateStorageEgressBilling',
-    summary: 'Update storage egress billing',
-    tags: ['Storages'],
-    method: 'put',
-    path: '/{id}/egress-billing',
-    request: { params: z.object({ id: opaqueIdSchema }), ...jsonBody(updateStorageEgressBillingSchema) },
-    responses: {
-      200: jsonContent(storageSchema, 'Updated storage'),
-      402: errorResponse('Feature not available'),
       404: errorResponse('Storage not found'),
     },
   },
@@ -203,14 +178,6 @@ const storages = new OpenAPIHono<Env>()
   })
   .openapi(patchStorageRoute, async (c) => {
     const result = await patchStorage(c.get('deps'), {
-      id: c.req.valid('param').id,
-      input: c.req.valid('json'),
-    })
-    if (!result.ok) throw result.error
-    return c.json(toStorageDTO(result.storage), 200)
-  })
-  .openapi(updateStorageEgressBillingRoute, async (c) => {
-    const result = await updateStorageEgressBilling(c.get('deps'), {
       id: c.req.valid('param').id,
       input: c.req.valid('json'),
     })

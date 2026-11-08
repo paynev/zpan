@@ -131,20 +131,6 @@ pnpm db:reset:d1             # Reset D1 local database (.wrangler)
 
 Migration files live in `migrations/` at project root. Always commit them.
 
-### Storage usage backfill
-
-After applying the migration that creates `storage_usage_breakdowns`, run the storage usage backfill once. The command is a dry run unless `--apply` is present.
-
-```sh
-pnpm storage:backfill -- --d1 zpan-db --remote
-pnpm storage:backfill -- --d1 zpan-db --remote --apply
-
-pnpm storage:backfill -- --sqlite .local/node/zpan.db
-pnpm storage:backfill -- --sqlite .local/node/zpan.db --apply
-```
-
-The backfill recalculates all eight storage categories from `matters` and `image_hostings`. It is an operator command, not part of the application runtime or deployment lifecycle.
-
 ### Storage enabled/status backfill
 
 After applying migrations 0066 through 0069, convert legacy storage status values into

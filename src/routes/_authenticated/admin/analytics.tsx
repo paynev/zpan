@@ -2,7 +2,6 @@ import type {
   AdminDashboardGrowthStats,
   AdminDashboardSharingStats,
   AdminDashboardStorageStats,
-  AdminDashboardTrafficStats,
   AdminStatsRange,
 } from '@shared/types'
 import { useQuery } from '@tanstack/react-query'
@@ -18,11 +17,9 @@ import {
   HardDrive,
   Link2,
   Lock,
-  Network,
   Share2,
   TrendingUp,
   Upload,
-  UploadCloud,
   Users,
 } from 'lucide-react'
 import { type CSSProperties, type ReactNode, useMemo, useState } from 'react'
@@ -61,7 +58,6 @@ import {
   getAdminDashboardGrowthStats,
   getAdminDashboardSharingStats,
   getAdminDashboardStorageStats,
-  getAdminDashboardTrafficStats,
 } from '@/lib/api'
 import { formatSize as formatByteSize } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -70,7 +66,7 @@ export const Route = createFileRoute('/_authenticated/admin/analytics')({
   component: OverviewPage,
 })
 
-type SectionId = 'growth' | 'storage' | 'traffic' | 'sharing'
+type SectionId = 'growth' | 'storage' | 'sharing'
 
 const COLORS = {
   blue: '#0369a1',
@@ -124,12 +120,6 @@ const SECTION_META: Array<{
     icon: HardDrive,
   },
   {
-    id: 'traffic',
-    title: '流量与传输',
-    description: '观察确认上传、下载签发、失败率和计量状态。',
-    icon: UploadCloud,
-  },
-  {
     id: 'sharing',
     title: '分享与访问',
     description: '观察分享创建、访问、下载签发和转存行为。',
@@ -151,13 +141,6 @@ export function OverviewPage() {
     openSection,
     hasAnalytics,
     getAdminDashboardStorageStats,
-  )
-  const trafficQuery = useDashboardSectionQuery(
-    'traffic',
-    range,
-    openSection,
-    hasAnalytics,
-    getAdminDashboardTrafficStats,
   )
   const sharingQuery = useDashboardSectionQuery(
     'sharing',
@@ -199,8 +182,6 @@ export function OverviewPage() {
               <QueryState query={growthQuery}>{(data) => <GrowthSection stats={data} />}</QueryState>
             ) : section.id === 'storage' ? (
               <QueryState query={storageQuery}>{(data) => <StorageSection stats={data} />}</QueryState>
-            ) : section.id === 'traffic' ? (
-              <QueryState query={trafficQuery}>{(data) => <TrafficSection stats={data} />}</QueryState>
             ) : section.id === 'sharing' ? (
               <QueryState query={sharingQuery}>{(data) => <SharingSection stats={data} />}</QueryState>
             ) : null}
@@ -528,13 +509,7 @@ function StorageSection({ stats }: { stats: AdminDashboardStorageStats }) {
           label="期末存储占用"
           value={formatSize(stats.summary.storageUsedBytes)}
           icon={HardDrive}
-          metrics={[
-            {
-              label: '配额使用率',
-              value: formatPercent(stats.summary.storageUtilization),
-            },
-            { label: '回收站占用', value: formatSize(stats.summary.trashBytes) },
-          ]}
+          metrics={[{ label: '回收站占用', value: formatSize(stats.summary.trashBytes) }]}
         />
         <StatCard
           label="确认写入字节"
@@ -569,42 +544,6 @@ function StorageSection({ stats }: { stats: AdminDashboardStorageStats }) {
           ]}
         />
       </div>
-      <ChartCard
-        title="空间配额压力"
-        subtitle={`全部空间中 ${formatNumber(stats.summary.nearQuotaSpaces)} 个达到 80%，${formatNumber(stats.summary.overQuotaSpaces)} 个达到或超过配额，${formatNumber(stats.summary.invalidQuotaSpaces)} 个额度配置异常。`}
-        contentClassName="h-auto"
-      >
-        {stats.topSpaces.length === 0 ? (
-          <EmptyState />
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-border/50">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>空间</TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead className="text-right">占用</TableHead>
-                  <TableHead className="text-right">配额</TableHead>
-                  <TableHead className="text-right">使用率</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {stats.topSpaces.map((space) => (
-                  <TableRow key={space.orgId}>
-                    <TableCell className="max-w-60 truncate font-medium" title={space.orgName}>
-                      {space.orgName}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{labelize(space.orgType)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatSize(space.usedBytes)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatSize(space.quotaBytes)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatPercent(space.utilization)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </ChartCard>
       <div className="grid gap-4 xl:grid-cols-2">
         <ChartCard title="存储与写入趋势" subtitle="存储占用是水位；确认上传文件和字节是周期事件量，不代表净增长。">
           {hasNumericData(stats.storageTrend, ['usedBytes', 'newBytes', 'newFiles']) ? (
@@ -749,227 +688,6 @@ function StorageSection({ stats }: { stats: AdminDashboardStorageStats }) {
             </AnalyticsChartContainer>
           ) : (
             <EmptyState />
-          )}
-        </ChartCard>
-      </div>
-    </div>
-  )
-}
-
-function TrafficSection({ stats }: { stats: AdminDashboardTrafficStats }) {
-  const uploadPointCount = stats.trafficTrend.filter((row) => row.uploadBytes !== null).length
-  const downloadPointCount = stats.trafficTrend.filter((row) => row.downloadBytes !== null).length
-  const uploadSuccessPointCount = stats.successTrend.filter((row) => row.uploadSuccessRate !== null).length
-  const downloadSuccessPointCount = stats.successTrend.filter((row) => row.downloadSuccessRate !== null).length
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          label="确认/签发字节"
-          value={formatSize(stats.summary.totalBytes.value)}
-          delta={formatDelta(stats.summary.totalBytes, formatSize)}
-          icon={Network}
-          metrics={[
-            { label: '峰值日字节', value: formatSize(stats.summary.peakDailyBytes) },
-            { label: '请求量', value: formatNumber(stats.summary.requestCount.value) },
-          ]}
-        />
-        <StatCard
-          label="请求量"
-          value={formatNumber(stats.summary.requestCount.value)}
-          delta={formatDelta(stats.summary.requestCount)}
-          icon={Activity}
-          metrics={[
-            { label: '下载签发', value: formatNumber(stats.summary.issuedDownloads) },
-            { label: '签发失败', value: formatNumber(stats.summary.blockedDownloads) },
-          ]}
-        />
-        <StatCard
-          label="下载签发成功率"
-          value={formatPercent(stats.summary.downloadIssueSuccessRate)}
-          icon={Download}
-          metrics={[
-            { label: '签发成功', value: formatNumber(stats.summary.issuedDownloads) },
-            { label: '签发失败', value: formatNumber(stats.summary.blockedDownloads) },
-          ]}
-        />
-        <StatCard
-          label="峰值日字节"
-          value={formatSize(stats.summary.peakDailyBytes)}
-          icon={TrendingUp}
-          metrics={[
-            { label: '统计口径', value: '确认上传 + 下载签发' },
-            { label: '周期总量', value: formatSize(stats.summary.totalBytes.value) },
-          ]}
-        />
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <ChartCard
-          title="传输事件趋势"
-          subtitle="上传为确认完成字节，下载为链接签发对象字节，不代表客户端实际完成传输。"
-        >
-          {hasNumericData(stats.trafficTrend, ['uploadBytes', 'downloadBytes', 'requests']) ? (
-            <AnalyticsChartContainer>
-              <ComposedChart data={stats.trafficTrend}>
-                <CartesianGrid stroke={CHART_GRID_COLOR} strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} tickFormatter={formatChartDate} />
-                <YAxis
-                  yAxisId="bytes"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={12}
-                  width={58}
-                  tickFormatter={formatCompactSize}
-                />
-                <YAxis
-                  yAxisId="count"
-                  orientation="right"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={12}
-                  width={46}
-                  tickFormatter={formatCompactNumber}
-                />
-                <RechartsTooltip
-                  contentStyle={tooltipContentStyle}
-                  labelStyle={tooltipLabelStyle}
-                  formatter={chartTooltipFormatter}
-                />
-                <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                <Bar yAxisId="count" dataKey="requests" name="请求量" fill={CHART_COLORS[5]} radius={[4, 4, 0, 0]} />
-                <Line
-                  yAxisId="bytes"
-                  type="monotone"
-                  dataKey="uploadBytes"
-                  name="确认上传字节"
-                  stroke={CHART_COLORS[0]}
-                  strokeWidth={2}
-                  dot={singlePointDot(uploadPointCount, CHART_COLORS[0])}
-                />
-                <Line
-                  yAxisId="bytes"
-                  type="monotone"
-                  dataKey="downloadBytes"
-                  name="下载签发字节"
-                  stroke={CHART_COLORS[2]}
-                  strokeWidth={2}
-                  dot={singlePointDot(downloadPointCount, CHART_COLORS[2])}
-                />
-              </ComposedChart>
-            </AnalyticsChartContainer>
-          ) : (
-            <EmptyState />
-          )}
-        </ChartCard>
-        <BreakdownChart
-          title="传输来源分布"
-          rows={stats.sourceBreakdown.map((row) => ({ name: row.name, value: row.bytes, percent: row.percent }))}
-          valueFormatter={formatSize}
-        />
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <ChartCard
-          title="签发与确认成功率"
-          subtitle="上传成功指完成确认；下载成功指成功签发链接，不代表客户端下载完成。"
-        >
-          {hasNumericData(stats.successTrend, ['uploadSuccessRate', 'downloadSuccessRate']) ? (
-            <AnalyticsChartContainer>
-              <AreaChart data={stats.successTrend} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke={CHART_GRID_COLOR} strokeDasharray="3 3" vertical={false} />
-                <XAxis
-                  dataKey="date"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={12}
-                  minTickGap={16}
-                  tickFormatter={formatChartDate}
-                />
-                <YAxis
-                  domain={[0, 100]}
-                  tickFormatter={(value) => `${value}%`}
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={12}
-                  width={46}
-                />
-                <RechartsTooltip
-                  contentStyle={tooltipContentStyle}
-                  labelStyle={tooltipLabelStyle}
-                  formatter={(value, name) => [`${Number(value).toFixed(1)}%`, name]}
-                />
-                <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                <Area
-                  type="monotone"
-                  dataKey="uploadSuccessRate"
-                  name="上传成功率"
-                  stroke={CHART_COLORS[1]}
-                  fill={CHART_COLORS[1]}
-                  fillOpacity={0.08}
-                  strokeWidth={2}
-                  dot={singlePointDot(uploadSuccessPointCount, CHART_COLORS[1])}
-                  isAnimationActive={false}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="downloadSuccessRate"
-                  name="下载成功率"
-                  stroke={CHART_COLORS[0]}
-                  fill={CHART_COLORS[0]}
-                  fillOpacity={0.08}
-                  strokeWidth={2}
-                  dot={singlePointDot(downloadSuccessPointCount, CHART_COLORS[0])}
-                  isAnimationActive={false}
-                />
-              </AreaChart>
-            </AnalyticsChartContainer>
-          ) : (
-            <EmptyState />
-          )}
-        </ChartCard>
-        <ChartCard title="失败原因分布" subtitle="分类比较用横向条形图，并标出每类占比。">
-          {stats.failureReasons.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <AnalyticsChartContainer>
-              <BarChart
-                data={stats.failureReasons}
-                layout="vertical"
-                margin={{ top: 8, right: 40, left: 12, bottom: 0 }}
-              >
-                <CartesianGrid stroke={CHART_GRID_COLOR} strokeDasharray="3 3" horizontal={false} />
-                <XAxis
-                  type="number"
-                  tickLine={false}
-                  axisLine={false}
-                  fontSize={12}
-                  tickFormatter={formatCompactNumber}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  tickLine={false}
-                  axisLine={false}
-                  width={86}
-                  fontSize={12}
-                  tickFormatter={labelize}
-                />
-                <RechartsTooltip
-                  contentStyle={tooltipContentStyle}
-                  labelStyle={tooltipLabelStyle}
-                  formatter={(value) => formatNumber(Number(value))}
-                  labelFormatter={(value) => labelize(String(value))}
-                />
-                <Bar
-                  dataKey="value"
-                  name="失败次数"
-                  fill={CHART_COLORS[4]}
-                  radius={[0, 4, 4, 0]}
-                  isAnimationActive={false}
-                >
-                  <LabelList dataKey="percent" position="right" formatter={formatPercentLabel} fontSize={11} />
-                </Bar>
-              </BarChart>
-            </AnalyticsChartContainer>
           )}
         </ChartCard>
       </div>

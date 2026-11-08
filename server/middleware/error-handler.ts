@@ -44,7 +44,7 @@ export function jsonError(c: Context<Env>, err: unknown): Response {
 }
 
 // Render the same JSON error outside Hono's request pipeline. Cloudflare's
-// image-domain fast path runs before the full app (and Better Auth) exists.
+// The Worker fetch handler runs before the full app (and Better Auth) exists.
 export function standaloneJsonError(err: unknown): Response {
   if (err instanceof AppError) {
     return Response.json(

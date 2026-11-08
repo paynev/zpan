@@ -1,3 +1,4 @@
+import { resolveAuthSecret } from '../../shared/auth-secret'
 import type { Platform } from '../platform/interface'
 import { badRequest } from '../usecases/ports'
 
@@ -31,16 +32,16 @@ function decodeBase64Url(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, 'base64url'))
 }
 
-function secret(platform: Platform): string {
-  const value = platform.getEnv('BETTER_AUTH_SECRET')
-  if (!value) throw new Error('BETTER_AUTH_SECRET is required')
-  return value
+async function secret(platform: Platform): Promise<string> {
+  // Same resolver as auth session signing: derived from the admin credentials
+  // unless an explicit BETTER_AUTH_SECRET is configured.
+  return resolveAuthSecret((key) => platform.getEnv(key))
 }
 
 async function signingKey(platform: Platform): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     'raw',
-    new TextEncoder().encode(`${TOKEN_PURPOSE}:${secret(platform)}`),
+    new TextEncoder().encode(`${TOKEN_PURPOSE}:${await secret(platform)}`),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign', 'verify'],

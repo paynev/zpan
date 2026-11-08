@@ -19,7 +19,7 @@ import {
   sql,
 } from 'drizzle-orm'
 import { generateId, generateToken } from '../../../shared/ids'
-import { matters } from '../../db/schema'
+import { matters, storages } from '../../db/schema'
 import { type AtomicQuery, executeWriteTransaction, executeWriteTransactionWithResults } from '../../db/transaction'
 import { suggestRenamed } from '../../domain/matter-name-conflict'
 import type { Database } from '../../platform/interface'
@@ -37,21 +37,12 @@ import type {
 } from '../../usecases/ports'
 import { NameConflictError } from '../../usecases/ports'
 import { resourceChangeQuery } from './resource-change'
-import {
-  matterActivationLedgerQuery,
-  matterPurgeLedgerQuery,
-  matterResizeLedgerQuery,
-  storageUsageMutationQuery,
-  storageUsageOpeningBalanceQuery,
-} from './storage-usage-ledger'
-import {
-  matterAddedProjectionQueries,
-  matterRemovedProjectionQueries,
-  matterRestoredProjectionQueries,
-  matterTrashedProjectionQueries,
-} from './storage-usage-projection-mutations'
 
 type MatterRow = typeof matters.$inferSelect
+
+// The single site-level resource-change scope every write emits into (SSE is a
+// single global stream on this single-user instance).
+const SITE_SCOPE = { scopeType: 'site' as const, scopeId: 'default' }
 
 function toMatter(row: MatterRow): Matter {
   return row
@@ -88,17 +79,26 @@ function typeFilterCondition(typeFilter: string): SQL | undefined {
   }
 }
 
+// Recomputes storages.used from the live matters inventory.
+// Mirrors the storage-usage repo's reconcile expression.
+function reconcileStoragesUsed(db: Database, storageIds: string[]): AtomicQuery | null {
+  if (storageIds.length === 0) return null
+  const usedExpression = sql`COALESCE((
+    SELECT SUM(${matters.size})
+    FROM ${matters}
+    WHERE ${matters.storageId} = ${storages.id}
+      AND ${matters.dirtype} = ${DirType.FILE}
+      AND ${matters.status} = 'active'
+      AND ${matters.purgedAt} IS NULL
+      AND ${matters.trashedAt} IS NULL
+  ), 0)`
+  return db.update(storages).set({ used: usedExpression }).where(inArray(storages.id, storageIds))
+}
+
 export function createMatterRepo(db: Database): MatterRepo {
-  const matterChanges = (
-    orgId: string,
-    ids: string[],
-    now: Date,
-    action: string,
-    changeType: 'upsert' | 'delete' = 'upsert',
-  ) => [
+  const matterChanges = (ids: string[], now: Date, action: string, changeType: 'upsert' | 'delete' = 'upsert') => [
     resourceChangeQuery(db, {
-      scopeType: 'organization',
-      scopeId: orgId,
+      ...SITE_SCOPE,
       resourceType: 'matter',
       resourceId: ids.length === 1 ? ids[0]! : '*',
       changeType,
@@ -108,34 +108,34 @@ export function createMatterRepo(db: Database): MatterRepo {
     }),
   ]
 
-  async function getMatter(id: string, orgId: string): Promise<Matter | null> {
+  async function getMatter(id: string): Promise<Matter | null> {
     const rows = await db
       .select()
       .from(matters)
-      .where(and(eq(matters.id, id), eq(matters.orgId, orgId), isNull(matters.purgedAt)))
+      .where(and(eq(matters.id, id), isNull(matters.purgedAt)))
     return rows[0] ? toMatter(rows[0]) : null
   }
 
-  function getDescendants(orgId: string, folderPath: string): Promise<MatterRow[]> {
+  function getDescendants(folderPath: string): Promise<MatterRow[]> {
     return db
       .select()
       .from(matters)
-      .where(and(eq(matters.orgId, orgId), isNull(matters.purgedAt), descendantParentCondition(folderPath)))
+      .where(and(isNull(matters.purgedAt), descendantParentCondition(folderPath)))
   }
 
-  function getDirectChildren(orgId: string, folderPath: string): Promise<MatterRow[]> {
+  function getDirectChildren(folderPath: string): Promise<MatterRow[]> {
     return db
       .select()
       .from(matters)
-      .where(and(eq(matters.orgId, orgId), eq(matters.parent, folderPath), isNull(matters.purgedAt)))
+      .where(and(eq(matters.parent, folderPath), isNull(matters.purgedAt)))
   }
 
-  async function cascadeParentPath(orgId: string, oldPath: string, newPath: string): Promise<void> {
+  async function cascadeParentPath(oldPath: string, newPath: string): Promise<void> {
     // Direct children: parent = oldPath → parent = newPath
     await db
       .update(matters)
       .set({ parent: newPath, updatedAt: new Date() })
-      .where(and(eq(matters.orgId, orgId), eq(matters.parent, oldPath), isNull(matters.purgedAt)))
+      .where(and(eq(matters.parent, oldPath), isNull(matters.purgedAt)))
 
     // Deeper descendants: parent starts with 'oldPath/' → replace prefix.
     await db
@@ -144,7 +144,7 @@ export function createMatterRepo(db: Database): MatterRepo {
         parent: sql`${newPath} || SUBSTR(${matters.parent}, LENGTH(${oldPath}) + 1)`,
         updatedAt: new Date(),
       })
-      .where(and(eq(matters.orgId, orgId), isNull(matters.purgedAt), descendantParentCondition(oldPath)))
+      .where(and(isNull(matters.purgedAt), descendantParentCondition(oldPath)))
   }
 
   /**
@@ -154,14 +154,8 @@ export function createMatterRepo(db: Database): MatterRepo {
    * keeps the recycle bin from blocking names. `excludeId` lets rename/move skip
    * the row being modified.
    */
-  async function findActiveConflict(
-    orgId: string,
-    parent: string,
-    name: string,
-    excludeId?: string,
-  ): Promise<Matter | null> {
+  async function findActiveConflict(parent: string, name: string, excludeId?: string): Promise<Matter | null> {
     const conditions = [
-      eq(matters.orgId, orgId),
       eq(matters.parent, parent),
       eq(matters.status, ObjectStatus.ACTIVE),
       isNull(matters.trashedAt),
@@ -177,15 +171,10 @@ export function createMatterRepo(db: Database): MatterRepo {
     return rows[0] ? toMatter(rows[0]) : null
   }
 
-  async function findAvailableName(
-    orgId: string,
-    parent: string,
-    name: string,
-    excludeId: string | undefined,
-  ): Promise<string> {
+  async function findAvailableName(parent: string, name: string, excludeId: string | undefined): Promise<string> {
     for (let i = 1; i <= 999; i++) {
       const candidate = suggestRenamed(name, i)
-      const conflict = await findActiveConflict(orgId, parent, candidate, excludeId)
+      const conflict = await findActiveConflict(parent, candidate, excludeId)
       if (!conflict) return candidate
     }
     throw new Error('Too many name conflicts to auto-rename')
@@ -198,13 +187,12 @@ export function createMatterRepo(db: Database): MatterRepo {
    * because the incoming or existing row is a folder (not supported in v1).
    */
   async function planConflictResolution(
-    orgId: string,
     parent: string,
     name: string,
     strategy: ConflictStrategy,
     options: ConflictResolveOptions = {},
   ): Promise<ConflictPlan> {
-    const existing = await findActiveConflict(orgId, parent, name, options.excludeId)
+    const existing = await findActiveConflict(parent, name, options.excludeId)
     if (!existing) return { finalName: name, toTrash: null }
 
     if (strategy === 'fail') {
@@ -220,56 +208,59 @@ export function createMatterRepo(db: Database): MatterRepo {
       return { finalName: name, toTrash: existing }
     }
 
-    const renamed = await findAvailableName(orgId, parent, name, options.excludeId)
+    const renamed = await findAvailableName(parent, name, options.excludeId)
     return { finalName: renamed, toTrash: null }
   }
 
-  async function trashForReplace(orgId: string, existing: Matter): Promise<void> {
+  async function trashForReplace(existing: Matter): Promise<void> {
     const now = new Date()
-    await executeWriteTransaction(db, [
-      ...matterTrashedProjectionQueries(db, orgId, [existing.id]),
-      db
-        .update(matters)
-        .set({ trashedAt: now.getTime(), updatedAt: now })
-        .where(and(eq(matters.id, existing.id), eq(matters.orgId, orgId), isNull(matters.purgedAt))),
-    ])
+    await executeWriteTransaction(
+      db,
+      [
+        db
+          .update(matters)
+          .set({ trashedAt: now.getTime(), updatedAt: now })
+          .where(and(eq(matters.id, existing.id), isNull(matters.purgedAt))),
+        ...matterChanges([existing.id], now, 'trashed', 'delete'),
+        ...(existing.dirtype === DirType.FILE ? [reconcileStoragesUsed(db, [existing.storageId])] : []),
+      ].filter(Boolean) as AtomicQuery[],
+    )
   }
 
   /** Execute the side effects of a plan (trash the replaced row). */
-  async function commitConflictPlan(orgId: string, plan: ConflictPlan): Promise<void> {
+  async function commitConflictPlan(plan: ConflictPlan): Promise<void> {
     if (plan.toTrash) {
-      await trashForReplace(orgId, plan.toTrash)
+      await trashForReplace(plan.toTrash)
     }
   }
 
   /**
    * Convenience for the common case: plan + commit back-to-back. Callers that
-   * need to interleave checks (e.g. quota) between plan and commit should use
+   * need to interleave checks between plan and commit should use
    * planConflictResolution / commitConflictPlan directly — see confirmUpload.
    */
   async function applyConflictResolution(
-    orgId: string,
     parent: string,
     name: string,
     strategy: ConflictStrategy,
     options: ConflictResolveOptions = {},
   ): Promise<string> {
-    const plan = await planConflictResolution(orgId, parent, name, strategy, options)
-    await commitConflictPlan(orgId, plan)
+    const plan = await planConflictResolution(parent, name, strategy, options)
+    await commitConflictPlan(plan)
     return plan.finalName
   }
 
-  function collectForPurge(orgId: string, idOrMatter: string): Promise<Matter[] | null>
-  function collectForPurge(orgId: string, idOrMatter: Matter): Promise<Matter[]>
-  async function collectForPurge(orgId: string, idOrMatter: string | Matter): Promise<Matter[] | null> {
-    const existing = typeof idOrMatter === 'string' ? await getMatter(idOrMatter, orgId) : idOrMatter
+  function collectForPurge(idOrMatter: string): Promise<Matter[] | null>
+  function collectForPurge(idOrMatter: Matter): Promise<Matter[]>
+  async function collectForPurge(idOrMatter: string | Matter): Promise<Matter[] | null> {
+    const existing = typeof idOrMatter === 'string' ? await getMatter(idOrMatter) : idOrMatter
     if (!existing) return null
 
     if (existing.dirtype === DirType.FILE) return [existing]
 
     const path = buildPath(existing.parent, existing.name)
-    const children = await getDirectChildren(orgId, path)
-    const descendants = await getDescendants(orgId, path)
+    const children = await getDirectChildren(path)
+    const descendants = await getDescendants(path)
     return [existing, ...children.map(toMatter), ...descendants.map(toMatter)]
   }
 
@@ -282,23 +273,21 @@ export function createMatterRepo(db: Database): MatterRepo {
       // Resolve name collisions against existing active siblings BEFORE inserting —
       // for folders this prevents duplicates at creation; for files it catches the
       // conflict before the client wastes a large S3 upload.
-      const plan = await planConflictResolution(input.orgId, parent, input.name, input.onConflict ?? 'fail', {
+      const plan = await planConflictResolution(parent, input.name, input.onConflict ?? 'fail', {
         isFolder,
       })
       // Overwriting the incumbent for a draft-file 'replace' is deferred to
       // confirmUpload (which purges it after the new bytes land). That keeps a
-      // failed/abandoned upload from destroying the existing file, and lets the
-      // replace be charged as a net-size change. Folders, active creates, and
-      // rename commit their plan immediately.
+      // failed/abandoned upload from destroying the existing file. Folders,
+      // active creates, and rename commit their plan immediately.
       const deferOverwrite = !isFolder && input.status === 'draft' && plan.toTrash !== null
       if (!deferOverwrite) {
-        await commitConflictPlan(input.orgId, plan)
+        await commitConflictPlan(plan)
       }
       const finalName = plan.finalName
 
       const row: MatterRow = {
         id: generateId(),
-        orgId: input.orgId,
         alias: generateToken(11),
         name: finalName,
         type: input.type,
@@ -318,39 +307,19 @@ export function createMatterRepo(db: Database): MatterRepo {
       }
 
       const isBillable = row.status === ObjectStatus.ACTIVE && row.dirtype === DirType.FILE
-      if (isBillable) {
-        const writes: AtomicQuery[] = [
-          storageUsageOpeningBalanceQuery(db, row.orgId, row.storageId, now),
+      await executeWriteTransaction(
+        db,
+        [
           db.insert(matters).values(row),
-          ...matterChanges(row.orgId, [row.id], now, 'created'),
-          ...matterAddedProjectionQueries(db, row.orgId, row.id),
-          ...(row.size && row.size > 0
-            ? [
-                storageUsageMutationQuery(db, {
-                  eventKey: `matter:${row.id}:activated`,
-                  orgId: row.orgId,
-                  storageId: row.storageId,
-                  resourceType: 'matter',
-                  resourceId: row.id,
-                  deltaBytes: row.size,
-                  reason: 'matter_activated',
-                  occurredAt: now,
-                }),
-              ]
-            : []),
-        ]
-        await executeWriteTransaction(db, writes)
-      } else {
-        await executeWriteTransaction(db, [
-          db.insert(matters).values(row),
-          ...matterChanges(row.orgId, [row.id], now, 'created'),
-        ])
-      }
+          ...matterChanges([row.id], now, 'created'),
+          ...(isBillable ? [reconcileStoragesUsed(db, [row.storageId])] : []),
+        ].filter(Boolean) as AtomicQuery[],
+      )
 
       return toMatter(row)
     },
 
-    async list(orgId: string, filters: MatterListFilters): Promise<MatterListResult> {
+    async list(filters: MatterListFilters): Promise<MatterListResult> {
       const childMatters = aliasedTable(matters, 'child')
       const folderPath = sql<string>`CASE
         WHEN ${matters.parent} = '' THEN ${matters.name}
@@ -362,7 +331,6 @@ export function createMatterRepo(db: Database): MatterRepo {
           .from(childMatters)
           .where(
             and(
-              eq(childMatters.orgId, matters.orgId),
               eq(childMatters.parent, folderPath),
               ne(childMatters.dirtype, DirType.FILE),
               eq(childMatters.status, ObjectStatus.ACTIVE),
@@ -374,12 +342,7 @@ export function createMatterRepo(db: Database): MatterRepo {
       )
       // Live objects only. Trashed rows are status='active' too, so exclude them
       // by trashedAt; the recycle bin is served by listTrashedRoots.
-      const conditions = [
-        eq(matters.orgId, orgId),
-        eq(matters.status, ObjectStatus.ACTIVE),
-        isNull(matters.trashedAt),
-        isNull(matters.purgedAt),
-      ]
+      const conditions = [eq(matters.status, ObjectStatus.ACTIVE), isNull(matters.trashedAt), isNull(matters.purgedAt)]
       const typeCond = filters.typeFilter ? typeFilterCondition(filters.typeFilter) : undefined
       if (filters.search) conditions.push(like(matters.name, `%${filters.search}%`))
       if (typeCond) {
@@ -432,21 +395,12 @@ export function createMatterRepo(db: Database): MatterRepo {
       }
     },
 
-    get(id, orgId) {
-      return getMatter(id, orgId)
+    get(id) {
+      return getMatter(id)
     },
 
-    async getMany(orgId, ids) {
-      if (ids.length === 0) return []
-      const rows = await db
-        .select()
-        .from(matters)
-        .where(and(eq(matters.orgId, orgId), inArray(matters.id, ids), isNull(matters.purgedAt)))
-      return rows.map(toMatter)
-    },
-
-    async update(id, orgId, input: UpdateMatterInput): Promise<Matter | null> {
-      const existing = await getMatter(id, orgId)
+    async update(id, input: UpdateMatterInput): Promise<Matter | null> {
+      const existing = await getMatter(id)
       if (!existing) return null
 
       const now = new Date()
@@ -469,7 +423,7 @@ export function createMatterRepo(db: Database): MatterRepo {
       // rename (A → A) is allowed.
       const newName =
         renamed || moved
-          ? await applyConflictResolution(orgId, newParent, requestedName, input.onConflict ?? 'fail', {
+          ? await applyConflictResolution(newParent, requestedName, input.onConflict ?? 'fail', {
               excludeId: existing.id,
               isFolder,
             })
@@ -478,15 +432,15 @@ export function createMatterRepo(db: Database): MatterRepo {
       if (isFolder && (renamed || moved)) {
         const oldPath = buildPath(existing.parent, existing.name)
         const newPath = buildPath(newParent, newName)
-        await cascadeParentPath(orgId, oldPath, newPath)
+        await cascadeParentPath(oldPath, newPath)
       }
 
       await executeWriteTransaction(db, [
         db
           .update(matters)
           .set({ name: newName, parent: newParent, updatedAt: now })
-          .where(and(eq(matters.id, id), eq(matters.orgId, orgId), isNull(matters.purgedAt))),
-        ...matterChanges(orgId, [id], now, moved ? 'moved' : renamed ? 'renamed' : 'updated'),
+          .where(and(eq(matters.id, id), isNull(matters.purgedAt))),
+        ...matterChanges([id], now, moved ? 'moved' : renamed ? 'renamed' : 'updated'),
       ])
 
       const updated = { ...existing, name: newName, parent: newParent, updatedAt: now }
@@ -500,19 +454,12 @@ export function createMatterRepo(db: Database): MatterRepo {
       // Default to 'rename' for copy — copying "foo.pdf" into the same folder almost
       // always means "make a duplicate", so the Finder-style auto-rename is the
       // intuitive default when the caller didn't pick a strategy.
-      const finalName = await applyConflictResolution(
-        source.orgId,
-        targetParent,
-        source.name,
-        opts.onConflict ?? 'rename',
-        {
-          isFolder,
-        },
-      )
+      const finalName = await applyConflictResolution(targetParent, source.name, opts.onConflict ?? 'rename', {
+        isFolder,
+      })
 
       const row: MatterRow = {
         id: generateId(),
-        orgId: source.orgId,
         alias: generateToken(11),
         name: finalName,
         type: source.type,
@@ -531,45 +478,33 @@ export function createMatterRepo(db: Database): MatterRepo {
         updatedAt: now,
       }
 
-      await executeWriteTransaction(db, [
-        storageUsageOpeningBalanceQuery(db, row.orgId, row.storageId, now),
-        db.insert(matters).values(row),
-        ...matterChanges(row.orgId, [row.id], now, 'copied'),
-        ...(row.dirtype === DirType.FILE ? matterAddedProjectionQueries(db, row.orgId, row.id) : []),
-        ...(row.dirtype === DirType.FILE && row.size && row.size > 0
-          ? [
-              storageUsageMutationQuery(db, {
-                eventKey: `matter:${row.id}:activated`,
-                orgId: row.orgId,
-                storageId: row.storageId,
-                resourceType: 'matter',
-                resourceId: row.id,
-                deltaBytes: row.size,
-                reason: 'matter_activated',
-                occurredAt: now,
-              }),
-            ]
-          : []),
-      ])
+      await executeWriteTransaction(
+        db,
+        [
+          db.insert(matters).values(row),
+          ...matterChanges([row.id], now, 'copied'),
+          ...(row.dirtype === DirType.FILE ? [reconcileStoragesUsed(db, [row.storageId])] : []),
+        ].filter(Boolean) as AtomicQuery[],
+      )
 
       return toMatter(row)
     },
 
-    async cancelDraft(id, orgId): Promise<Matter | null> {
-      const existing = await getMatter(id, orgId)
+    async cancelDraft(id): Promise<Matter | null> {
+      const existing = await getMatter(id)
       if (!existing || existing.status !== 'draft') return null
 
       const deleted = await db
         .delete(matters)
-        .where(and(eq(matters.id, id), eq(matters.orgId, orgId), eq(matters.status, 'draft'), isNull(matters.purgedAt)))
+        .where(and(eq(matters.id, id), eq(matters.status, 'draft'), isNull(matters.purgedAt)))
         .returning({ id: matters.id })
       if (deleted.length !== 1) return null
 
       return existing
     },
 
-    async trash(orgId, id): Promise<Matter | null> {
-      const existing = await getMatter(id, orgId)
+    async trash(id): Promise<Matter | null> {
+      const existing = await getMatter(id)
       if (!existing) return null
       if (existing.trashedAt != null) return existing // already in trash (idempotent)
       // Only live objects can be trashed; a draft is discarded via the upload session.
@@ -578,39 +513,48 @@ export function createMatterRepo(db: Database): MatterRepo {
       const now = new Date()
       const nowTs = now.getTime()
       const allIds = [existing.id]
+      const affectedStorageIds = new Set<string>()
 
       if (existing.dirtype !== DirType.FILE) {
         const path = buildPath(existing.parent, existing.name)
-        const children = await getDirectChildren(orgId, path)
-        const descendants = await getDescendants(orgId, path)
+        const children = await getDirectChildren(path)
+        const descendants = await getDescendants(path)
         allIds.push(...children.map((m) => m.id), ...descendants.map((m) => m.id))
       }
+      if (existing.dirtype === DirType.FILE) affectedStorageIds.add(existing.storageId)
+      const subtreeRows = await db
+        .select({ id: matters.id, storageId: matters.storageId, dirtype: matters.dirtype })
+        .from(matters)
+        .where(and(inArray(matters.id, allIds), eq(matters.dirtype, DirType.FILE), isNull(matters.purgedAt)))
+      for (const row of subtreeRows) affectedStorageIds.add(row.storageId)
 
       // Soft delete: mark trashedAt, keep status='active'. Only mark live rows so a
       // child already trashed earlier keeps its own trashedAt (and restore later).
-      await executeWriteTransaction(db, [
-        ...matterTrashedProjectionQueries(db, orgId, allIds),
-        db
-          .update(matters)
-          .set({ trashedAt: nowTs, updatedAt: now })
-          .where(
-            and(
-              inArray(matters.id, allIds),
-              eq(matters.orgId, orgId),
-              eq(matters.status, ObjectStatus.ACTIVE),
-              isNull(matters.trashedAt),
-              isNull(matters.purgedAt),
+      await executeWriteTransaction(
+        db,
+        [
+          db
+            .update(matters)
+            .set({ trashedAt: nowTs, updatedAt: now })
+            .where(
+              and(
+                inArray(matters.id, allIds),
+                eq(matters.status, ObjectStatus.ACTIVE),
+                isNull(matters.trashedAt),
+                isNull(matters.purgedAt),
+              ),
             ),
-          ),
-        ...matterChanges(orgId, allIds, now, 'trashed', 'delete'),
-      ])
+          ...matterChanges(allIds, now, 'trashed', 'delete'),
+          reconcileStoragesUsed(db, [...affectedStorageIds]),
+        ].filter(Boolean) as AtomicQuery[],
+      )
       const trashed = { ...existing, trashedAt: nowTs, updatedAt: now }
 
       return trashed
     },
 
-    async restore(orgId, id, onConflict: ConflictStrategy = 'fail'): Promise<Matter | null> {
-      const existing = await getMatter(id, orgId)
+    async restore(id, onConflict: ConflictStrategy = 'fail'): Promise<Matter | null> {
+      const existing = await getMatter(id)
       if (!existing) return null
       if (existing.trashedAt == null) return existing // not in trash → no-op
 
@@ -618,7 +562,7 @@ export function createMatterRepo(db: Database): MatterRepo {
       // while this one sat in trash. Resolve before touching descendants so a
       // rejection doesn't leave folders half-restored.
       const isFolder = existing.dirtype !== DirType.FILE
-      const finalName = await applyConflictResolution(orgId, existing.parent, existing.name, onConflict, {
+      const finalName = await applyConflictResolution(existing.parent, existing.name, onConflict, {
         excludeId: existing.id,
         isFolder,
       })
@@ -628,10 +572,17 @@ export function createMatterRepo(db: Database): MatterRepo {
 
       if (isFolder) {
         const path = buildPath(existing.parent, existing.name)
-        const children = await getDirectChildren(orgId, path)
-        const descendants = await getDescendants(orgId, path)
+        const children = await getDirectChildren(path)
+        const descendants = await getDescendants(path)
         allIds.push(...children.map((m) => m.id), ...descendants.map((m) => m.id))
       }
+      const affectedStorageIds = new Set<string>()
+      if (existing.dirtype === DirType.FILE) affectedStorageIds.add(existing.storageId)
+      const subtreeRows = await db
+        .select({ id: matters.id, storageId: matters.storageId, dirtype: matters.dirtype })
+        .from(matters)
+        .where(and(inArray(matters.id, allIds), eq(matters.dirtype, DirType.FILE), isNull(matters.purgedAt)))
+      for (const row of subtreeRows) affectedStorageIds.add(row.storageId)
 
       // Rename + cascade parent paths BEFORE clearing trashedAt. While everything
       // is still in trash, these writes cannot violate the live-name unique index
@@ -641,30 +592,26 @@ export function createMatterRepo(db: Database): MatterRepo {
         await db
           .update(matters)
           .set({ name: finalName, updatedAt: now })
-          .where(and(eq(matters.id, existing.id), eq(matters.orgId, orgId), isNull(matters.purgedAt)))
+          .where(and(eq(matters.id, existing.id), isNull(matters.purgedAt)))
         if (isFolder) {
           const oldPath = buildPath(existing.parent, existing.name)
           const newPath = buildPath(existing.parent, finalName)
-          await cascadeParentPath(orgId, oldPath, newPath)
+          await cascadeParentPath(oldPath, newPath)
         }
       }
 
       // Clear the trash mark on the whole subtree (status is already 'active').
-      await executeWriteTransaction(db, [
-        ...matterRestoredProjectionQueries(db, orgId, allIds),
-        db
-          .update(matters)
-          .set({ trashedAt: null, updatedAt: now })
-          .where(
-            and(
-              inArray(matters.id, allIds),
-              eq(matters.orgId, orgId),
-              isNotNull(matters.trashedAt),
-              isNull(matters.purgedAt),
-            ),
-          ),
-        ...matterChanges(orgId, allIds, now, 'restored'),
-      ])
+      await executeWriteTransaction(
+        db,
+        [
+          db
+            .update(matters)
+            .set({ trashedAt: null, updatedAt: now })
+            .where(and(inArray(matters.id, allIds), isNotNull(matters.trashedAt), isNull(matters.purgedAt))),
+          ...matterChanges(allIds, now, 'restored'),
+          reconcileStoragesUsed(db, [...affectedStorageIds]),
+        ].filter(Boolean) as AtomicQuery[],
+      )
 
       const restored = { ...existing, name: finalName, trashedAt: null, updatedAt: now }
 
@@ -673,12 +620,12 @@ export function createMatterRepo(db: Database): MatterRepo {
 
     collectForPurge,
 
-    async purge(orgId, ids): Promise<void> {
+    async purge(ids): Promise<void> {
       if (ids.length === 0) return
       const rows = await db
         .select()
         .from(matters)
-        .where(and(eq(matters.orgId, orgId), inArray(matters.id, ids), isNull(matters.purgedAt)))
+        .where(and(inArray(matters.id, ids), isNull(matters.purgedAt)))
       if (rows.length === 0) return
 
       const now = new Date()
@@ -687,42 +634,37 @@ export function createMatterRepo(db: Database): MatterRepo {
           .filter((row) => row.dirtype === DirType.FILE && row.status === ObjectStatus.ACTIVE)
           .map((row) => row.storageId),
       )
-      await executeWriteTransaction(db, [
-        ...[...storageIds].map((storageId) => storageUsageOpeningBalanceQuery(db, orgId, storageId, now)),
-        ...matterRemovedProjectionQueries(
-          db,
-          orgId,
-          rows.map((row) => row.id),
-        ),
-        ...rows.map((row) => matterPurgeLedgerQuery(db, orgId, row.id, now)),
-        db
-          .update(matters)
-          .set({
-            trashedAt: sql`COALESCE(${matters.trashedAt}, ${now.getTime()})`,
-            purgedAt: now.getTime(),
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(matters.orgId, orgId),
-              inArray(
-                matters.id,
-                rows.map((row) => row.id),
+      await executeWriteTransaction(
+        db,
+        [
+          db
+            .update(matters)
+            .set({
+              trashedAt: sql`COALESCE(${matters.trashedAt}, ${now.getTime()})`,
+              purgedAt: now.getTime(),
+              updatedAt: now,
+            })
+            .where(
+              and(
+                inArray(
+                  matters.id,
+                  rows.map((row) => row.id),
+                ),
+                isNull(matters.purgedAt),
               ),
-              isNull(matters.purgedAt),
             ),
+          ...matterChanges(
+            rows.map((row) => row.id),
+            now,
+            'purged',
+            'delete',
           ),
-        ...matterChanges(
-          orgId,
-          rows.map((row) => row.id),
-          now,
-          'purged',
-          'delete',
-        ),
-      ])
+          reconcileStoragesUsed(db, [...storageIds]),
+        ].filter(Boolean) as AtomicQuery[],
+      )
     },
 
-    async listActiveDescendants(orgId, parentPath): Promise<Matter[]> {
+    async listActiveDescendants(parentPath): Promise<Matter[]> {
       // Exact-prefix match (SUBSTR), not LIKE — folder names can contain `_`/`%`,
       // which LIKE would treat as wildcards and over-match. Matches the rest of this repo.
       const rows = await db
@@ -730,7 +672,6 @@ export function createMatterRepo(db: Database): MatterRepo {
         .from(matters)
         .where(
           and(
-            eq(matters.orgId, orgId),
             eq(matters.status, ObjectStatus.ACTIVE),
             isNull(matters.trashedAt),
             isNull(matters.purgedAt),
@@ -740,81 +681,77 @@ export function createMatterRepo(db: Database): MatterRepo {
       return rows.map(toMatter)
     },
 
-    async trashByIds(orgId, ids): Promise<void> {
+    async trashByIds(ids): Promise<void> {
       if (ids.length === 0) return
       const now = new Date()
-      await executeWriteTransaction(db, [
-        ...matterTrashedProjectionQueries(db, orgId, ids),
-        db
-          .update(matters)
-          .set({ trashedAt: now.getTime(), updatedAt: now })
-          .where(
-            and(
-              eq(matters.orgId, orgId),
-              inArray(matters.id, ids),
-              isNull(matters.trashedAt),
-              isNull(matters.purgedAt),
-            ),
+      const affectedRows = await db
+        .select({ storageId: matters.storageId, dirtype: matters.dirtype })
+        .from(matters)
+        .where(and(inArray(matters.id, ids), eq(matters.dirtype, DirType.FILE), isNull(matters.purgedAt)))
+      await executeWriteTransaction(
+        db,
+        [
+          db
+            .update(matters)
+            .set({ trashedAt: now.getTime(), updatedAt: now })
+            .where(and(inArray(matters.id, ids), isNull(matters.trashedAt), isNull(matters.purgedAt))),
+          ...matterChanges(ids, now, 'trashed', 'delete'),
+          reconcileStoragesUsed(
+            db,
+            affectedRows.map((row) => row.storageId),
           ),
-        ...matterChanges(orgId, ids, now, 'trashed', 'delete'),
-      ])
+        ].filter(Boolean) as AtomicQuery[],
+      )
     },
 
-    async restoreActiveByIds(orgId, ids): Promise<void> {
+    async restoreActiveByIds(ids): Promise<void> {
       if (ids.length === 0) return
       const now = new Date()
-      await executeWriteTransaction(db, [
-        ...matterRestoredProjectionQueries(db, orgId, ids),
-        db
-          .update(matters)
-          .set({ trashedAt: null, updatedAt: now })
-          .where(
-            and(
-              eq(matters.orgId, orgId),
-              inArray(matters.id, ids),
-              isNotNull(matters.trashedAt),
-              isNull(matters.purgedAt),
-            ),
+      const affectedRows = await db
+        .select({ storageId: matters.storageId })
+        .from(matters)
+        .where(and(inArray(matters.id, ids), eq(matters.dirtype, DirType.FILE), isNull(matters.purgedAt)))
+      await executeWriteTransaction(
+        db,
+        [
+          db
+            .update(matters)
+            .set({ trashedAt: null, updatedAt: now })
+            .where(and(inArray(matters.id, ids), isNotNull(matters.trashedAt), isNull(matters.purgedAt))),
+          ...matterChanges(ids, now, 'restored'),
+          reconcileStoragesUsed(
+            db,
+            affectedRows.map((row) => row.storageId),
           ),
-        ...matterChanges(orgId, ids, now, 'restored'),
-      ])
+        ].filter(Boolean) as AtomicQuery[],
+      )
     },
 
-    async touch(orgId, id): Promise<void> {
+    async touch(id): Promise<void> {
       await db
         .update(matters)
         .set({ updatedAt: new Date() })
-        .where(and(eq(matters.id, id), eq(matters.orgId, orgId), isNull(matters.purgedAt)))
+        .where(and(eq(matters.id, id), isNull(matters.purgedAt)))
     },
 
-    async applyUpload(orgId, matter, fields): Promise<void> {
+    async applyUpload(matter, fields): Promise<void> {
       const now = new Date()
       const writes: AtomicQuery[] = [
-        storageUsageOpeningBalanceQuery(db, orgId, matter.storageId, now),
-        ...matterRemovedProjectionQueries(db, orgId, [matter.id]),
-        matterResizeLedgerQuery(db, orgId, matter.id, fields.size, now),
         db
           .update(matters)
           .set({ type: fields.type, size: fields.size, object: fields.object, updatedAt: now })
-          .where(and(eq(matters.id, matter.id), eq(matters.orgId, orgId), isNull(matters.purgedAt))),
-        ...matterAddedProjectionQueries(db, orgId, matter.id),
-        ...matterChanges(orgId, [matter.id], now, 'updated'),
-      ]
+          .where(and(eq(matters.id, matter.id), isNull(matters.purgedAt))),
+        ...matterChanges([matter.id], now, 'updated'),
+        reconcileStoragesUsed(db, [matter.storageId]),
+      ].filter(Boolean) as AtomicQuery[]
       await executeWriteTransaction(db, writes)
     },
 
-    async listTrashedRoots(orgId): Promise<Matter[]> {
+    async listTrashedRoots(): Promise<Matter[]> {
       const all = await db
         .select()
         .from(matters)
-        .where(
-          and(
-            eq(matters.orgId, orgId),
-            eq(matters.status, ObjectStatus.ACTIVE),
-            isNotNull(matters.trashedAt),
-            isNull(matters.purgedAt),
-          ),
-        )
+        .where(and(eq(matters.status, ObjectStatus.ACTIVE), isNotNull(matters.trashedAt), isNull(matters.purgedAt)))
 
       const trashedPaths = new Set(all.map((m) => buildPath(m.parent, m.name)))
       return all
@@ -828,7 +765,7 @@ export function createMatterRepo(db: Database): MatterRepo {
         .map(toMatter)
     },
 
-    async listTrashedRootPage(orgId, opts) {
+    async listTrashedRootPage(opts) {
       const cursor = opts.after
         ? or(
             lt(matters.trashedAt, opts.after.trashedAt),
@@ -846,15 +783,13 @@ export function createMatterRepo(db: Database): MatterRepo {
         .from(matters)
         .where(
           and(
-            eq(matters.orgId, orgId),
             eq(matters.status, ObjectStatus.ACTIVE),
             isNotNull(matters.trashedAt),
             isNull(matters.purgedAt),
             sql`NOT EXISTS (
               SELECT 1
               FROM matters AS trashed_parent
-              WHERE trashed_parent.org_id = ${orgId}
-                AND trashed_parent.status = ${ObjectStatus.ACTIVE}
+              WHERE trashed_parent.status = ${ObjectStatus.ACTIVE}
                 AND trashed_parent.trashed_at IS NOT NULL
                 AND trashed_parent.purged_at IS NULL
                 AND (
@@ -882,42 +817,35 @@ export function createMatterRepo(db: Database): MatterRepo {
       }
     },
 
-    async listOrgIdsWithExpiredTrash(cutoff): Promise<string[]> {
-      const rows = await db
-        .selectDistinct({ orgId: matters.orgId })
-        .from(matters)
-        .where(and(isNotNull(matters.trashedAt), isNull(matters.purgedAt), lt(matters.trashedAt, cutoff)))
-      return rows.map((r) => r.orgId)
+    findActiveConflict(parent, name, excludeId) {
+      return findActiveConflict(parent, name, excludeId)
     },
 
-    findActiveConflict(orgId, parent, name, excludeId) {
-      return findActiveConflict(orgId, parent, name, excludeId)
+    planConflictResolution(parent, name, strategy, options) {
+      return planConflictResolution(parent, name, strategy, options)
     },
 
-    planConflictResolution(orgId, parent, name, strategy, options) {
-      return planConflictResolution(orgId, parent, name, strategy, options)
+    commitConflictPlan(plan) {
+      return commitConflictPlan(plan)
     },
 
-    commitConflictPlan(orgId, plan) {
-      return commitConflictPlan(orgId, plan)
+    applyConflictResolution(parent, name, strategy, options) {
+      return applyConflictResolution(parent, name, strategy, options)
     },
 
-    applyConflictResolution(orgId, parent, name, strategy, options) {
-      return applyConflictResolution(orgId, parent, name, strategy, options)
-    },
-
-    async activateDraft(id, orgId, finalName, type, now): Promise<boolean> {
-      const existing = await getMatter(id, orgId)
+    async activateDraft(id, finalName, type, now): Promise<boolean> {
+      const existing = await getMatter(id)
       if (!existing || existing.status !== 'draft') return false
-      await executeWriteTransaction(db, [storageUsageOpeningBalanceQuery(db, orgId, existing.storageId, now)])
       const activateQuery = db
         .update(matters)
         .set({ name: finalName, type, status: 'active', updatedAt: now })
-        .where(and(eq(matters.id, id), eq(matters.orgId, orgId), eq(matters.status, 'draft'), isNull(matters.purgedAt)))
+        .where(and(eq(matters.id, id), eq(matters.status, 'draft'), isNull(matters.purgedAt)))
         .returning({ id: matters.id })
-      const writes: AtomicQuery[] = [activateQuery, matterActivationLedgerQuery(db, orgId, id, now)]
-      writes.push(...matterChanges(orgId, [id], now, 'activated'))
-      writes.push(...matterAddedProjectionQueries(db, orgId, id))
+      const writes: AtomicQuery[] = [
+        activateQuery,
+        ...matterChanges([id], now, 'activated'),
+        reconcileStoragesUsed(db, [existing.storageId]),
+      ].filter(Boolean) as AtomicQuery[]
       const results = await executeWriteTransactionWithResults(db, writes, [0])
       const updated = results[0] as { id: string }[]
       return updated.length > 0

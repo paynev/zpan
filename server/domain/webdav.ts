@@ -12,7 +12,6 @@ export interface DavDeadProperty extends DavPropertyName {
 export interface DavLock {
   id: string
   token: string
-  orgId: string
   resourcePath: string
   owner: string
   depth: string

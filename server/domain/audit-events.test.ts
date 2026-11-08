@@ -3,7 +3,6 @@ import { assertAuditEvent } from './audit-events'
 
 function event(action: string, metadata?: Record<string, unknown>) {
   return {
-    orgId: 'org-1',
     userId: 'user-1',
     action,
     targetType: 'file',

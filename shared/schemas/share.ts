@@ -21,7 +21,6 @@ export const shareRecipientViewSchema = z.object({
 
 export const createShareSchema = z.object({
   matterId: opaqueIdSchema,
-  orgId: opaqueIdSchema,
   creatorId: opaqueIdSchema,
   kind: shareKindSchema,
   password: z.string().optional(),
@@ -74,7 +73,6 @@ export const shareReadmeResponseSchema = z.object({
 export type ShareReadmeResponse = z.infer<typeof shareReadmeResponseSchema>
 
 export const saveShareRequestSchema = z.object({
-  targetOrgId: opaqueIdSchema,
   targetParent: z.string().default(''),
   targetSubpath: z.array(z.string()).optional(),
 })

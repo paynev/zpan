@@ -1,4 +1,3 @@
-import type { PublicProfileShare } from '@shared/schemas/profile'
 import type { CreateShareInput } from '@shared/schemas/share'
 import type { Matter } from './matter'
 
@@ -11,7 +10,6 @@ export interface ShareRecord {
   token: string
   kind: string
   matterId: string
-  orgId: string
   creatorId: string
   passwordHash: string | null
   expiresAt: Date | null
@@ -36,7 +34,6 @@ export interface ShareListItem {
   token: string
   kind: string
   matterId: string
-  orgId: string
   creatorId: string
   expiresAt: Date | null
   downloadLimit: number | null
@@ -52,7 +49,6 @@ export interface ShareListItem {
 
 export interface ShareCreatorIdentity {
   name: string
-  username: string | null
 }
 
 export type ShareResolution =
@@ -82,28 +78,25 @@ export interface ShareRepo {
   revokeByMatter(matterId: string): Promise<void>
   revokeByToken(token: string, creatorId: string): Promise<boolean>
   setPrivacy(token: string, creatorId: string, isPrivate: boolean): Promise<boolean>
-  listPublicProfileShares(username: string, now: Date): Promise<PublicProfileShare[]>
   listForApi(
     creatorId: string,
-    opts: { pageSize: number; status?: string; orgId?: string; after?: { createdAt: Date; id: string } },
+    opts: { pageSize: number; status?: string; after?: { createdAt: Date; id: string } },
   ): Promise<{ items: ShareListItem[]; nextBoundary: { createdAt: Date; id: string } | null }>
   listReceivedForApi(
     userId: string,
     userEmail: string | null,
-    opts: { pageSize: number; orgId?: string; after?: { createdAt: Date; id: string } },
+    opts: { pageSize: number; after?: { createdAt: Date; id: string } },
   ): Promise<{ items: ShareListItem[]; nextBoundary: { createdAt: Date; id: string } | null }>
   // Matter reads supporting the save-to-drive flow. They read the matters table
-  // and are co-located in the share repo while matter remains unmigrated.
-  computeSourceBytes(matter: Matter): Promise<number>
-  listDirectActiveChildren(orgId: string, folderPath: string): Promise<Matter[]>
-  hasQuotaForBytes(orgId: string, bytes: number): Promise<boolean>
-  // Lookups the share routes need; co-located here while user/matter are
-  // unmigrated so the share http layer holds no drizzle.
+  // and are co-located in the share repo.
+  listDirectActiveChildren(folderPath: string): Promise<Matter[]>
+  // Lookups the share routes need; co-located here so the share http layer holds
+  // no drizzle.
   getCreatorIdentity(creatorId: string): Promise<ShareCreatorIdentity | null>
   getUserEmail(userId: string): Promise<string | null>
   getMatterName(matterId: string): Promise<string | null>
   findShareChildMatter(
-    rootMatter: { id: string; orgId: string; parent: string; name: string },
+    rootMatter: { id: string; parent: string; name: string },
     childId: string,
   ): Promise<Matter | null>
 }

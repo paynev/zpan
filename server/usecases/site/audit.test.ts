@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { type AdminAuditEventWithOrg, type AgentInfoGateway, type AuditRepo, auditActorIdentityKey } from '../ports'
+import { type AgentInfoGateway, type AuditEventWithUser, type AuditRepo, auditActorIdentityKey } from '../ports'
 import { listAuditEvents } from './audit'
 
 describe('audit usecase', () => {
@@ -9,33 +9,26 @@ describe('audit usecase', () => {
     const resolve = vi.fn(async () => new Map())
     const findApiKeyNames = vi.fn(async () => new Map())
     const findUserProfiles = vi.fn(async () => new Map())
-    const findDeviceNames = vi.fn(async () => new Map())
-    const listTrustedAgentIssuerOrigins = vi.fn(async () => new Set<string>())
     const out = await listAuditEvents(
       {
         audit: { listAdminAudit } as Pick<AuditRepo, 'listAdminAudit'>,
-        auditActorDirectory: { findUserProfiles, findApiKeyNames, findDeviceNames, listTrustedAgentIssuerOrigins },
+        auditActorDirectory: { findUserProfiles, findApiKeyNames },
         agentInfo: { resolve } as AgentInfoGateway,
       },
       {
         page: 1,
         pageSize: 20,
-        orgId: 'o1',
       },
     )
     expect(out).toBe(result)
-    expect(listAdminAudit).toHaveBeenCalledWith({ page: 1, pageSize: 20, orgId: 'o1' })
+    expect(listAdminAudit).toHaveBeenCalledWith({ page: 1, pageSize: 20 })
     expect(resolve).not.toHaveBeenCalled()
     expect(findApiKeyNames).not.toHaveBeenCalled()
-    expect(findDeviceNames).not.toHaveBeenCalled()
-    expect(listTrustedAgentIssuerOrigins).not.toHaveBeenCalled()
   })
 
-  it('uses the resolved Agent profile without replacing the delegated user', async () => {
+  it('uses the resolved Agent profile without replacing the delegated user [spec: audit/actor-info]', async () => {
     const event = {
       id: 'e1',
-      orgId: 'o1',
-      orgName: 'Personal',
       userId: 'u1',
       actorType: 'oauth',
       actorRef: 'agt_1',
@@ -48,7 +41,7 @@ describe('audit usecase', () => {
       createdAt: new Date(0),
       user: { id: 'u1', name: 'Ambor', image: null },
       actor: { name: 'Agent · agt_1', image: null, resolved: false },
-    } satisfies AdminAuditEventWithOrg
+    } satisfies AuditEventWithUser
     const identity = { type: 'oauth', ref: 'agt_1', issuer: 'https://id.realmroot.dev/api/auth' } as const
     const resolved = { name: 'Mac Agent', image: 'https://id.realmroot.dev/agent.svg', resolved: true }
     const resolve = vi.fn(async () => new Map([[auditActorIdentityKey(identity), resolved]]))
@@ -59,8 +52,6 @@ describe('audit usecase', () => {
         auditActorDirectory: {
           findUserProfiles: async () => new Map(),
           findApiKeyNames: async () => new Map(),
-          findDeviceNames: async () => new Map(),
-          listTrustedAgentIssuerOrigins: async () => new Set(['https://id.realmroot.dev']),
         },
         agentInfo: { resolve },
       },
@@ -68,27 +59,25 @@ describe('audit usecase', () => {
     )
 
     expect(out.items[0]).toMatchObject({ user: { name: 'Ambor' }, actor: resolved })
-    expect(resolve).toHaveBeenCalledWith([identity], new Set(['https://id.realmroot.dev']))
+    expect(resolve).toHaveBeenCalledWith([identity], new Set())
   })
 
-  it('formats the API key name as the actor without calling Agent Info', async () => {
+  it('formats the API key name as the actor without calling Agent Info [spec: audit/actor-info]', async () => {
     const event = {
       id: 'e2',
-      orgId: 'o1',
-      orgName: 'Personal',
       userId: 'u1',
       actorType: 'api_key',
       actorRef: 'key-1',
       actorIssuer: null,
-      action: 'download_task_created',
-      targetType: 'download_task',
-      targetId: 'task-1',
-      targetName: 'task-1',
+      action: 'share_created',
+      targetType: 'share',
+      targetId: 'share-1',
+      targetName: 'share-1',
       metadata: null,
       createdAt: new Date(0),
       user: { id: 'u1', name: 'Ambor', image: null },
       actor: { name: 'API key · key-1', image: null, resolved: false },
-    } satisfies AdminAuditEventWithOrg
+    } satisfies AuditEventWithUser
     const resolve = vi.fn(async () => new Map())
 
     const out = await listAuditEvents(
@@ -96,9 +85,7 @@ describe('audit usecase', () => {
         audit: { listAdminAudit: async () => ({ items: [event], total: 1, page: 1, pageSize: 20 }) },
         auditActorDirectory: {
           findUserProfiles: async () => new Map(),
-          findApiKeyNames: async () => new Map([['key-1', 'CME downloader']]),
-          findDeviceNames: async () => new Map(),
-          listTrustedAgentIssuerOrigins: async () => new Set(),
+          findApiKeyNames: async () => new Map([['key-1', 'WebDAV key']]),
         },
         agentInfo: { resolve },
       },
@@ -107,47 +94,8 @@ describe('audit usecase', () => {
 
     expect(out.items[0]).toMatchObject({
       user: { name: 'Ambor' },
-      actor: { name: 'API key · CME downloader', image: null, resolved: true },
+      actor: { name: 'API key · WebDAV key', image: null, resolved: true },
     })
     expect(resolve).not.toHaveBeenCalled()
-  })
-
-  it('formats the registered device name as the actor behind an upload token', async () => {
-    const event = {
-      id: 'e3',
-      orgId: 'o1',
-      orgName: 'Personal',
-      userId: 'u1',
-      actorType: 'device',
-      actorRef: 'device-1',
-      actorIssuer: null,
-      action: 'upload_confirm',
-      targetType: 'file',
-      targetId: 'f1',
-      targetName: 'downloaded.txt',
-      metadata: null,
-      createdAt: new Date(0),
-      user: { id: 'u1', name: 'Ambor', image: null },
-      actor: { name: 'Device · device-1', image: null, resolved: false },
-    } satisfies AdminAuditEventWithOrg
-
-    const out = await listAuditEvents(
-      {
-        audit: { listAdminAudit: async () => ({ items: [event], total: 1, page: 1, pageSize: 20 }) },
-        auditActorDirectory: {
-          findUserProfiles: async () => new Map(),
-          findApiKeyNames: async () => new Map(),
-          findDeviceNames: async () => new Map([['device-1', 'Office Mac']]),
-          listTrustedAgentIssuerOrigins: async () => new Set(),
-        },
-        agentInfo: { resolve: async () => new Map() },
-      },
-      { page: 1, pageSize: 20 },
-    )
-
-    expect(out.items[0]).toMatchObject({
-      user: { name: 'Ambor' },
-      actor: { name: 'Device · Office Mac', image: null, resolved: true },
-    })
   })
 })

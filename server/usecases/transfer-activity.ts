@@ -3,8 +3,7 @@ import type { Deps } from './deps'
 import type { RecordAuditEventInput } from './ports'
 
 export type TransferAuditTarget = {
-  orgId: string
-  targetType: 'file' | 'image' | 'share'
+  targetType: 'file' | 'share'
   targetId?: string
   targetName: string
   bytes: number
@@ -13,7 +12,7 @@ export type TransferAuditTarget = {
 }
 
 type TransferAuditActor = Pick<RecordAuditEventInput, 'userId' | 'actorType' | 'actorRef'>
-type DownloadIssuedAction = 'share_download' | 'object_download' | 'image_hosting_download' | 'webdav_download'
+type DownloadIssuedAction = 'share_download' | 'object_download' | 'webdav_download'
 
 export function createTrafficEventId(): string {
   return `traffic_${crypto.randomUUID()}`
@@ -40,7 +39,6 @@ export function recordUploadResult(
 ): Promise<void> {
   const event: RecordAuditEventInput = {
     ...actor,
-    orgId: target.orgId,
     action: reason ? 'upload_failed' : 'upload_confirm',
     targetType: target.targetType,
     targetId: target.targetId,
@@ -64,7 +62,6 @@ export function recordDownloadFailure(
 ): Promise<void> {
   return recordAuditEvent(deps, {
     ...actor,
-    orgId: target.orgId,
     action: 'download_failed',
     targetType: target.targetType,
     targetId: target.targetId,
@@ -89,7 +86,6 @@ export function recordDownloadIssued(
 ): Promise<void> {
   return recordAuditEvent(deps, {
     ...actor,
-    orgId: target.orgId,
     action,
     targetType: target.targetType,
     targetId: target.targetId,

@@ -28,7 +28,7 @@ function repo(over: Partial<AnnouncementRepo> = {}): { announcements: Announceme
 }
 
 describe('announcement usecase', () => {
-  it('lists user announcements with the given filter', async () => {
+  it('lists user announcements with the given filter [spec: announcements/user-active]', async () => {
     const listUser = vi.fn(async () => ({ items: [sample], total: 1, page: 1, pageSize: 20 }))
     const out = await listUserAnnouncements(repo({ listUser }), { activeOnly: true, page: 1, pageSize: 20 })
     expect(out.total).toBe(1)
@@ -41,7 +41,7 @@ describe('announcement usecase', () => {
     expect(listAdmin).toHaveBeenCalledWith({ page: 2, pageSize: 50 })
   })
 
-  it('creates with the author id', async () => {
+  it('creates with the author id [spec: announcements/crud]', async () => {
     const create = vi.fn(async () => sample)
     await createAnnouncement(repo({ create }), input, 'u1')
     expect(create).toHaveBeenCalledWith(input, 'u1')
@@ -51,13 +51,13 @@ describe('announcement usecase', () => {
     expect(await getAnnouncement(repo({ get: vi.fn(async () => null) }), 'x')).toBeNull()
   })
 
-  it('updates by id', async () => {
+  it('updates by id [spec: announcements/crud]', async () => {
     const update = vi.fn(async () => sample)
     expect(await updateAnnouncement(repo({ update }), 'a1', input)).toBe(sample)
     expect(update).toHaveBeenCalledWith('a1', input)
   })
 
-  it('reports whether a delete removed a row', async () => {
+  it('reports whether a delete removed a row [spec: announcements/crud]', async () => {
     expect(await deleteAnnouncement(repo({ delete: vi.fn(async () => false) }), 'x')).toBe(false)
   })
 })

@@ -1,10 +1,6 @@
-import { FREE_STORAGE_LIMIT } from '@shared/constants'
 import type { CreateStorageInput, ReplaceStorageInput } from '@shared/schemas'
-import type { BindingState } from '@shared/types'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { LicenseBindingRepo, StorageRecord, StorageRepo } from '../ports'
-import { AppError } from '../ports'
-import { loadBindingState } from './licensing'
+import { describe, expect, it, vi } from 'vitest'
+import type { StorageRecord, StorageRepo } from '../ports'
 import {
   createStorage,
   deleteStorage,
@@ -13,20 +9,7 @@ import {
   patchStorage,
   replaceStorage,
   type StorageDeps,
-  updateStorageEgressBilling,
 } from './storage'
-
-// loadBindingState derives features from a signed certificate — out of scope for
-// a usecase unit test. Mock it so each case feeds a chosen edition; the real
-// (pure) hasFeature then runs against it. The full cert→features→gate path is
-// covered by storages.integration.test.ts.
-vi.mock('./licensing', () => ({ loadBindingState: vi.fn() }))
-
-const COMMUNITY: BindingState = { bound: false }
-const PRO: BindingState = { bound: true, active: true, edition: 'pro' } // has storages_unlimited, not quota_store
-const BUSINESS: BindingState = { bound: true, active: true, edition: 'business' } // has both
-
-const edition = (state: BindingState) => vi.mocked(loadBindingState).mockResolvedValue(state)
 
 const sampleStorage = { id: 'st-1', bucket: 'b' } as StorageRecord
 
@@ -47,11 +30,8 @@ const validReplacement: ReplaceStorageInput = {
   secretKey: 's',
   capacity: 0,
   forcePathStyle: true,
-  egressCreditBillingEnabled: false,
-  egressCreditUnitBytes: 104857600,
-  egressCreditPerUnit: 1,
   enabled: true,
-}
+} as ReplaceStorageInput
 
 function makeDeps(storages: Partial<StorageRepo> = {}) {
   const repo: StorageRepo = {
@@ -67,12 +47,9 @@ function makeDeps(storages: Partial<StorageRepo> = {}) {
   }
   const deps: StorageDeps = {
     storages: repo,
-    licenseBinding: {} as LicenseBindingRepo, // unused — loadBindingState is mocked
   }
   return { deps }
 }
-
-beforeEach(() => vi.clearAllMocks())
 
 describe('storage usecase', () => {
   it('listStorages forwards the repo result', async () => {
@@ -91,70 +68,17 @@ describe('storage usecase', () => {
   })
 
   describe('createStorage', () => {
-    it('creates when under the Community limit', async () => {
-      edition(COMMUNITY)
+    it('creates the storage', async () => {
       const create = vi.fn(async () => sampleStorage)
-      const { deps } = makeDeps({ count: async () => FREE_STORAGE_LIMIT - 1, create })
+      const { deps } = makeDeps({ create })
       const out = await createStorage(deps, { input: validInput })
       expect(out).toEqual({ ok: true, storage: sampleStorage })
       expect(create).toHaveBeenCalledWith(validInput)
-    })
-
-    it('blocks at the Community storage limit without storages_unlimited', async () => {
-      edition(COMMUNITY)
-      const { deps } = makeDeps({ count: async () => FREE_STORAGE_LIMIT })
-      const out = await createStorage(deps, { input: validInput })
-      expect(out.ok).toBe(false)
-      if (!out.ok) {
-        expect(out.error).toBeInstanceOf(AppError)
-        expect(out.error.httpStatus).toBe(402)
-        expect(out.error.meta.reason).toBe('FEATURE_NOT_AVAILABLE')
-        expect(out.error.meta.metadata).toEqual({
-          feature: 'storages_unlimited',
-          currentCount: String(FREE_STORAGE_LIMIT),
-          limit: String(FREE_STORAGE_LIMIT),
-        })
-      }
-    })
-
-    it('allows creating past the limit with storages_unlimited', async () => {
-      edition(PRO)
-      const create = vi.fn(async () => sampleStorage)
-      const { deps } = makeDeps({ count: async () => FREE_STORAGE_LIMIT + 5, create })
-      const out = await createStorage(deps, { input: validInput })
-      expect(out.ok).toBe(true)
-      expect(create).toHaveBeenCalled()
-    })
-
-    it('blocks egress-credit billing when quota_store is absent', async () => {
-      edition(PRO) // pro has storages_unlimited but not quota_store
-      const { deps } = makeDeps({ count: async () => 0 })
-      const out = await createStorage(deps, {
-        input: { ...validInput, egressCreditBillingEnabled: true },
-      })
-      expect(out.ok).toBe(false)
-      if (!out.ok) {
-        expect(out.error).toBeInstanceOf(AppError)
-        expect(out.error.httpStatus).toBe(402)
-        expect(out.error.meta.reason).toBe('FEATURE_NOT_AVAILABLE')
-        expect(out.error.meta.metadata).toEqual({ feature: 'quota_store' })
-      }
-    })
-
-    it('allows egress-credit billing with quota_store (business)', async () => {
-      edition(BUSINESS)
-      const create = vi.fn(async () => sampleStorage)
-      const { deps } = makeDeps({ count: async () => 0, create })
-      const out = await createStorage(deps, {
-        input: { ...validInput, egressCreditBillingEnabled: true },
-      })
-      expect(out.ok).toBe(true)
     })
   })
 
   describe('replaceStorage', () => {
     it('replaces the storage', async () => {
-      edition(COMMUNITY)
       const replace = vi.fn(async () => sampleStorage)
       const { deps } = makeDeps({ replace })
       const out = await replaceStorage(deps, { id: 'st-1', input: validReplacement })
@@ -163,110 +87,24 @@ describe('storage usecase', () => {
     })
 
     it('returns not_found for a missing storage', async () => {
-      edition(COMMUNITY)
       const { deps } = makeDeps({ replace: async () => null })
       const out = await replaceStorage(deps, { id: 'x', input: validReplacement })
       expect(out.ok).toBe(false)
       if (!out.ok) {
-        expect(out.error).toBeInstanceOf(AppError)
+        expect(out.error).toBeInstanceOf(Error)
         expect(out.error.httpStatus).toBe(404)
         expect(out.error.message).toBe('Storage not found')
       }
-    })
-
-    it('gates egress-credit billing before the existence check (402 over 404)', async () => {
-      edition(PRO) // lacks quota_store
-      const replace = vi.fn(async () => null)
-      const { deps } = makeDeps({ replace })
-      const out = await replaceStorage(deps, {
-        id: 'x',
-        input: { ...validReplacement, egressCreditBillingEnabled: true },
-      })
-      expect(out.ok).toBe(false)
-      if (!out.ok) {
-        expect(out.error).toBeInstanceOf(AppError)
-        expect(out.error.httpStatus).toBe(402)
-        expect(out.error.meta.reason).toBe('FEATURE_NOT_AVAILABLE')
-        expect(out.error.meta.metadata).toEqual({ feature: 'quota_store' })
-      }
-      expect(replace).not.toHaveBeenCalled()
     })
   })
 
   describe('patchStorage', () => {
     it('patches only the requested fields', async () => {
-      edition(COMMUNITY)
       const patch = vi.fn(async () => sampleStorage)
       const { deps } = makeDeps({ patch })
       const out = await patchStorage(deps, { id: 'st-1', input: { enabled: false } })
       expect(out).toEqual({ ok: true, storage: sampleStorage })
       expect(patch).toHaveBeenCalledWith('st-1', { enabled: false })
-    })
-  })
-
-  describe('updateStorageEgressBilling', () => {
-    it('updates egress billing fields', async () => {
-      edition(BUSINESS)
-      const patch = vi.fn(async () => sampleStorage)
-      const { deps } = makeDeps({ get: async () => sampleStorage, patch })
-      const out = await updateStorageEgressBilling(deps, {
-        id: 'st-1',
-        input: { enabled: true, unitBytes: 1024, creditsPerUnit: 2 },
-      })
-      expect(out).toEqual({ ok: true, storage: sampleStorage })
-      expect(patch).toHaveBeenCalledWith('st-1', {
-        egressCreditBillingEnabled: true,
-        egressCreditUnitBytes: 1024,
-        egressCreditPerUnit: 2,
-      })
-    })
-
-    it('blocks enabling egress billing without quota_store', async () => {
-      edition(PRO)
-      const patch = vi.fn(async () => sampleStorage)
-      const { deps } = makeDeps({ get: async () => sampleStorage, patch })
-      const out = await updateStorageEgressBilling(deps, {
-        id: 'st-1',
-        input: { enabled: true, unitBytes: 1024, creditsPerUnit: 2 },
-      })
-      expect(out.ok).toBe(false)
-      if (!out.ok) {
-        expect(out.error).toBeInstanceOf(AppError)
-        expect(out.error.httpStatus).toBe(402)
-        expect(out.error.meta.reason).toBe('FEATURE_NOT_AVAILABLE')
-        expect(out.error.meta.metadata).toEqual({ feature: 'quota_store' })
-      }
-      expect(patch).not.toHaveBeenCalled()
-    })
-
-    it('returns not_found for a missing storage when billing is disabled', async () => {
-      edition(PRO)
-      const { deps } = makeDeps({ patch: async () => null })
-      const out = await updateStorageEgressBilling(deps, {
-        id: 'missing',
-        input: { enabled: false, unitBytes: 1024, creditsPerUnit: 2 },
-      })
-      expect(out.ok).toBe(false)
-      if (!out.ok) {
-        expect(out.error.httpStatus).toBe(404)
-        expect(out.error.message).toBe('Storage not found')
-      }
-    })
-
-    it('returns not_found before quota_store gating for a missing storage when billing is enabled', async () => {
-      edition(PRO)
-      const patch = vi.fn(async () => null)
-      const { deps } = makeDeps({ get: async () => null, patch })
-      const out = await updateStorageEgressBilling(deps, {
-        id: 'missing',
-        input: { enabled: true, unitBytes: 1024, creditsPerUnit: 2 },
-      })
-      expect(out.ok).toBe(false)
-      if (!out.ok) {
-        expect(out.error.httpStatus).toBe(404)
-        expect(out.error.message).toBe('Storage not found')
-      }
-      expect(patch).not.toHaveBeenCalled()
     })
   })
 
@@ -283,7 +121,7 @@ describe('storage usecase', () => {
       const out = await deleteStorage(deps, { id: 'x' })
       expect(out.ok).toBe(false)
       if (!out.ok) {
-        expect(out.error).toBeInstanceOf(AppError)
+        expect(out.error).toBeInstanceOf(Error)
         expect(out.error.httpStatus).toBe(404)
         expect(out.error.message).toBe('Storage not found')
       }
@@ -294,7 +132,7 @@ describe('storage usecase', () => {
       const out = await deleteStorage(deps, { id: 'st-1' })
       expect(out.ok).toBe(false)
       if (!out.ok) {
-        expect(out.error).toBeInstanceOf(AppError)
+        expect(out.error).toBeInstanceOf(Error)
         expect(out.error.httpStatus).toBe(409)
         expect(out.error.message).toBe('Storage is referenced by existing files')
       }

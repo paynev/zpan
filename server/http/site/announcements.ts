@@ -8,7 +8,6 @@ import {
   pageSchema,
 } from '@shared/schemas'
 import type { Env } from '../../middleware/platform'
-import { requireFeature } from '../../middleware/require-feature'
 import { type AnnouncementRecord, forbidden, notFound } from '../../usecases/ports'
 import {
   createAnnouncement,
@@ -64,7 +63,6 @@ const listRoute = authRoute(
     tags: ['Announcements'],
     method: 'get',
     path: '/',
-    middleware: [requireFeature('site_announcements')] as const,
     request: { query: listAnnouncementsQuerySchema },
     responses: {
       200: jsonContent(announcementListSchema, 'Announcements'),
@@ -81,7 +79,6 @@ const createAnnouncementRoute = authRoute(
     tags: ['Announcements'],
     method: 'post',
     path: '/',
-    middleware: [requireFeature('site_announcements')] as const,
     request: jsonBody(announcementInputSchema),
     responses: { 201: jsonContent(announcementSchema, 'Created announcement') },
   },
@@ -95,7 +92,6 @@ const getAnnouncementRoute = authRoute(
     tags: ['Announcements'],
     method: 'get',
     path: '/{id}',
-    middleware: [requireFeature('site_announcements')] as const,
     request: { params: z.object({ id: opaqueIdSchema }) },
     responses: {
       200: jsonContent(announcementSchema, 'Announcement'),
@@ -112,7 +108,6 @@ const updateAnnouncementRoute = authRoute(
     tags: ['Announcements'],
     method: 'put',
     path: '/{id}',
-    middleware: [requireFeature('site_announcements')] as const,
     request: { params: z.object({ id: opaqueIdSchema }), ...jsonBody(announcementInputSchema) },
     responses: {
       200: jsonContent(announcementSchema, 'Updated announcement'),
@@ -129,7 +124,6 @@ const deleteAnnouncementRoute = authRoute(
     tags: ['Announcements'],
     method: 'delete',
     path: '/{id}',
-    middleware: [requireFeature('site_announcements')] as const,
     request: { params: z.object({ id: opaqueIdSchema }) },
     responses: {
       204: { description: 'Deleted announcement' },

@@ -1,6 +1,6 @@
 // The shares resource usecase. Owns every business decision behind the public
 // (/api/shares before auth) and authed (/api/shares after auth) share routes:
-// resolution gating, view/download dedup, the end-to-end download meter, share
+// resolution gating, view/download dedup, the download counter, share
 // creation + recipient notification, revocation, and save-to-drive. The http
 // handlers only read cookies/params, call these functions with `deps` whole,
 // and serialize the discriminated outcomes into responses.
@@ -13,30 +13,22 @@ import { createHmac } from 'node:crypto'
 import { DirType } from '@shared/constants'
 import type { CreateShareRequest, ShareObjectsResponse } from '@shared/schemas/share'
 import { isAccessibleByUser } from '../domain/share'
-import { escapeHtml } from '../lib/html'
 import { verifyPassword as verifyPasswordHash } from '../lib/password'
-import type { Platform } from '../platform/interface'
 import { type SaveToDriveDeps, saveShareToDrive } from './object'
 import {
   type ActorIdentity,
   AppError,
   badRequest,
   CreateShareError,
-  type EmailGateway,
   expired as expiredError,
   forbidden,
-  insufficientCredits,
   type Matter,
   type MatterRepo,
   type NotificationRepo,
   notFound,
-  type OrgRepo,
   passwordRequired,
-  type QuotaRepo,
-  quotaExceeded,
   type S3Gateway,
   type ShareNotificationRecipient,
-  type ShareNotificationRepo,
   type ShareNotificationShare,
   type ShareRecipientRecord,
   type ShareRecord,
@@ -44,23 +36,18 @@ import {
   type StorageRepo,
   storageNotFound,
 } from './ports'
-import type { CloudTrafficMeteringDeps } from './store/traffic-metering'
-import { confirmDownloadTraffic, meterDownloadTraffic, reverseDownloadTraffic } from './store/traffic-metering'
 import { createTrafficEventId } from './transfer-activity'
 
 // The ports + sub-usecase deps this resource touches. `c.get('deps')` (the full
 // Deps) structurally satisfies this, so the handler passes it whole. The
-// intersected sub-usecase deps (save-to-drive, share-notification, the download
-// meter) carry the ports those collaborators reach through.
+// intersected sub-usecase deps (save-to-drive, share-notification) carry the
+// ports those collaborators reach through.
 export type ShareDeps = SaveToDriveDeps &
-  ShareNotificationDeps &
-  CloudTrafficMeteringDeps & {
+  ShareNotificationDeps & {
     share: ShareRepo
     matter: MatterRepo
     storages: StorageRepo
     s3: S3Gateway
-    quota: QuotaRepo
-    org: OrgRepo
   }
 
 // ─── GET /:token — view a share (creator vs viewer DTO) ──────────────────────
@@ -83,7 +70,6 @@ export type ShareViewerDto = {
   downloadLimit: number | null
   matter: { name: string; type: string; size: number | null; isFolder: boolean }
   creatorName: string
-  creatorUsername: string | null
   requiresPassword: boolean
   expired: boolean
   exhausted: boolean
@@ -96,7 +82,6 @@ export type ShareViewerDto = {
 export type ShareCreatorDto = ShareViewerDto & {
   id: string
   matterId: string
-  orgId: string
   creatorId: string
   createdAt: Date
   recipients: ShareRecipientRecord[]
@@ -134,7 +119,6 @@ async function composeShareView(
     downloadLimit: share.downloadLimit,
     matter: { name: matter.name, type: matter.type, size: matter.size, isFolder },
     creatorName: creator?.name ?? '',
-    creatorUsername: creator?.username ?? null,
     requiresPassword,
     expired,
     exhausted,
@@ -149,7 +133,6 @@ async function composeShareView(
       ...base,
       id: share.id,
       matterId: share.matterId,
-      orgId: share.orgId,
       creatorId: share.creatorId,
       createdAt: share.createdAt,
       recipients,
@@ -258,7 +241,7 @@ export async function listShareObjects(
   const root = folderRootPath(matter)
   const queryParent = relativePath ? `${root}/${relativePath}` : root
 
-  const result = await deps.matter.list(matter.orgId, { parent: queryParent, pageSize, after })
+  const result = await deps.matter.list({ parent: queryParent, pageSize, after })
 
   return {
     ok: true,
@@ -301,7 +284,7 @@ export async function readShareReadme(deps: ShareDeps, params: ReadShareReadmePa
     return { ok: false, error: passwordRequired() }
   if (share.expiresAt && share.expiresAt < now) return { ok: false, error: expiredError('Share has expired') }
 
-  const children = await deps.share.listDirectActiveChildren(matter.orgId, folderRootPath(matter))
+  const children = await deps.share.listDirectActiveChildren(folderRootPath(matter))
   const readme = children.find((child) => child.dirtype === DirType.FILE && child.name === 'README.md')
   if (!readme) return { ok: false, error: notFound('README.md not found') }
   if ((readme.size ?? 0) > MAX_SHARE_README_BYTES)
@@ -318,7 +301,7 @@ export async function readShareReadme(deps: ShareDeps, params: ReadShareReadmePa
   }
 }
 
-// ─── GET /:token/objects/:ref — download (orchestration + metering) ──────────
+// ─── GET /:token/objects/:ref — download (gates + presign) ───────────────────
 
 export type DownloadShareObjectParams = {
   token: string
@@ -327,7 +310,6 @@ export type DownloadShareObjectParams = {
   matterId: string | null
   viewerId: string | null
   accessCookie: string | undefined
-  cloudBaseUrl: string
 }
 
 export type DownloadShareObjectOutcome =
@@ -335,7 +317,6 @@ export type DownloadShareObjectOutcome =
       ok: true
       url: string
       receipt: {
-        orgId: string
         creatorId: string
         shareId: string
         matterId: string
@@ -351,7 +332,7 @@ export async function downloadShareObject(
   deps: ShareDeps,
   params: DownloadShareObjectParams,
 ): Promise<DownloadShareObjectOutcome> {
-  const { token, matterId, viewerId, accessCookie, cloudBaseUrl } = params
+  const { token, matterId, viewerId, accessCookie } = params
 
   const resolved = await deps.share.resolveByToken(token)
   if (resolved.status !== 'ok') {
@@ -390,56 +371,20 @@ export async function downloadShareObject(
 
   const bytes = targetMatter.size ?? 0
   const trafficEventId = createTrafficEventId()
-  const metered = await meterDownloadTraffic(deps, {
-    cloudBaseUrl,
-    orgId: share.orgId,
-    bytes,
-    storage,
-    source: 'landing_share',
-    sourceId: share.id,
-    eventId: trafficEventId,
-    onRejected: () => deps.share.decrementDownloads(share.id),
-  })
-  if (!metered.ok) {
-    return {
-      ok: false,
-      error:
-        metered.reason === 'quota_exceeded'
-          ? quotaExceeded('Traffic quota exceeded')
-          : insufficientCredits('Insufficient credits', { metadata: { resource: 'storage_egress' } }),
-    }
-  }
 
-  // Presign. On failure the metering already succeeded, so roll it back
-  // ourselves: refund the consumed traffic and the download count, then rethrow.
+  // Presign. On failure roll back the download counter ourselves, then rethrow.
   let url: string
   try {
     url = await deps.s3.presignDownload(storage, targetMatter.object, targetMatter.name, PRESIGN_TTL_SECS)
   } catch (e) {
-    try {
-      await reverseDownloadTraffic(deps, { orgId: share.orgId, bytes, eventId: trafficEventId })
-    } finally {
-      await deps.share.decrementDownloads(share.id)
-    }
+    await deps.share.decrementDownloads(share.id)
     throw e
-  }
-
-  try {
-    await confirmDownloadTraffic(deps, { eventId: trafficEventId })
-  } catch (error) {
-    try {
-      await reverseDownloadTraffic(deps, { orgId: share.orgId, bytes, eventId: trafficEventId })
-    } finally {
-      await deps.share.decrementDownloads(share.id)
-    }
-    throw error
   }
 
   return {
     ok: true,
     url,
     receipt: {
-      orgId: share.orgId,
       creatorId: share.creatorId,
       shareId: share.id,
       matterId: targetMatter.id,
@@ -458,7 +403,6 @@ export type ListSharesParams = {
   box: 'received' | 'sent' | undefined
   pageSize: number
   status?: string
-  boundOrgId?: string | null
   after?: { createdAt: Date; id: string }
 }
 
@@ -467,16 +411,15 @@ export async function listShares(deps: ShareDeps, params: ListSharesParams) {
 
   if (box === 'received') {
     const email = await deps.share.getUserEmail(userId)
-    return deps.share.listReceivedForApi(userId, email, { pageSize, orgId: params.boundOrgId ?? undefined, after })
+    return deps.share.listReceivedForApi(userId, email, { pageSize, after })
   }
 
-  return deps.share.listForApi(userId, { pageSize, status, orgId: params.boundOrgId ?? undefined, after })
+  return deps.share.listForApi(userId, { pageSize, status, after })
 }
 
 // ─── POST / — create a share (notify + activity; map create errors) ──────────
 
 export type CreateShareParams = {
-  orgId: string
   userId: string
   // The validated create-share request body. `expiresAt` is an ISO string here
   // (the wire shape); it is parsed to a Date before hitting the repo.
@@ -502,12 +445,8 @@ const CREATE_SHARE_ERRORS: Record<CreateShareError['code'], AppError> = {
   DIRECT_NO_RECIPIENTS: badRequest('Direct shares cannot have recipients', 'DIRECT_NO_RECIPIENTS'),
 }
 
-export async function createShare(
-  deps: ShareDeps,
-  platform: Platform,
-  params: CreateShareParams,
-): Promise<CreateShareOutcome> {
-  const { orgId, userId, input } = params
+export async function createShare(deps: ShareDeps, params: CreateShareParams): Promise<CreateShareOutcome> {
+  const { userId, input } = params
 
   const expiresAt = input.expiresAt ? new Date(input.expiresAt) : undefined
 
@@ -521,7 +460,6 @@ export async function createShare(
   try {
     share = await deps.share.create({
       matterId: input.matterId,
-      orgId,
       creatorId: userId,
       kind: input.kind,
       password: input.password,
@@ -541,7 +479,6 @@ export async function createShare(
   if (recipients.length > 0) {
     dispatchShareCreated(
       deps,
-      platform,
       { id: share.id, token: share.token, kind: share.kind as 'landing' | 'direct', expiresAt: share.expiresAt },
       recipients,
       creatorName,
@@ -566,7 +503,6 @@ export async function createShare(
 export type SetSharePrivacyParams = {
   token: string
   userId: string
-  boundOrgId?: string | null
   private: boolean
 }
 
@@ -580,7 +516,6 @@ export async function setSharePrivacy(deps: ShareDeps, params: SetSharePrivacyPa
   }
 
   const { share, recipients } = resolved
-  if (params.boundOrgId && share.orgId !== params.boundOrgId) return { ok: false, error: forbidden() }
   if (share.creatorId !== userId) return { ok: false, error: forbidden() }
   if (share.kind !== 'landing' || recipients.length > 0) {
     return {
@@ -594,13 +529,9 @@ export async function setSharePrivacy(deps: ShareDeps, params: SetSharePrivacyPa
   return { ok: true, private: isPrivate }
 }
 
-export function listPublicProfileShares(deps: ShareDeps, username: string, now = new Date()) {
-  return deps.share.listPublicProfileShares(username, now)
-}
-
 // ─── PUT /:token/status — revoke (ownership-scoped) ──────────────────────────
 
-export type RevokeShareParams = { token: string; userId: string; boundOrgId?: string | null; now?: Date }
+export type RevokeShareParams = { token: string; userId: string; now?: Date }
 
 export type RevokeShareOutcome = { ok: true; dto: ShareViewerDto | ShareCreatorDto } | { ok: false; error: AppError }
 
@@ -615,7 +546,6 @@ export async function revokeShare(deps: ShareDeps, params: RevokeShareParams): P
   // to shares), so this path stays revocable.
   const resolved = await deps.share.resolveByToken(token)
   if (resolved.status === 'not_found' || resolved.status === 'revoked') return { ok: false, error: notFound() }
-  if (params.boundOrgId && resolved.share.orgId !== params.boundOrgId) return { ok: false, error: forbidden() }
   if (resolved.share.creatorId !== userId) return { ok: false, error: forbidden() }
 
   // Race-safe: revokeByToken scopes the UPDATE to (token, creatorId). An
@@ -638,8 +568,6 @@ export async function revokeShare(deps: ShareDeps, params: RevokeShareParams): P
 export type SaveShareParams = {
   token: string
   currentUserId: string
-  targetOrgId: string
-  boundTargetOrgId?: string | null
   targetParent: string
   accessCookie: string | undefined
   createdBy: ActorIdentity
@@ -650,7 +578,7 @@ export type SaveShareOutcome =
   | { ok: false; error: AppError }
 
 export async function saveShare(deps: ShareDeps, params: SaveShareParams): Promise<SaveShareOutcome> {
-  const { token, currentUserId, targetOrgId, targetParent, accessCookie } = params
+  const { token, currentUserId, targetParent, accessCookie } = params
 
   const resolution = await deps.share.resolveByToken(token)
   if (resolution.status === 'matter_trashed') return { ok: false, error: expiredError('Share target has been deleted') }
@@ -670,16 +598,9 @@ export async function saveShare(deps: ShareDeps, params: SaveShareParams): Promi
   if (checkAccessGate(share.passwordHash, recipients, currentUserId, accessCookie) === 'password_required')
     return { ok: false, error: passwordRequired('Authentication required for password-protected share') }
 
-  if (params.boundTargetOrgId && targetOrgId !== params.boundTargetOrgId) return { ok: false, error: forbidden() }
-  if (!(await deps.org.canWriteToOrg(currentUserId, targetOrgId))) return { ok: false, error: forbidden() }
-
-  const totalBytes = await deps.share.computeSourceBytes(matter)
-  if (!(await deps.share.hasQuotaForBytes(targetOrgId, totalBytes))) return { ok: false, error: quotaExceeded() }
-
   const result = await saveShareToDrive(deps, {
     matter,
     currentUserId,
-    targetOrgId,
     targetParent,
     createdBy: params.createdBy,
   })
@@ -690,71 +611,26 @@ export async function saveShare(deps: ShareDeps, params: SaveShareParams): Promi
 
 export type ShareNotificationDeps = {
   notifications: NotificationRepo
-  email: EmailGateway
-  shareNotifications: ShareNotificationRepo
-}
-
-async function sendShareEmail(
-  deps: ShareNotificationDeps,
-  platform: Platform,
-  opts: { to: string; creatorName: string; matterName: string; url: string; expiresAt: Date | null },
-): Promise<void> {
-  const expiryLine = opts.expiresAt ? `<p>This share expires on ${opts.expiresAt.toISOString().split('T')[0]}.</p>` : ''
-  const creatorName = escapeHtml(opts.creatorName)
-  const matterName = escapeHtml(opts.matterName)
-  const url = escapeHtml(opts.url)
-  await deps.email.send(platform, {
-    to: opts.to,
-    subject: 'A ZPan item was shared with you',
-    html: `
-      <h2>${creatorName} shared a file with you</h2>
-      <p><strong>${matterName}</strong> is now available.</p>
-      ${expiryLine}
-      <p><a href="${url}">Open share</a></p>
-    `,
-  })
 }
 
 export async function dispatchShareCreated(
   deps: ShareNotificationDeps,
-  platform: Platform,
   share: ShareNotificationShare,
   recipients: ShareNotificationRecipient[],
   creatorName: string,
   matterName: string,
 ): Promise<void> {
-  const shareUrl = share.kind === 'landing' ? `/s/${share.token}` : `/r/${share.token}`
-  const emailEnabled = await deps.email.isConfigured(platform)
-
   for (const r of recipients) {
-    if (r.recipientUserId) {
-      await deps.notifications.create({
-        userId: r.recipientUserId,
-        type: 'share_received',
-        title: `${creatorName} shared "${matterName}" with you`,
-        body: 'Click to open the share',
-        refType: 'share',
-        refId: share.id,
-        metadata: JSON.stringify({ token: share.token, kind: share.kind, creatorName, matterName }),
-      })
-    }
-
-    const email =
-      r.recipientEmail ?? (r.recipientUserId ? await deps.shareNotifications.getUserEmail(r.recipientUserId) : null)
-
-    if (email && emailEnabled) {
-      try {
-        await sendShareEmail(deps, platform, {
-          to: email,
-          creatorName,
-          matterName,
-          url: shareUrl,
-          expiresAt: share.expiresAt,
-        })
-      } catch (err) {
-        console.error(`[share-notification] email to ${email} failed:`, err)
-      }
-    }
+    if (!r.recipientUserId) continue
+    await deps.notifications.create({
+      userId: r.recipientUserId,
+      type: 'share_received',
+      title: `${creatorName} shared "${matterName}" with you`,
+      body: 'Click to open the share',
+      refType: 'share',
+      refId: share.id,
+      metadata: JSON.stringify({ token: share.token, kind: share.kind, creatorName, matterName }),
+    })
   }
 }
 

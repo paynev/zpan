@@ -5,6 +5,8 @@ declare module 'cloudflare:workers' {
   interface ProvidedEnv {
     DB: D1Database
     BETTER_AUTH_SECRET: string
+    ZPAN_USERNAME: string
+    ZPAN_PASSWORD: string
     TEST_MIGRATIONS: D1Migration[]
   }
 }

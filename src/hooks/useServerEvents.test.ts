@@ -82,13 +82,11 @@ describe('useServerEvents', () => {
     })
 
     act(() => {
-      source?.emit('resource-change', { resourceType: 'background_job' })
       source?.emit('resource-change', { resourceType: 'notification' })
       source?.emit('resource-change', { resourceType: 'object', resourceId: 'object-1' })
       source?.emit('resync')
     })
 
-    expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['background-jobs'] })
     expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['notifications'] })
     expect(mocks.invalidateQueries).toHaveBeenCalledWith()
     expect(onObjectChange).toHaveBeenCalledWith({ resourceType: 'object', resourceId: 'object-1' })

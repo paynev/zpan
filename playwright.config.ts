@@ -6,7 +6,6 @@ const chromeHostResolverRules = process.env.E2E_CHROME_HOST_RESOLVER_RULES
 const appPort = Number(process.env.E2E_APP_PORT ?? 5185)
 const apiPort = Number(process.env.E2E_API_PORT ?? 8222)
 const s3MockPort = Number(process.env.E2E_S3_MOCK_PORT ?? 9191)
-const cloudFakePort = Number(process.env.E2E_CLOUD_FAKE_PORT ?? 9292)
 const artifactSuffix = process.env.E2E_ARTIFACT_SUFFIX ?? 'run'
 const nodeCommand = JSON.stringify(process.execPath)
 
@@ -20,19 +19,8 @@ const s3MockServer = process.env.E2E_S3_MOCK
     ]
   : []
 
-const cloudFakeServer = process.env.E2E_CLOUD_FAKE
-  ? [
-      {
-        command: `node scripts/zpan-cloud-fake.mjs`,
-        url: `http://127.0.0.1:${cloudFakePort}/health`,
-        reuseExistingServer: false,
-      },
-    ]
-  : []
-
 const nodeServers = [
   ...s3MockServer,
-  ...cloudFakeServer,
   {
     command: `PORT=${apiPort} ${nodeCommand} ${envFile} node_modules/tsx/dist/cli.mjs server/entry-node.ts`,
     port: apiPort,
@@ -47,7 +35,6 @@ const nodeServers = [
 
 const cfServers = [
   ...s3MockServer,
-  ...cloudFakeServer,
   {
     command: `vite dev --host 127.0.0.1 --port ${appPort} --strictPort`,
     port: appPort,

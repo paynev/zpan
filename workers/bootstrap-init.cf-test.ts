@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { APP_INITIALIZATION_TIMEOUT_MS, appForRequest } from './bootstrap'
+import { APP_INITIALIZATION_TIMEOUT_MS } from '../shared/constants'
+import { appForRequest } from './bootstrap'
 
 describe('[CF] Worker auth initialization recovery', () => {
   it('keeps preview and deployment authentication origins separate', async () => {

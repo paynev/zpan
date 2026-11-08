@@ -46,21 +46,21 @@ describe('useViewMode — custom storageKey parameter', () => {
   })
 
   it('reads from the custom storageKey, not the default', () => {
-    localStorageStub.setItem('zpan-ihost-view-mode', 'grid')
+    localStorageStub.setItem('zpan-files-view-mode', 'grid')
 
-    const mode = readMode('zpan-ihost-view-mode')
+    const mode = readMode('zpan-files-view-mode')
 
     expect(mode).toBe('grid')
   })
 
   it('writes to the custom storageKey', () => {
-    writeMode('zpan-ihost-view-mode', 'grid')
+    writeMode('zpan-files-view-mode', 'grid')
 
-    expect(localStorageStub.setItem).toHaveBeenCalledWith('zpan-ihost-view-mode', 'grid')
+    expect(localStorageStub.setItem).toHaveBeenCalledWith('zpan-files-view-mode', 'grid')
   })
 
   it('defaults to list when custom key has no value in localStorage', () => {
-    const mode = readMode('zpan-ihost-view-mode')
+    const mode = readMode('zpan-files-view-mode')
 
     expect(mode).toBe('list')
   })
@@ -68,8 +68,8 @@ describe('useViewMode — custom storageKey parameter', () => {
   it('does not read from the default key when a custom key is used', () => {
     localStorageStub.setItem('zpan-view-mode', 'grid')
 
-    // Custom key 'zpan-ihost-view-mode' has no value, should default to list
-    const mode = readMode('zpan-ihost-view-mode')
+    // The custom key has no value, should default to list
+    const mode = readMode('zpan-files-view-mode')
 
     expect(mode).toBe('list')
   })
@@ -77,11 +77,11 @@ describe('useViewMode — custom storageKey parameter', () => {
   it('two pages maintain independent view mode state with different keys', () => {
     // Page 1 uses default key
     writeMode('zpan-view-mode', 'grid')
-    // Page 2 uses ihost key
-    writeMode('zpan-ihost-view-mode', 'list')
+    // Page 2 uses the same custom key
+    writeMode('zpan-files-view-mode', 'list')
 
     const page1Mode = readMode('zpan-view-mode')
-    const page2Mode = readMode('zpan-ihost-view-mode')
+    const page2Mode = readMode('zpan-files-view-mode')
 
     expect(page1Mode).toBe('grid')
     expect(page2Mode).toBe('list')
@@ -89,17 +89,17 @@ describe('useViewMode — custom storageKey parameter', () => {
 
   it('changing mode on custom key does not affect default key', () => {
     writeMode('zpan-view-mode', 'grid')
-    writeMode('zpan-ihost-view-mode', 'list')
+    writeMode('zpan-files-view-mode', 'list')
 
     // Write to custom key
-    writeMode('zpan-ihost-view-mode', 'grid')
+    writeMode('zpan-files-view-mode', 'grid')
 
     // Default key remains unchanged
     const defaultMode = readMode('zpan-view-mode')
     expect(defaultMode).toBe('grid')
 
     // Custom key was updated
-    const customMode = readMode('zpan-ihost-view-mode')
+    const customMode = readMode('zpan-files-view-mode')
     expect(customMode).toBe('grid')
   })
 

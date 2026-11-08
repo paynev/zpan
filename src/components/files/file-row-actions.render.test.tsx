@@ -89,7 +89,6 @@ vi.mock('@/components/ui/context-menu', () => ({
 function makeObject(dirtype: DirType = DirType.FILE): StorageObject {
   return {
     id: 'obj-1',
-    orgId: 'org-1',
     alias: '',
     name: 'photo.png',
     type: 'image/png',
@@ -143,8 +142,6 @@ describe('FileRowActions — component rendering', () => {
       onMove: vi.fn(),
       onTransfer: vi.fn(),
       onShare: vi.fn(),
-      onCompress: vi.fn(),
-      onExtract: vi.fn(),
       onTrash: vi.fn(),
       onDelete: vi.fn(),
     }
@@ -161,18 +158,16 @@ describe('FileRowActions — component rendering', () => {
       'files.details',
       'files.preview',
       'files.download',
-      'ihost.copy.url',
-      'ihost.copy.raw',
-      'ihost.copy.markdown',
-      'ihost.copy.html',
-      'ihost.copy.bbcode',
+      'files.copy.url',
+      'files.copy.raw',
+      'files.copy.markdown',
+      'files.copy.html',
+      'files.copy.bbcode',
       'files.rename',
       'files.copy',
       'files.moveTo',
       'files.transferToSpace',
       'share.menuItem',
-      'files.compress',
-      'files.extract',
       'files.moveToTrash',
       'common.delete',
     ])
@@ -191,7 +186,7 @@ describe('FileRowActions — component rendering', () => {
     const handlers = { onOpen: vi.fn(), onCopyUrl } as unknown as FileActionHandlers
     const { getAllByRole } = render(<FileRowActions item={item} handlers={handlers} />)
     const menuItems = getAllByRole('menuitem')
-    const rawItem = menuItems.find((el: HTMLElement) => el.textContent === 'ihost.copy.raw')
+    const rawItem = menuItems.find((el: HTMLElement) => el.textContent === 'files.copy.raw')
     expect(rawItem).toBeDefined()
     fireEvent.click(rawItem!)
     expect(onCopyUrl).toHaveBeenCalledWith(item, 'raw')
@@ -203,7 +198,7 @@ describe('FileRowActions — component rendering', () => {
     const handlers = { onOpen: vi.fn(), onCopyUrl } as unknown as FileActionHandlers
     const { getAllByRole } = render(<FileRowActions item={item} handlers={handlers} />)
     const menuItems = getAllByRole('menuitem')
-    const mdItem = menuItems.find((el: HTMLElement) => el.textContent === 'ihost.copy.markdown')
+    const mdItem = menuItems.find((el: HTMLElement) => el.textContent === 'files.copy.markdown')
     expect(mdItem).toBeDefined()
     fireEvent.click(mdItem!)
     expect(onCopyUrl).toHaveBeenCalledWith(item, 'markdown')
@@ -215,7 +210,7 @@ describe('FileRowActions — component rendering', () => {
     const handlers = { onOpen: vi.fn(), onCopyUrl } as unknown as FileActionHandlers
     const { getAllByRole } = render(<FileRowActions item={item} handlers={handlers} />)
     const menuItems = getAllByRole('menuitem')
-    const htmlItem = menuItems.find((el: HTMLElement) => el.textContent === 'ihost.copy.html')
+    const htmlItem = menuItems.find((el: HTMLElement) => el.textContent === 'files.copy.html')
     expect(htmlItem).toBeDefined()
     fireEvent.click(htmlItem!)
     expect(onCopyUrl).toHaveBeenCalledWith(item, 'html')
@@ -227,7 +222,7 @@ describe('FileRowActions — component rendering', () => {
     const handlers = { onOpen: vi.fn(), onCopyUrl } as unknown as FileActionHandlers
     const { getAllByRole } = render(<FileRowActions item={item} handlers={handlers} />)
     const menuItems = getAllByRole('menuitem')
-    const bbItem = menuItems.find((el: HTMLElement) => el.textContent === 'ihost.copy.bbcode')
+    const bbItem = menuItems.find((el: HTMLElement) => el.textContent === 'files.copy.bbcode')
     expect(bbItem).toBeDefined()
     fireEvent.click(bbItem!)
     expect(onCopyUrl).toHaveBeenCalledWith(item, 'bbcode')
@@ -264,30 +259,5 @@ describe('FileRowActions — component rendering', () => {
     expect(downloadItem).toBeDefined()
     fireEvent.click(downloadItem!)
     expect(onDownload).toHaveBeenCalledWith(item)
-  })
-
-  it('renders extract only for zip files', () => {
-    const onExtract = vi.fn()
-    const zip = { ...makeObject(DirType.FILE), name: 'backup.zip' }
-    const text = { ...makeObject(DirType.FILE), name: 'notes.txt' }
-    const handlers = { onOpen: vi.fn(), onExtract } as unknown as FileActionHandlers
-
-    const zipView = render(<FileRowActions item={zip} handlers={handlers} />)
-    expect(zipView.getAllByRole('menuitem').some((el) => el.textContent === 'files.extract')).toBe(true)
-    cleanup()
-
-    const textView = render(<FileRowActions item={text} handlers={handlers} />)
-    expect(textView.queryAllByRole('menuitem').some((el) => el.textContent === 'files.extract')).toBe(false)
-  })
-
-  it('calls onCompress when compress item clicked', () => {
-    const onCompress = vi.fn()
-    const item = makeObject(DirType.USER_FOLDER)
-    const handlers = { onOpen: vi.fn(), onCompress } as unknown as FileActionHandlers
-    const { getAllByRole } = render(<FileRowActions item={item} handlers={handlers} />)
-    const compressItem = getAllByRole('menuitem').find((el: HTMLElement) => el.textContent === 'files.compress')
-    expect(compressItem).toBeDefined()
-    fireEvent.click(compressItem!)
-    expect(onCompress).toHaveBeenCalledWith(item)
   })
 })

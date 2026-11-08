@@ -10,14 +10,13 @@ const BYTE_ACTIONS = new Set([
   'upload_failed',
   'share_download',
   'object_download',
-  'image_hosting_download',
   'webdav_download',
   'download_failed',
   'save_from_share',
 ])
 
 const UPLOAD_ACTIONS = new Set(['upload_confirm', 'upload_cancel', 'upload_failed'])
-const DOWNLOAD_ACTIONS = new Set(['share_download', 'object_download', 'image_hosting_download', 'webdav_download'])
+const DOWNLOAD_ACTIONS = new Set(['share_download', 'object_download', 'webdav_download'])
 const SHARE_ACTIONS = new Set(['share_download', 'save_from_share'])
 export function assertAuditEvent(event: AuditEventFact): void {
   const { action, metadata } = event

@@ -1,18 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { encodeChildRef } from '../http/share-utils'
 import { hashPassword } from '../lib/password'
-import type { Platform } from '../platform/interface'
 import { saveShareToDrive } from './object'
 import {
   AppError,
-  type AuditRepo,
   CreateShareError,
-  type EmailMessage,
   type Matter,
   type MatterListResult,
   type MatterRepo,
-  type OrgRepo,
-  type QuotaRepo,
   type S3Gateway,
   type ShareListItem,
   type ShareRecipientRecord,
@@ -35,28 +30,15 @@ import {
   verifySharePassword,
   viewShare,
 } from './share'
-import { confirmDownloadTraffic, type DownloadTrafficOutcome, meterDownloadTraffic } from './store/traffic-metering'
 
-// The end-to-end metering (quota consume → cloud egress report → refund) is
-// covered by cloud-traffic-metering.test.ts; the recipient fan-out and the copy
-// engine by share-notification/save-to-drive tests. Here we replace those three
-// collaborators with mocks so each share case feeds a chosen outcome and we can
-// assert the share routes' gates, ordering, DTO shaping, and presign-rollback in
-// isolation. Everything else (types, pure helpers) stays real.
-vi.mock('./store/traffic-metering', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./store/traffic-metering')>()),
-  meterDownloadTraffic: vi.fn(),
-  confirmDownloadTraffic: vi.fn(async () => {}),
-  reverseDownloadTraffic: vi.fn(async (deps, params) => deps.quota.refundTraffic(params.orgId, params.bytes)),
-}))
+// The recipient fan-out and the copy engine are covered by
+// share-notification/save-to-drive tests. Here we replace the copy engine with
+// a mock so each share case feeds a chosen outcome and we can assert the share
+// routes' gates, ordering, DTO shaping, and presign-rollback in isolation.
+// Everything else (types, pure helpers) stays real.
 vi.mock('./object', () => ({ saveShareToDrive: vi.fn() }))
 
 const PRESIGNED_URL = 'https://presigned.example.com/file'
-const CLOUD_BASE_URL = 'https://cloud.example.com'
-
-const meterOk: DownloadTrafficOutcome = { ok: true }
-const meterQuotaExceeded: DownloadTrafficOutcome = { ok: false, reason: 'quota_exceeded' }
-const meterInsufficientCredits: DownloadTrafficOutcome = { ok: false, reason: 'insufficient_credits' }
 
 // Asserts a usecase returned a failure AppError carrying the given HTTP status,
 // wire reason, and message — the AIP-193 fields the http boundary renders.
@@ -74,17 +56,12 @@ function expectError(
   expect(error.message).toBe(message)
 }
 
-const meter = vi.mocked(meterDownloadTraffic)
-const confirmDownload = vi.mocked(confirmDownloadTraffic)
 const saveToDrive = vi.mocked(saveShareToDrive)
 
-const platform = {} as Platform
-
-const sampleStorage = { id: 'st-1', bucket: 'b', egressCreditBillingEnabled: false } as StorageRecord
+const sampleStorage = { id: 'st-1', bucket: 'b' } as StorageRecord
 
 const fileMatter = {
   id: 'm-1',
-  orgId: 'o-1',
   name: 'file.bin',
   type: 'application/octet-stream',
   size: 1024,
@@ -96,7 +73,6 @@ const fileMatter = {
 
 const folderMatter = {
   id: 'fld-1',
-  orgId: 'o-1',
   name: 'docs',
   type: 'folder',
   size: 0,
@@ -113,7 +89,6 @@ const landingShare = {
   token: 'sk_token1',
   kind: 'landing',
   matterId: 'm-1',
-  orgId: 'o-1',
   creatorId: 'creator-1',
   passwordHash: null,
   expiresAt: null,
@@ -140,12 +115,11 @@ function makeShareRepo(over: Partial<ShareRepo> = {}): ShareRepo {
     incrementDownloadsAtomic: async () => ({ ok: true, downloads: 3 }),
     decrementDownloads: async () => {},
     revokeByToken: async () => true,
+    setPrivacy: async () => true,
     listForApi: async () => ({ items: [], nextBoundary: null }),
     listReceivedForApi: async () => ({ items: [], nextBoundary: null }),
-    computeSourceBytes: async () => 1024,
     listDirectActiveChildren: async () => [],
-    hasQuotaForBytes: async () => true,
-    getCreatorIdentity: async () => ({ name: 'Creator Name', username: 'creator' }),
+    getCreatorIdentity: async () => ({ name: 'Creator Name' }),
     getUserEmail: async () => 'creator@example.com',
     getMatterName: async () => 'file.bin',
     findShareChildMatter: async () => childMatter,
@@ -164,50 +138,31 @@ function makeDeps(
     matter?: Partial<MatterRepo>
     storages?: Partial<StorageRepo>
     s3?: Partial<S3Gateway>
-    quota?: Partial<QuotaRepo>
-    org?: Partial<OrgRepo>
   } = {},
 ) {
-  const record = vi.fn(async () => {})
   const incrementViews = vi.fn(async () => {})
   const decrementDownloads = vi.fn(async () => {})
-  const refundTraffic = vi.fn(async () => {})
   const presignDownload = vi.fn(async () => PRESIGNED_URL)
   // dispatchShareCreated now lives in this module, so its call cannot be mocked
   // at the module boundary; instead its collaborator ports are spies and the
-  // createShare tests assert the observable fan-out (notification + email).
+  // createShare tests assert the observable fan-out (in-app notifications).
   const createNotification = vi.fn(async () => ({}) as never)
-  const sendEmail = vi.fn(async (_platform: Platform, _message: EmailMessage) => {})
-  const isEmailConfigured = vi.fn(async () => true)
 
   const deps = {
     share: makeShareRepo({ incrementViews, decrementDownloads, ...over.share }),
     matter: { list: async () => emptyMatterList, ...over.matter } as MatterRepo,
     storages: { get: async () => sampleStorage, ...over.storages } as StorageRepo,
     s3: { presignDownload, ...over.s3 } as S3Gateway,
-    quota: { consumeTrafficIfQuotaAllows: async () => true, refundTraffic, ...over.quota } as QuotaRepo,
-    org: { canWriteToOrg: async () => true, ...over.org } as OrgRepo,
-    audit: { record } as unknown as AuditRepo,
     notifications: { create: createNotification } as unknown as ShareDeps['notifications'],
-    email: { isConfigured: isEmailConfigured, send: sendEmail } as unknown as ShareDeps['email'],
-    shareNotifications: { getUserEmail: async () => null } as unknown as ShareDeps['shareNotifications'],
-    // Cloud-metering ports are unused here — they are mocked.
-    licenseBinding: {} as ShareDeps['licenseBinding'],
-    licensingCloud: {} as ShareDeps['licensingCloud'],
-    cloudTrafficReports: {} as ShareDeps['cloudTrafficReports'],
     storageUsage: {} as ShareDeps['storageUsage'],
   } as ShareDeps
 
   return {
     deps,
-    record,
     incrementViews,
     decrementDownloads,
-    refundTraffic,
     presignDownload,
     createNotification,
-    sendEmail,
-    isEmailConfigured,
   }
 }
 
@@ -217,7 +172,6 @@ const flushDispatch = () => new Promise((resolve) => setImmediate(resolve))
 
 beforeEach(() => {
   vi.clearAllMocks()
-  meter.mockResolvedValue(meterOk)
   saveToDrive.mockResolvedValue({ saved: [], skipped: [] })
 })
 
@@ -273,7 +227,6 @@ describe('viewShare', () => {
       kind: 'landing',
       matter: { name: 'file.bin', isFolder: false },
       creatorName: 'Creator Name',
-      creatorUsername: 'creator',
       requiresPassword: false,
       expired: false,
       exhausted: false,
@@ -281,21 +234,6 @@ describe('viewShare', () => {
       rootRef: encodeChildRef('sk_token1', 'm-1'),
     })
     expect('recipients' in out.dto).toBe(false)
-  })
-
-  it('returns a null creator username for legacy users without one', async () => {
-    const { deps } = makeDeps({
-      share: { getCreatorIdentity: async () => ({ name: 'Legacy User', username: null }) },
-    })
-    const out = await viewShare(deps, {
-      token: 'sk_token1',
-      viewerId: null,
-      viewCookie: 'seen',
-      accessCookie: undefined,
-    })
-    if (!out.ok) throw new Error('expected ok')
-    expect(out.dto.creatorName).toBe('Legacy User')
-    expect(out.dto.creatorUsername).toBeNull()
   })
 
   it('does not increment views (no cookie) when already seen', async () => {
@@ -325,7 +263,6 @@ describe('viewShare', () => {
     expect(out.dto).toMatchObject({
       id: 's-1',
       matterId: 'm-1',
-      orgId: 'o-1',
       creatorId: 'creator-1',
       recipients: [],
     })
@@ -516,7 +453,7 @@ describe('listShareObjects', () => {
     const out = await listShareObjects(deps, baseParams)
     if (!out.ok) throw new Error('expected ok')
     // folderMatter.parent='root', name='docs' → queryParent='root/docs'
-    expect(list).toHaveBeenCalledWith('o-1', { parent: 'root/docs', pageSize: 50, after: undefined })
+    expect(list).toHaveBeenCalledWith({ parent: 'root/docs', pageSize: 50, after: undefined })
     expect(out.result.items).toEqual([
       { ref: encodeChildRef('sk_token1', 'fld-1'), name: 'docs', type: 'folder', size: 0, isFolder: true },
       {
@@ -538,7 +475,7 @@ describe('listShareObjects', () => {
     })
     const out = await listShareObjects(deps, { ...baseParams, relativePath: 'a/b' })
     if (!out.ok) throw new Error('expected ok')
-    expect(list).toHaveBeenCalledWith('o-1', { parent: 'root/docs/a/b', pageSize: 50, after: undefined })
+    expect(list).toHaveBeenCalledWith({ parent: 'root/docs/a/b', pageSize: 50, after: undefined })
     expect(out.result.breadcrumb).toEqual([
       { name: 'docs', path: '' },
       { name: 'a', path: 'a' },
@@ -575,7 +512,7 @@ describe('readShareReadme', () => {
     const out = await readShareReadme(deps, baseParams)
 
     expect(out).toEqual({ ok: true, content: '# Folder guide' })
-    expect(listDirectActiveChildren).toHaveBeenCalledWith('o-1', 'root/docs')
+    expect(listDirectActiveChildren).toHaveBeenCalledWith('root/docs')
     expect(getObjectBytes).toHaveBeenCalledWith(sampleStorage, 'root/docs/README.md')
   })
 
@@ -651,7 +588,6 @@ describe('downloadShareObject', () => {
     matterId: 'm-1',
     viewerId: null as string | null,
     accessCookie: 'ok' as string | undefined,
-    cloudBaseUrl: CLOUD_BASE_URL,
   }
 
   it('presigns and returns the URL on the happy path (root file)', async () => {
@@ -660,47 +596,9 @@ describe('downloadShareObject', () => {
     expect(out).toMatchObject({
       ok: true,
       url: PRESIGNED_URL,
-      receipt: { orgId: 'o-1', shareId: 's-1', matterId: 'm-1', bytes: 1024 },
+      receipt: { shareId: 's-1', matterId: 'm-1', bytes: 1024 },
     })
     expect(presignDownload).toHaveBeenCalledWith(sampleStorage, 'some/key.bin', 'file.bin', expect.any(Number))
-  })
-
-  it('passes cloudBaseUrl, source landing_share/sourceId, and a decrement onRejected to the meter', async () => {
-    const { deps, decrementDownloads } = makeDeps()
-    await downloadShareObject(deps, baseParams)
-    expect(meter).toHaveBeenCalledWith(
-      deps,
-      expect.objectContaining({
-        cloudBaseUrl: CLOUD_BASE_URL,
-        orgId: 'o-1',
-        bytes: 1024,
-        storage: sampleStorage,
-        source: 'landing_share',
-        sourceId: 's-1',
-        onRejected: expect.any(Function),
-      }),
-    )
-    const onRejected = meter.mock.calls[0][1].onRejected!
-    await onRejected()
-    expect(decrementDownloads).toHaveBeenCalledWith('s-1')
-  })
-
-  it('marks the viewer download traffic as issued', async () => {
-    const { deps } = makeDeps()
-    await downloadShareObject(deps, { ...baseParams, viewerId: 'viewer-9' })
-    expect(confirmDownload).toHaveBeenCalledWith(deps, { eventId: expect.any(String) })
-  })
-
-  it('marks anonymous download traffic as issued', async () => {
-    const { deps } = makeDeps()
-    await downloadShareObject(deps, { ...baseParams, viewerId: null })
-    expect(confirmDownload).toHaveBeenCalledWith(deps, { eventId: expect.any(String) })
-  })
-
-  it('fails when the activity record throws', async () => {
-    confirmDownload.mockRejectedValueOnce(new Error('audit down'))
-    const { deps } = makeDeps()
-    await expect(downloadShareObject(deps, baseParams)).rejects.toThrow('audit down')
   })
 
   it('returns matter_trashed / not_found from resolution', async () => {
@@ -788,7 +686,6 @@ describe('downloadShareObject', () => {
     const { deps, presignDownload } = makeDeps({ share: { hasDownloadsAvailable: async () => false } })
     expectError(await downloadShareObject(deps, baseParams), 410, undefined, 'Download limit exceeded')
     expect(presignDownload).not.toHaveBeenCalled()
-    expect(meter).not.toHaveBeenCalled()
   })
 
   it('returns limit_exceeded when the atomic increment loses the race', async () => {
@@ -797,7 +694,6 @@ describe('downloadShareObject', () => {
     })
     expectError(await downloadShareObject(deps, baseParams), 410, undefined, 'Download limit exceeded')
     expect(presignDownload).not.toHaveBeenCalled()
-    expect(meter).not.toHaveBeenCalled()
   })
 
   it('returns storage_not_found when the storage is missing', async () => {
@@ -805,35 +701,13 @@ describe('downloadShareObject', () => {
     expectError(await downloadShareObject(deps, baseParams), 404, undefined, 'Storage not found')
   })
 
-  it('returns quota_exceeded when the meter rejects on quota; presign never runs', async () => {
-    meter.mockResolvedValue(meterQuotaExceeded)
-    const { deps, presignDownload } = makeDeps()
-    expectError(await downloadShareObject(deps, baseParams), 422, 'QUOTA_EXCEEDED', 'Traffic quota exceeded')
-    expect(presignDownload).not.toHaveBeenCalled()
-  })
-
-  it('returns insufficient_credits when the meter rejects on credits', async () => {
-    meter.mockResolvedValue(meterInsufficientCredits)
-    const { deps, presignDownload } = makeDeps()
-    expectError(await downloadShareObject(deps, baseParams), 402, 'INSUFFICIENT_CREDITS', 'Insufficient credits')
-    expect(presignDownload).not.toHaveBeenCalled()
-  })
-
-  it('refunds traffic AND decrements the download when presign fails, then rethrows', async () => {
+  it('decrements the download when presign fails, then rethrows', async () => {
     const presignDownload = vi.fn(async () => {
       throw new Error('sign failed')
     })
-    const { deps, refundTraffic, decrementDownloads } = makeDeps({ s3: { presignDownload } })
+    const { deps, decrementDownloads } = makeDeps({ s3: { presignDownload } })
     await expect(downloadShareObject(deps, baseParams)).rejects.toThrow('sign failed')
-    expect(refundTraffic).toHaveBeenCalledWith('o-1', 1024)
     expect(decrementDownloads).toHaveBeenCalledWith('s-1')
-  })
-
-  it('meters bytes=0 when the matter has no size', async () => {
-    const sizeless = { ...fileMatter, size: null } as Matter
-    const { deps } = makeDeps({ share: { resolveByToken: async () => okResolution({ matter: sizeless }) } })
-    await downloadShareObject(deps, baseParams)
-    expect(meter).toHaveBeenCalledWith(deps, expect.objectContaining({ bytes: 0 }))
   })
 })
 
@@ -852,10 +726,9 @@ describe('listShares', () => {
       box: 'sent',
       pageSize: 10,
       status: 'active',
-      boundOrgId: 'o-1',
       after,
     })
-    expect(listForApi).toHaveBeenCalledWith('u1', { pageSize: 10, status: 'active', orgId: 'o-1', after })
+    expect(listForApi).toHaveBeenCalledWith('u1', { pageSize: 10, status: 'active', after })
     expect(out).toEqual({ items: [sentItem], nextBoundary })
   })
 
@@ -876,7 +749,6 @@ describe('listShares', () => {
     expect(getUserEmail).toHaveBeenCalledWith('u1')
     expect(listReceivedForApi).toHaveBeenCalledWith('u1', 'me@example.com', {
       pageSize: 20,
-      orgId: undefined,
       after: undefined,
     })
     expect(out).toEqual({ items: [sentItem], nextBoundary: null })
@@ -891,8 +763,7 @@ describe('createShare', () => {
   it('creates the share and returns the wire DTO', async () => {
     const create = vi.fn(async () => landingShare)
     const { deps } = makeDeps({ share: { create, getMatterName: async () => 'file.bin' } })
-    const out = await createShare(deps, platform, {
-      orgId: 'o-1',
+    const out = await createShare(deps, {
       userId: 'creator-1',
       input: { ...baseInput, password: 'pw', expiresAt: '2030-01-01T00:00:00Z', downloadLimit: 5 },
     })
@@ -903,7 +774,6 @@ describe('createShare', () => {
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
         matterId: 'm-1',
-        orgId: 'o-1',
         creatorId: 'creator-1',
         kind: 'landing',
         password: 'pw',
@@ -914,23 +784,21 @@ describe('createShare', () => {
   })
 
   it('does not dispatch notifications when there are no recipients', async () => {
-    const { deps, createNotification, sendEmail } = makeDeps()
-    await createShare(deps, platform, { orgId: 'o-1', userId: 'creator-1', input: baseInput })
+    const { deps, createNotification } = makeDeps()
+    await createShare(deps, { userId: 'creator-1', input: baseInput })
     await flushDispatch()
     expect(createNotification).not.toHaveBeenCalled()
-    expect(sendEmail).not.toHaveBeenCalled()
   })
 
   it('dispatches share-created notifications when recipients are present', async () => {
-    const { deps, createNotification, sendEmail } = makeDeps({
+    const { deps, createNotification } = makeDeps({
       share: {
-        getCreatorIdentity: async () => ({ name: 'Alice', username: 'alice' }),
+        getCreatorIdentity: async () => ({ name: 'Alice' }),
         getMatterName: async () => 'doc.pdf',
       },
     })
     const recipients = [{ recipientUserId: 'u2' }, { recipientEmail: 'b@example.com' }]
-    await createShare(deps, platform, {
-      orgId: 'o-1',
+    await createShare(deps, {
       userId: 'creator-1',
       input: { ...baseInput, recipients },
     })
@@ -943,48 +811,6 @@ describe('createShare', () => {
         refId: 's-1',
       }),
     )
-    expect(sendEmail).toHaveBeenCalledWith(
-      platform,
-      expect.objectContaining({ to: 'b@example.com', subject: 'A ZPan item was shared with you' }),
-    )
-  })
-
-  it('escapes user-controlled names in share notification email HTML', async () => {
-    const { deps, sendEmail } = makeDeps({
-      share: {
-        getCreatorIdentity: async () => ({ name: '<img src=x onerror="alert(1)">', username: 'alice' }),
-        getMatterName: async () => '<a href="https://evil.example">Open</a>',
-      },
-    })
-    await createShare(deps, platform, {
-      orgId: 'o-1',
-      userId: 'creator-1',
-      input: { ...baseInput, recipients: [{ recipientEmail: 'b@example.com' }] },
-    })
-    await flushDispatch()
-
-    const message = sendEmail.mock.calls[0][1]
-    expect(message.subject).toBe('A ZPan item was shared with you')
-    expect(message.html).not.toContain('<img')
-    expect(message.html).not.toContain('<a href="https://evil.example">')
-    expect(message.html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;')
-    expect(message.html).toContain('&lt;a href=&quot;https://evil.example&quot;&gt;Open&lt;/a&gt;')
-  })
-
-  it('falls back to Unknown creator / empty matter name', async () => {
-    const { deps, sendEmail } = makeDeps({
-      share: { getCreatorIdentity: async () => null, getMatterName: async () => null },
-    })
-    await createShare(deps, platform, {
-      orgId: 'o-1',
-      userId: 'creator-1',
-      input: { ...baseInput, recipients: [{ recipientEmail: 'b@example.com' }] },
-    })
-    await flushDispatch()
-    expect(sendEmail).toHaveBeenCalledWith(
-      platform,
-      expect.objectContaining({ to: 'b@example.com', subject: 'A ZPan item was shared with you' }),
-    )
   })
 
   it.each([
@@ -996,13 +822,11 @@ describe('createShare', () => {
     const create = vi.fn(async () => {
       throw new CreateShareError(code)
     })
-    const { deps, record, createNotification, sendEmail } = makeDeps({ share: { create } })
-    const out = await createShare(deps, platform, { orgId: 'o-1', userId: 'creator-1', input: baseInput })
+    const { deps, createNotification } = makeDeps({ share: { create } })
+    const out = await createShare(deps, { userId: 'creator-1', input: baseInput })
     expectError(out, status, code, message)
-    expect(record).not.toHaveBeenCalled()
     await flushDispatch()
     expect(createNotification).not.toHaveBeenCalled()
-    expect(sendEmail).not.toHaveBeenCalled()
   })
 
   it('rethrows a non-CreateShareError', async () => {
@@ -1010,25 +834,36 @@ describe('createShare', () => {
       throw new Error('db down')
     })
     const { deps } = makeDeps({ share: { create } })
-    await expect(createShare(deps, platform, { orgId: 'o-1', userId: 'creator-1', input: baseInput })).rejects.toThrow(
-      'db down',
-    )
+    await expect(createShare(deps, { userId: 'creator-1', input: baseInput })).rejects.toThrow('db down')
   })
 })
 
 // ─── setSharePrivacy ─────────────────────────────────────────────────────────
 
 describe('setSharePrivacy', () => {
-  it('returns forbidden when the bound workspace does not match the share org', async () => {
+  it('returns forbidden when the requester is not the creator', async () => {
     const setPrivacy = vi.fn()
     const { deps } = makeDeps({ share: { setPrivacy } })
     expectError(
-      await setSharePrivacy(deps, { token: 'sk_token1', userId: 'creator-1', boundOrgId: 'other-org', private: true }),
+      await setSharePrivacy(deps, { token: 'sk_token1', userId: 'someone-else', private: true }),
       403,
       undefined,
       'Forbidden',
     )
     expect(setPrivacy).not.toHaveBeenCalled()
+  })
+
+  it('returns ineligible for targeted or direct shares', async () => {
+    const withRecipients = okResolution({
+      recipients: [{ id: 'r-1', shareId: 's-1', recipientUserId: 'u2', recipientEmail: null, createdAt: new Date(0) }],
+    })
+    const { deps } = makeDeps({ share: { resolveByToken: async () => withRecipients } })
+    expectError(
+      await setSharePrivacy(deps, { token: 'sk_token1', userId: 'creator-1', private: true }),
+      400,
+      'SHARE_PRIVACY_INELIGIBLE',
+      'Only untargeted landing shares have configurable privacy',
+    )
   })
 })
 
@@ -1036,32 +871,18 @@ describe('setSharePrivacy', () => {
 
 describe('revokeShare', () => {
   it('returns not_found when the token does not resolve', async () => {
-    const { deps, record } = makeDeps({ share: { resolveByToken: async () => ({ status: 'not_found' }) } })
+    const { deps } = makeDeps({ share: { resolveByToken: async () => ({ status: 'not_found' }) } })
     expectError(await revokeShare(deps, { token: 't', userId: 'creator-1' }), 404, undefined, 'Not found')
-    expect(record).not.toHaveBeenCalled()
   })
 
   it('returns not_found when the share is already revoked', async () => {
-    const { deps, record } = makeDeps({ share: { resolveByToken: async () => ({ status: 'revoked' }) } })
+    const { deps } = makeDeps({ share: { resolveByToken: async () => ({ status: 'revoked' }) } })
     expectError(await revokeShare(deps, { token: 't', userId: 'creator-1' }), 404, undefined, 'Not found')
-    expect(record).not.toHaveBeenCalled()
   })
 
   it('returns forbidden when the requester is not the creator', async () => {
     const { deps } = makeDeps()
     expectError(await revokeShare(deps, { token: 't', userId: 'someone-else' }), 403, undefined, 'Forbidden')
-  })
-
-  it('returns forbidden when the bound workspace does not match the share org', async () => {
-    const revokeByToken = vi.fn()
-    const { deps } = makeDeps({ share: { revokeByToken } })
-    expectError(
-      await revokeShare(deps, { token: 'sk_token1', userId: 'creator-1', boundOrgId: 'other-org' }),
-      403,
-      undefined,
-      'Forbidden',
-    )
-    expect(revokeByToken).not.toHaveBeenCalled()
   })
 
   it('returns not_found when the scoped revoke loses the race', async () => {
@@ -1107,7 +928,6 @@ describe('saveShare', () => {
   const baseParams = {
     token: 'sk_token1',
     currentUserId: 'u1',
-    targetOrgId: 'o-2',
     targetParent: '',
     accessCookie: undefined,
     createdBy: { type: 'oauth' as const, ref: 'agent-1', issuer: 'https://realm.example.com' },
@@ -1152,37 +972,15 @@ describe('saveShare', () => {
     expect(out.ok).toBe(true)
   })
 
-  it('returns forbidden when the user cannot write to the target org', async () => {
-    const { deps } = makeDeps({ org: { canWriteToOrg: async () => false } })
-    expectError(await saveShare(deps, baseParams), 403, undefined, 'Forbidden')
-  })
-
-  it('returns forbidden before org write checks when the bound target workspace does not match', async () => {
-    const canWriteToOrg = vi.fn()
-    const { deps } = makeDeps({ org: { canWriteToOrg } })
-    expectError(await saveShare(deps, { ...baseParams, boundTargetOrgId: 'other-org' }), 403, undefined, 'Forbidden')
-    expect(canWriteToOrg).not.toHaveBeenCalled()
-  })
-
-  it('returns quota_exceeded when the target org lacks quota', async () => {
-    const computeSourceBytes = vi.fn(async () => 5000)
-    const hasQuotaForBytes = vi.fn(async () => false)
-    const { deps } = makeDeps({ share: { computeSourceBytes, hasQuotaForBytes } })
-    expectError(await saveShare(deps, baseParams), 422, 'QUOTA_EXCEEDED', 'Quota exceeded')
-    expect(hasQuotaForBytes).toHaveBeenCalledWith('o-2', 5000)
-    expect(saveToDrive).not.toHaveBeenCalled()
-  })
-
   it('copies via saveShareToDrive and returns the result on success', async () => {
     const saved = [{ ...fileMatter, id: 'copy-1' }] as Matter[]
-    saveToDrive.mockResolvedValue({ saved, skipped: [{ name: 'x', reason: 'quota' }] })
+    saveToDrive.mockResolvedValue({ saved, skipped: [{ name: 'x', reason: 'conflict' }] })
     const { deps } = makeDeps()
     const out = await saveShare(deps, { ...baseParams, targetParent: 'dest' })
-    expect(out).toEqual({ ok: true, result: { saved, skipped: [{ name: 'x', reason: 'quota' }] } })
+    expect(out).toEqual({ ok: true, result: { saved, skipped: [{ name: 'x', reason: 'conflict' }] } })
     expect(saveToDrive).toHaveBeenCalledWith(deps, {
       matter: fileMatter,
       currentUserId: 'u1',
-      targetOrgId: 'o-2',
       targetParent: 'dest',
       createdBy: { type: 'oauth', ref: 'agent-1', issuer: 'https://realm.example.com' },
     })

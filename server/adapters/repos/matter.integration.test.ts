@@ -1,39 +1,30 @@
 import { sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { describe, expect, it } from 'vitest'
-import { orgQuotaEntitlements, orgQuotas } from '../../db/schema.js'
 import { createTestApp } from '../../test/setup.js'
 import { type ConfirmUploadOptions, confirmUpload as confirmUploadUsecase } from '../../usecases/object'
 import type { UpdateMatterInput } from '../../usecases/ports'
-import {
-  reserveStorageUsage,
-  StorageQuotaExceededError,
-  withStorageUsageReservation,
-} from '../../usecases/storage-usage.js'
 import { createMatterRepo } from './matter.js'
-import { createQuotaRepo } from './quota.js'
 import { createStorageUsageRepo } from './storage-usage.js'
 
 type TestDbForRepo = Awaited<ReturnType<typeof createTestApp>>['db']
 
 // Thin adapters preserving the former matter service signatures.
-function confirmUpload(db: TestDbForRepo, id: string, orgId: string, opts: ConfirmUploadOptions = {}) {
+function confirmUpload(db: TestDbForRepo, id: string, opts: ConfirmUploadOptions = {}) {
   return confirmUploadUsecase(
     {
       matter: createMatterRepo(db),
-      quota: createQuotaRepo(db),
       storageUsage: createStorageUsageRepo(db),
     },
     id,
-    orgId,
     opts,
   )
 }
-function listTrashedRoots(db: TestDbForRepo, orgId: string) {
-  return createMatterRepo(db).listTrashedRoots(orgId)
+function listTrashedRoots(db: TestDbForRepo) {
+  return createMatterRepo(db).listTrashedRoots()
 }
-function updateMatter(db: TestDbForRepo, id: string, orgId: string, input: UpdateMatterInput) {
-  return createMatterRepo(db).update(id, orgId, input)
+function updateMatter(db: TestDbForRepo, id: string, input: UpdateMatterInput) {
+  return createMatterRepo(db).update(id, input)
 }
 
 type TestDb = Awaited<ReturnType<typeof createTestApp>>['db']
@@ -42,326 +33,75 @@ async function insertStorage(db: TestDb, opts: { id?: string; used?: number } = 
   const id = opts.id ?? 'st-1'
   const now = Date.now()
   await db.run(sql`
-    INSERT INTO storages (id, bucket, endpoint, region, access_key, secret_key, file_path, custom_host, capacity, used, status, created_at, updated_at)
+    INSERT INTO storages (id, bucket, endpoint, region, access_key, secret_key, file_path, capacity, used, status, created_at, updated_at)
     VALUES (${id}, 'test-bucket', 'https://s3.example.com', 'us-east-1',
-            'AKID', 'SECRET', '$UID/$RAW_NAME', '', 0, ${opts.used ?? 0}, 'active', ${now}, ${now})
+            'AKID', 'SECRET', '$UID/$RAW_NAME', 0, ${opts.used ?? 0}, 'active', ${now}, ${now})
   `)
   return id
 }
 
-async function insertOrgQuota(db: TestDb, orgId: string, quota: number, used = 0) {
-  await db.insert(orgQuotas).values({
-    id: nanoid(),
-    orgId,
-    quota: 0,
-    used,
-    trafficQuota: 0,
-    trafficUsed: 0,
-    trafficPeriod: '2026-05',
-  })
-  if (quota > 0) {
-    const now = new Date()
-    await db.insert(orgQuotaEntitlements).values({
-      id: nanoid(),
-      orgId,
-      resourceType: 'storage',
-      entitlementType: 'plan',
-      source: 'test',
-      sourceId: `test-storage-plan:${orgId}:${nanoid()}`,
-      bytes: quota,
-      startsAt: new Date(),
-      expiresAt: null,
-      status: 'active',
-      metadata: JSON.stringify({ packageName: 'Test Plan' }),
-      createdAt: now,
-      updatedAt: now,
-    })
-  }
-}
-
-async function insertOrganization(db: TestDb, orgId: string) {
-  await db.run(sql`
-    INSERT INTO organization (id, name, slug, created_at)
-    VALUES (${orgId}, 'Test Org', ${`org-${orgId}`}, ${Date.now()})
-  `)
-}
-
-async function insertDraftFile(
-  db: TestDb,
-  orgId: string,
-  opts: { id?: string; size?: number; storageId?: string } = {},
-) {
+async function insertDraftFile(db: TestDb, opts: { id?: string; size?: number; storageId?: string } = {}) {
   const id = opts.id ?? nanoid()
   const storageId = opts.storageId ?? 'st-1'
   const size = opts.size ?? 100
   const now = Date.now()
   await db.run(sql`
-    INSERT INTO matters (id, org_id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
-    VALUES (${id}, ${orgId}, ${`${id}-alias`}, 'file.txt', 'text/plain', ${size}, 0, '', 'some/key.txt', ${storageId}, 'draft', ${now}, ${now})
+    INSERT INTO matters (id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
+    VALUES (${id}, ${`${id}-alias`}, 'file.txt', 'text/plain', ${size}, 0, '', 'some/key.txt', ${storageId}, 'draft', ${now}, ${now})
   `)
   return id
 }
 
-// ─── storage usage reservations ───────────────────────────────────────────────
+// ─── storage usage reconciliation ─────────────────────────────────────────────
 
-describe('reserveStorageUsage', () => {
-  it('fails closed when no quota row exists', async () => {
+describe('storage usage reconciliation', () => {
+  it('reconciles active files plus active image hostings', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-ul', used: 0 })
-
-    await expect(
-      reserveStorageUsage(
-        { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-        { orgId, storageId, bytes: 500 },
-      ),
-    ).rejects.toThrow(StorageQuotaExceededError)
-    const rows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
-    expect(rows[0].used).toBe(0)
-  })
-
-  it('fails closed when effective quota is zero', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-q0', used: 100 })
-    await insertOrgQuota(db, orgId, 0, 5000)
-
-    await expect(
-      reserveStorageUsage(
-        { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-        { orgId, storageId, bytes: 999999 },
-      ),
-    ).rejects.toThrow(StorageQuotaExceededError)
-    const rows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
-    expect(rows[0].used).toBe(100)
-  })
-
-  it('treats effective storage quota 0 as invalid', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    await insertOrgQuota(db, orgId, 0, 5000)
-
-    await expect(createQuotaRepo(db).hasQuotaForBytes(orgId, 10_000_000)).resolves.toBe(false)
-    await expect(createQuotaRepo(db).getEffectiveQuota(orgId)).resolves.toMatchObject({ baseQuota: 0, quota: 0 })
-  })
-
-  it('reserves when used + bytes is within quota', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-in', used: 0 })
-    await insertOrgQuota(db, orgId, 1000, 400)
-
-    const result = await reserveStorageUsage(
-      { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-      { orgId, storageId, bytes: 500 },
-    )
-
-    expect(result).toEqual({ orgId, storageId, bytes: 500 })
-  })
-
-  it('reserves when used + bytes is exactly at quota', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-exact', used: 0 })
-    await insertOrgQuota(db, orgId, 1000, 500)
-
-    const result = await reserveStorageUsage(
-      { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-      { orgId, storageId, bytes: 500 },
-    )
-
-    expect(result).toEqual({ orgId, storageId, bytes: 500 })
-    const quotaRows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(quotaRows[0].used).toBe(1000)
-  })
-
-  it('rejects and does not increment when used + bytes exceeds quota', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-over', used: 50 })
-    await insertOrgQuota(db, orgId, 1000, 800)
-
-    await expect(
-      reserveStorageUsage(
-        { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-        { orgId, storageId, bytes: 201 },
-      ),
-    ).rejects.toThrow(StorageQuotaExceededError)
-
-    const storageRows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
-    expect(storageRows[0].used).toBe(50) // unchanged
-    const quotaRows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(quotaRows[0].used).toBe(800) // unchanged
-  })
-
-  it('does not allow upload usage against historical grant rows', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-grant', used: 0 })
-    await insertOrgQuota(db, orgId, 1000, 800)
-
-    await expect(
-      reserveStorageUsage(
-        { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-        { orgId, storageId, bytes: 600 },
-      ),
-    ).rejects.toThrow(StorageQuotaExceededError)
-
-    const quotaRows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(quotaRows[0].used).toBe(800)
-  })
-
-  it('rejects when quota is fully consumed', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-full', used: 100 })
-    await insertOrgQuota(db, orgId, 1000, 1000)
-
-    await expect(
-      reserveStorageUsage(
-        { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-        { orgId, storageId, bytes: 1 },
-      ),
-    ).rejects.toThrow(StorageQuotaExceededError)
-  })
-
-  it('increments orgQuotas.used when within quota', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-q-inc', used: 0 })
-    await insertOrgQuota(db, orgId, 5000, 200)
-
-    await reserveStorageUsage(
-      { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-      { orgId, storageId, bytes: 300 },
-    )
-
-    const rows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(rows[0].used).toBe(500)
-  })
-
-  it('increments storages.used when within quota', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-s-inc', used: 100 })
-    await insertOrgQuota(db, orgId, 5000, 100)
-
-    await reserveStorageUsage(
-      { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-      { orgId, storageId, bytes: 400 },
-    )
-
-    const rows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
-    expect(rows[0].used).toBe(500)
-  })
-
-  it('rolls back reserved usage and registered cleanup when the mutation fails', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-rb', used: 10 })
-    await insertOrgQuota(db, orgId, 1000, 10)
-    const cleaned: string[] = []
-
-    await expect(
-      withStorageUsageReservation(
-        { quota: createQuotaRepo(db), storageUsage: createStorageUsageRepo(db) },
-        { orgId, storageId, bytes: 300 },
-        async (ctx) => {
-          ctx.onRollback(() => {
-            cleaned.push('object-key')
-          })
-          throw new Error('persist failed')
-        },
-      ),
-    ).rejects.toThrow('persist failed')
-
-    expect(cleaned).toEqual(['object-key'])
-    const storageRows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
-    expect(storageRows[0].used).toBe(10)
-    const quotaRows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(quotaRows[0].used).toBe(10)
-  })
-
-  it('reconciles active and trashed files plus active image hostings', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-rec', used: 9999 })
-    await insertOrganization(db, orgId)
-    await insertOrgQuota(db, orgId, 5000, 9999)
     const now = Date.now()
 
     await db.run(sql`
-      INSERT INTO matters (id, org_id, alias, name, type, size, dirtype, parent, object, storage_id, status, trashed_at, created_at, updated_at)
+      INSERT INTO matters (id, alias, name, type, size, dirtype, parent, object, storage_id, status, trashed_at, created_at, updated_at)
       VALUES
-        ('active-file', ${orgId}, 'active-file-alias', 'active.txt', 'text/plain', 100, 0, '', 'active-key', ${storageId}, 'active', NULL, ${now}, ${now}),
-        ('trashed-file', ${orgId}, 'trashed-file-alias', 'trashed.txt', 'text/plain', 200, 0, '', 'trashed-key', ${storageId}, 'active', ${now}, ${now}, ${now}),
-        ('purged-file', ${orgId}, 'purged-file-alias', 'purged.txt', 'text/plain', 999, 0, '', 'purged-key', ${storageId}, 'active', ${now}, ${now}, ${now}),
-        ('draft-file', ${orgId}, 'draft-file-alias', 'draft.txt', 'text/plain', 300, 0, '', 'draft-key', ${storageId}, 'draft', NULL, ${now}, ${now}),
-        ('active-folder', ${orgId}, 'active-folder-alias', 'Folder', 'folder', 400, 1, '', '', ${storageId}, 'active', NULL, ${now}, ${now})
+        ('active-file', 'active-file-alias', 'active.txt', 'text/plain', 100, 0, '', 'active-key', ${storageId}, 'active', NULL, ${now}, ${now}),
+        ('trashed-file', 'trashed-file-alias', 'trashed.txt', 'text/plain', 200, 0, '', 'trashed-key', ${storageId}, 'active', ${now}, ${now}, ${now}),
+        ('purged-file', 'purged-file-alias', 'purged.txt', 'text/plain', 999, 0, '', 'purged-key', ${storageId}, 'active', ${now}, ${now}, ${now}),
+        ('draft-file', 'draft-file-alias', 'draft.txt', 'text/plain', 300, 0, '', 'draft-key', ${storageId}, 'draft', NULL, ${now}, ${now}),
+        ('active-folder', 'active-folder-alias', 'Folder', 'folder', 400, 1, '', '', ${storageId}, 'active', NULL, ${now}, ${now})
     `)
     await db.run(sql`UPDATE matters SET purged_at = ${now} WHERE id = 'purged-file'`)
-    await db.run(sql`
-      INSERT INTO image_hostings (id, org_id, token, path, storage_id, storage_key, size, mime, status, access_count, created_at)
-      VALUES
-        ('active-image', ${orgId}, 'ImageActive1', 'active.png', ${storageId}, 'ih/active.png', 50, 'image/png', 'active', 0, ${now}),
-        ('purged-image', ${orgId}, 'ImagePurged1', 'purged.png', ${storageId}, 'ih/purged.png', 888, 'image/png', 'active', 0, ${now}),
-        ('draft-image', ${orgId}, 'ImageDraft1', 'draft.png', ${storageId}, 'ih/draft.png', 70, 'image/png', 'draft', 0, ${now})
-    `)
-    await db.run(sql`UPDATE image_hostings SET purged_at = ${now} WHERE id = 'purged-image'`)
-
-    await createStorageUsageRepo(db).reconcile(orgId, [storageId])
+    await createStorageUsageRepo(db).reconcile([storageId])
 
     const storageRows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
-    expect(storageRows[0].used).toBe(350)
-    const quotaRows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(quotaRows[0].used).toBe(350)
+    expect(storageRows[0].used).toBe(100)
   })
 })
 
 // ─── confirmUpload ────────────────────────────────────────────────────────────
 
 describe('confirmUpload', () => {
-  it('returns { matter } with status active and increments usage for a draft file with size > 0', async () => {
+  it('returns { matter } with status active and updates storage usage for a draft file with size > 0', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-conf', used: 0 })
-    await insertOrgQuota(db, orgId, 10000, 0)
-    const matterId = await insertDraftFile(db, orgId, { id: 'matter-a', size: 500, storageId })
+    const matterId = await insertDraftFile(db, { id: 'matter-a', size: 500, storageId })
 
-    const result = await confirmUpload(db, matterId, orgId, { contentType: 'audio/flac' })
+    const result = await confirmUpload(db, matterId, { contentType: 'audio/flac' })
 
     expect(result.matter).not.toBeNull()
     expect(result.matter?.status).toBe('active')
     expect(result.matter?.type).toBe('audio/flac')
-    expect(result.quotaExceeded).toBeUndefined()
 
     const matterRows = await db.all<{ type: string }>(sql`SELECT type FROM matters WHERE id = ${matterId}`)
     expect(matterRows[0].type).toBe('audio/flac')
 
     const storageRows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
     expect(storageRows[0].used).toBe(500)
-    const quotaRows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(quotaRows[0].used).toBe(500)
-    const ledgerRows = await db.all<{ bytes: number; events: number }>(sql`
-      SELECT COALESCE(SUM(delta_bytes), 0) AS bytes, COUNT(*) AS events
-      FROM storage_usage_ledger
-      WHERE org_id = ${orgId} AND storage_id = ${storageId}
-    `)
-    expect(ledgerRows[0]).toEqual({ bytes: 500, events: 2 })
-    const activityRows = await db.all<{ id: string; bytes: number; matterId: string }>(sql`
-      SELECT id, json_extract(metadata, '$.bytes') AS bytes, json_extract(metadata, '$.matterId') AS matterId
-      FROM audit_events
-      WHERE action = 'upload_confirm'
-    `)
-    expect(activityRows).toEqual([])
   })
 
-  it('does not couple matter activation and storage ledger to upload audit writes', async () => {
+  it('does not couple matter activation and storage usage to upload audit writes', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-conf-atomic', used: 0 })
-    await insertOrgQuota(db, orgId, 10000, 0)
-    const matterId = await insertDraftFile(db, orgId, { id: 'matter-atomic', size: 500, storageId })
+    const matterId = await insertDraftFile(db, { id: 'matter-atomic', size: 500, storageId })
     await db.run(sql`
       CREATE TRIGGER reject_upload_fact
       BEFORE INSERT ON audit_events
@@ -371,94 +111,56 @@ describe('confirmUpload', () => {
       END
     `)
 
-    await expect(confirmUpload(db, matterId, orgId)).resolves.toMatchObject({
+    await expect(confirmUpload(db, matterId)).resolves.toMatchObject({
       matter: { id: matterId, status: 'active' },
     })
 
     const matterRows = await db.all<{ status: string }>(sql`SELECT status FROM matters WHERE id = ${matterId}`)
     expect(matterRows).toEqual([{ status: 'active' }])
-    const ledgerRows = await db.all<{ events: number }>(sql`
-      SELECT COUNT(*) AS events
-      FROM storage_usage_ledger
-      WHERE event_key = ${`matter:${matterId}:activated`}
-    `)
-    expect(ledgerRows).toEqual([{ events: 1 }])
-    const quotaRows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(quotaRows).toEqual([{ used: 500 }])
+    const storageRows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
+    expect(storageRows).toEqual([{ used: 500 }])
   })
 
   it('returns { matter } and does not increment usage when file size is 0', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-conf2', used: 50 })
-    await insertOrgQuota(db, orgId, 10000, 50)
-    const matterId = await insertDraftFile(db, orgId, { id: 'matter-b', size: 0, storageId })
+    const storageId = await insertStorage(db, { id: 'st-conf2' })
+    const matterId = await insertDraftFile(db, { id: 'matter-b', size: 0, storageId })
 
-    const result = await confirmUpload(db, matterId, orgId)
+    const result = await confirmUpload(db, matterId)
 
     expect(result.matter?.status).toBe('active')
     const storageRows = await db.all<{ used: number }>(sql`SELECT used FROM storages WHERE id = ${storageId}`)
-    expect(storageRows[0].used).toBe(50) // unchanged
-    const quotaRows = await db.all<{ used: number }>(sql`SELECT used FROM org_quotas WHERE org_id = ${orgId}`)
-    expect(quotaRows[0].used).toBe(50) // unchanged
+    // `used` is a projection reconciled from active bytes, so a 0-byte file
+    // leaves it at 0 instead of adding an increment.
+    expect(storageRows[0].used).toBe(0)
   })
 
   it('returns { matter: null } for a non-existent matter', async () => {
     const { db } = await createTestApp()
-    const result = await confirmUpload(db, 'nonexistent', 'org-x')
+    const result = await confirmUpload(db, 'nonexistent')
     expect(result.matter).toBeNull()
-    expect(result.quotaExceeded).toBeUndefined()
   })
 
   it('returns { matter: null } for a matter not in draft status', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-conf3' })
     const now = Date.now()
     await db.run(sql`
-      INSERT INTO matters (id, org_id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
-      VALUES ('matter-active', ${orgId}, 'matter-active-alias', 'file.txt', 'text/plain', 100, 0, '', 'key', ${storageId}, 'active', ${now}, ${now})
+      INSERT INTO matters (id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
+      VALUES ('matter-active', 'matter-active-alias', 'file.txt', 'text/plain', 100, 0, '', 'key', ${storageId}, 'active', ${now}, ${now})
     `)
 
-    const result = await confirmUpload(db, 'matter-active', orgId)
+    const result = await confirmUpload(db, 'matter-active')
     expect(result.matter).toBeNull()
-  })
-
-  it('returns { matter: null, quotaExceeded: true } when quota would be exceeded', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-conf4', used: 0 })
-    // quota=100, used=90, file size=50 → would exceed
-    await insertOrgQuota(db, orgId, 100, 90)
-    const matterId = await insertDraftFile(db, orgId, { id: 'matter-quota', size: 50, storageId })
-
-    const result = await confirmUpload(db, matterId, orgId)
-
-    expect(result.matter).toBeNull()
-    expect(result.quotaExceeded).toBe(true)
-  })
-
-  it('status remains draft in DB when quota would be exceeded', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-conf5', used: 0 })
-    await insertOrgQuota(db, orgId, 100, 90)
-    const matterId = await insertDraftFile(db, orgId, { id: 'matter-quo2', size: 50, storageId })
-
-    await confirmUpload(db, matterId, orgId)
-
-    const rows = await db.all<{ status: string }>(sql`SELECT status FROM matters WHERE id = ${matterId}`)
-    expect(rows[0].status).toBe('draft')
   })
 })
 
 describe('cancelDraft', () => {
   it('deletes the draft without writing a duplicate cancel fact', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-cancel-atomic', used: 0 })
-    const matterId = await insertDraftFile(db, orgId, { id: 'matter-cancel-atomic', size: 500, storageId })
-    await expect(createMatterRepo(db).cancelDraft(matterId, orgId)).resolves.toMatchObject({ id: matterId })
+    const matterId = await insertDraftFile(db, { id: 'matter-cancel-atomic', size: 500, storageId })
+    await expect(createMatterRepo(db).cancelDraft(matterId)).resolves.toMatchObject({ id: matterId })
 
     const matterRows = await db.all<{ status: string }>(sql`SELECT status FROM matters WHERE id = ${matterId}`)
     expect(matterRows).toEqual([])
@@ -472,31 +174,29 @@ describe('cancelDraft', () => {
 describe('updateMatter', () => {
   it('throws when moving a folder into itself', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-upd1' })
     const now = Date.now()
     // Insert a folder
     await db.run(sql`
-      INSERT INTO matters (id, org_id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
-      VALUES ('folder-self', ${orgId}, 'folder-self-alias', 'MyFolder', 'folder', 0, 1, '', '', ${storageId}, 'active', ${now}, ${now})
+      INSERT INTO matters (id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
+      VALUES ('folder-self', 'folder-self-alias', 'MyFolder', 'folder', 0, 1, '', '', ${storageId}, 'active', ${now}, ${now})
     `)
 
-    await expect(updateMatter(db, 'folder-self', orgId, { parent: 'MyFolder' })).rejects.toThrow(
+    await expect(updateMatter(db, 'folder-self', { parent: 'MyFolder' })).rejects.toThrow(
       'Cannot move a folder into itself or its subfolder',
     )
   })
 
   it('throws when moving a folder into its own subfolder', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-upd2' })
     const now = Date.now()
     await db.run(sql`
-      INSERT INTO matters (id, org_id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
-      VALUES ('folder-sub', ${orgId}, 'folder-sub-alias', 'Root', 'folder', 0, 1, '', '', ${storageId}, 'active', ${now}, ${now})
+      INSERT INTO matters (id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
+      VALUES ('folder-sub', 'folder-sub-alias', 'Root', 'folder', 0, 1, '', '', ${storageId}, 'active', ${now}, ${now})
     `)
 
-    await expect(updateMatter(db, 'folder-sub', orgId, { parent: 'Root/sub' })).rejects.toThrow(
+    await expect(updateMatter(db, 'folder-sub', { parent: 'Root/sub' })).rejects.toThrow(
       'Cannot move a folder into itself or its subfolder',
     )
   })
@@ -506,7 +206,6 @@ describe('updateMatter', () => {
 
 async function insertTrashedMatter(
   db: TestDb,
-  orgId: string,
   opts: {
     id: string
     alias: string
@@ -522,19 +221,18 @@ async function insertTrashedMatter(
   const trashedAt = opts.trashedAt ?? now
   const createdAt = opts.createdAt ?? now
   await db.run(sql`
-    INSERT INTO matters (id, org_id, alias, name, type, size, dirtype, parent, object, storage_id, status, trashed_at, created_at, updated_at)
-    VALUES (${opts.id}, ${orgId}, ${opts.alias}, ${opts.name}, 'text/plain', 0, ${opts.dirtype}, ${opts.parent}, '', ${opts.storageId}, 'active', ${trashedAt}, ${createdAt}, ${now})
+    INSERT INTO matters (id, alias, name, type, size, dirtype, parent, object, storage_id, status, trashed_at, created_at, updated_at)
+    VALUES (${opts.id}, ${opts.alias}, ${opts.name}, 'text/plain', 0, ${opts.dirtype}, ${opts.parent}, '', ${opts.storageId}, 'active', ${trashedAt}, ${createdAt}, ${now})
   `)
 }
 
 describe('listTrashedRoots', () => {
   it('returns only the top-level trashed folder when a folder and its child file are both trashed', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-trash1' })
 
     // Folder "A" at root, child file "A/file.txt"
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'folder-a',
       alias: 'folder-a-alias',
       name: 'A',
@@ -542,7 +240,7 @@ describe('listTrashedRoots', () => {
       dirtype: 1,
       storageId,
     })
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'file-in-a',
       alias: 'file-in-a-alias',
       name: 'file.txt',
@@ -551,7 +249,7 @@ describe('listTrashedRoots', () => {
       storageId,
     })
 
-    const roots = await listTrashedRoots(db, orgId)
+    const roots = await listTrashedRoots(db)
 
     expect(roots).toHaveLength(1)
     expect(roots[0].id).toBe('folder-a')
@@ -559,10 +257,9 @@ describe('listTrashedRoots', () => {
 
   it('does not return the child file when it is nested inside a trashed folder', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-trash2' })
 
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'folder-b',
       alias: 'folder-b-alias',
       name: 'B',
@@ -570,7 +267,7 @@ describe('listTrashedRoots', () => {
       dirtype: 1,
       storageId,
     })
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'file-in-b',
       alias: 'file-in-b-alias',
       name: 'notes.txt',
@@ -579,7 +276,7 @@ describe('listTrashedRoots', () => {
       storageId,
     })
 
-    const roots = await listTrashedRoots(db, orgId)
+    const roots = await listTrashedRoots(db)
     const ids = roots.map((m) => m.id)
 
     expect(ids).not.toContain('file-in-b')
@@ -587,10 +284,9 @@ describe('listTrashedRoots', () => {
 
   it('orders independent roots by trashed time and then creation time', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-trash3' })
 
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'item-x',
       alias: 'item-x-alias',
       name: 'X',
@@ -600,7 +296,7 @@ describe('listTrashedRoots', () => {
       trashedAt: 1_000,
       createdAt: 1_000,
     })
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'item-y',
       alias: 'item-y-alias',
       name: 'Y',
@@ -610,7 +306,7 @@ describe('listTrashedRoots', () => {
       trashedAt: 2_000,
       createdAt: 1_000,
     })
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'item-z',
       alias: 'item-z-alias',
       name: 'Z',
@@ -621,47 +317,25 @@ describe('listTrashedRoots', () => {
       createdAt: 2_000,
     })
 
-    const roots = await listTrashedRoots(db, orgId)
+    const roots = await listTrashedRoots(db)
 
     expect(roots.map((matter) => matter.id)).toEqual(['item-z', 'item-y', 'item-x'])
   })
 
-  it('returns an empty array when no trashed items exist for the org', async () => {
+  it('returns an empty array when no trashed items exist', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
 
-    const roots = await listTrashedRoots(db, orgId)
-
-    expect(roots).toHaveLength(0)
-  })
-
-  it('excludes items belonging to a different org', async () => {
-    const { db } = await createTestApp()
-    const orgId = nanoid()
-    const otherOrgId = nanoid()
-    const storageId = await insertStorage(db, { id: 'st-trash4' })
-
-    await insertTrashedMatter(db, otherOrgId, {
-      id: 'other-org-item',
-      alias: 'other-org-item-alias',
-      name: 'SomeFile',
-      parent: '',
-      dirtype: 0,
-      storageId,
-    })
-
-    const roots = await listTrashedRoots(db, orgId)
+    const roots = await listTrashedRoots(db)
 
     expect(roots).toHaveLength(0)
   })
 
   it('returns deeply-nested trashed folders that are themselves roots (parent folder not trashed)', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
     const storageId = await insertStorage(db, { id: 'st-trash5' })
 
     // Only the subfolder "Docs/Archive" is trashed — its parent "Docs" is not
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'archive-folder',
       alias: 'archive-folder-alias',
       name: 'Archive',
@@ -669,7 +343,7 @@ describe('listTrashedRoots', () => {
       dirtype: 1,
       storageId,
     })
-    await insertTrashedMatter(db, orgId, {
+    await insertTrashedMatter(db, {
       id: 'file-in-archive',
       alias: 'file-in-archive-alias',
       name: 'report.pdf',
@@ -678,7 +352,7 @@ describe('listTrashedRoots', () => {
       storageId,
     })
 
-    const roots = await listTrashedRoots(db, orgId)
+    const roots = await listTrashedRoots(db)
 
     expect(roots).toHaveLength(1)
     expect(roots[0].id).toBe('archive-folder')

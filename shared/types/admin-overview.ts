@@ -9,27 +9,6 @@ export interface AdminOverviewStorage {
   writable: boolean
 }
 
-export interface AdminOverviewDownloader {
-  id: string
-  name: string
-  status: 'online' | 'offline' | 'disabled'
-  currentTasks: number
-  maxConcurrentTasks: number
-  downloadBps: number
-  uploadBps: number
-  freeDiskBytes: number
-  lastHeartbeatAt: string | null
-}
-
-export interface AdminOverviewUserUsage {
-  userId: string
-  name: string
-  email: string
-  usedBytes: number
-  quotaBytes: number
-  utilization: number | null
-}
-
 export interface AdminOverviewStatistics {
   users: {
     total: number | null
@@ -48,7 +27,6 @@ export interface AdminOverviewStatistics {
       activeUsers: number | null
       newUsers: number | null
     }>
-    topUsage: AdminOverviewUserUsage[]
   }
   storageTrend: Array<{
     date: string
@@ -69,15 +47,5 @@ export interface AdminOverview {
     unbounded: number
     trend: AdminOverviewStatistics['storageTrend']
     items: AdminOverviewStorage[]
-  }
-  downloaders: {
-    total: number
-    online: number
-    activeTasks: number
-    totalSlots: number
-    availableSlots: number
-    downloadBps: number
-    uploadBps: number
-    items: AdminOverviewDownloader[]
   }
 }

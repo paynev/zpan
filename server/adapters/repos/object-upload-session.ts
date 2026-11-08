@@ -30,7 +30,6 @@ export function createObjectUploadSessionRepo(db: Database): ObjectUploadSession
       const now = new Date()
       const row: typeof objectUploadSessions.$inferInsert = {
         id: generateId(),
-        orgId: input.orgId,
         objectId: input.objectId,
         storageId: input.storageId,
         storageKey: input.storageKey,
@@ -47,17 +46,11 @@ export function createObjectUploadSessionRepo(db: Database): ObjectUploadSession
       return toRecord(row as SessionRow)
     },
 
-    async get(orgId, objectId, id) {
+    async get(objectId, id) {
       const rows = await db
         .select()
         .from(objectUploadSessions)
-        .where(
-          and(
-            eq(objectUploadSessions.id, id),
-            eq(objectUploadSessions.orgId, orgId),
-            eq(objectUploadSessions.objectId, objectId),
-          ),
-        )
+        .where(and(eq(objectUploadSessions.id, id), eq(objectUploadSessions.objectId, objectId)))
         .limit(1)
       const row = rows[0]
       return row ? toRecord(row) : null

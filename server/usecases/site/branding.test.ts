@@ -49,7 +49,7 @@ const dataUri = (type: string, bytes: Uint8Array) => `data:${type};base64,${Buff
 beforeEach(() => vi.clearAllMocks())
 
 describe('readBranding', () => {
-  it('returns defaults when nothing is stored', async () => {
+  it('returns defaults when nothing is stored [spec: branding/defaults]', async () => {
     const { deps } = makeDeps()
     expect(await readBranding(deps)).toEqual({
       logo_url: null,
@@ -70,7 +70,7 @@ describe('readBranding', () => {
     expect(cfg.wordmark_text).toBe('MyCloud')
   })
 
-  it('maps stored scalar values', async () => {
+  it('maps stored scalar values [spec: branding/stored-values]', async () => {
     const options = new Map([
       [BRANDING_KEYS.logo, 'https://cdn/logo.png'],
       [BRANDING_KEYS.favicon, 'https://cdn/fav.ico'],
@@ -92,7 +92,7 @@ describe('readBranding', () => {
     expect((await readBranding(deps)).hide_powered_by).toBe(false)
   })
 
-  it('reads a preset theme and marks it configured', async () => {
+  it('reads a preset theme and marks it configured [spec: branding/builtin-theme]', async () => {
     const options = new Map([
       [BRANDING_KEYS.theme_mode, 'preset'],
       [BRANDING_KEYS.theme_preset, 'forest'],
@@ -111,7 +111,7 @@ describe('readBranding', () => {
     expect((await readBranding(deps)).theme.preset).toBe('default')
   })
 
-  it('reads a complete custom theme', async () => {
+  it('reads a complete custom theme [spec: branding/custom-theme]', async () => {
     const options = new Map([
       [BRANDING_KEYS.theme_mode, 'custom'],
       [BRANDING_KEYS.theme_primary_color, '#123456'],
@@ -147,7 +147,7 @@ describe('readBranding', () => {
 })
 
 describe('uploadBrandingImage', () => {
-  it('rejects an invalid logo MIME with 400', async () => {
+  it('rejects an invalid logo MIME with 400 [spec: branding/logo-mime]', async () => {
     const { deps, set } = makeDeps()
     const res = await uploadBrandingImage(deps, 'logo', imageFile('application/octet-stream'))
     expect(res).toEqual({ ok: false, status: 400, error: expect.stringContaining('Invalid file type for logo') })
@@ -166,7 +166,7 @@ describe('uploadBrandingImage', () => {
     expect(res.ok).toBe(true)
   })
 
-  it('rejects a logo larger than 256 KB with 413 naming the limit', async () => {
+  it('rejects a logo larger than 256 KB with 413 naming the limit [spec: branding/logo-size]', async () => {
     const { deps, set } = makeDeps()
     const big = imageFile('image/png', MAX_LOGO_SIZE + 1)
     const res = await uploadBrandingImage(deps, 'logo', big)
@@ -174,7 +174,7 @@ describe('uploadBrandingImage', () => {
     expect(set).not.toHaveBeenCalled()
   })
 
-  it('rejects a favicon larger than 64 KB with 413 naming the limit', async () => {
+  it('rejects a favicon larger than 64 KB with 413 naming the limit [spec: branding/favicon-size]', async () => {
     const { deps, set } = makeDeps()
     const big = imageFile('image/png', MAX_FAVICON_SIZE + 1)
     const res = await uploadBrandingImage(deps, 'favicon', big)
@@ -192,7 +192,7 @@ describe('uploadBrandingImage', () => {
     })
   })
 
-  it('encodes the logo as a data URI matching the uploaded bytes, stores it, and returns it', async () => {
+  it('encodes the logo as a data URI matching the uploaded bytes, stores it, and returns it [spec: branding/logo-upload]', async () => {
     const { deps, store, set } = makeDeps()
     const bytes = new Uint8Array([0x3c, 0x73, 0x76, 0x67, 0x3e]) // "<svg>"
     const res = await uploadBrandingImage(deps, 'logo', imageFileFrom('image/svg+xml', bytes))
@@ -202,7 +202,7 @@ describe('uploadBrandingImage', () => {
     expect(store.get(BRANDING_KEYS.logo)).toBe(expected)
   })
 
-  it('encodes a favicon as a data URI carrying its own mime type', async () => {
+  it('encodes a favicon as a data URI carrying its own mime type [spec: branding/favicon-upload]', async () => {
     const { deps, store } = makeDeps()
     const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7])
     const res = await uploadBrandingImage(deps, 'favicon', imageFileFrom('image/x-icon', bytes))
@@ -236,7 +236,7 @@ describe('setBrandingField / resetBrandingField / resetBrandingTheme', () => {
 })
 
 describe('applyBrandingUpdate', () => {
-  it('saves wordmark + hide_powered_by and returns fresh config', async () => {
+  it('saves wordmark + hide_powered_by and returns fresh config [spec: branding/save-text]', async () => {
     const { deps, set } = makeDeps()
     const out = await applyBrandingUpdate(deps, baseUpdate({ wordmarkText: 'MyCloud', hidePoweredBy: true }))
     expect(out.ok).toBe(true)
@@ -257,7 +257,7 @@ describe('applyBrandingUpdate', () => {
     expect(set).toHaveBeenCalledWith(BRANDING_KEYS.wordmark_text, '')
   })
 
-  it('persists each provided theme field', async () => {
+  it('persists each provided theme field [spec: branding/save-custom-theme]', async () => {
     const { deps, set } = makeDeps()
     const out = await applyBrandingUpdate(deps, baseUpdate({ theme: { theme_mode: 'preset', theme_preset: 'ocean' } }))
     expect(out.ok).toBe(true)
@@ -314,7 +314,7 @@ describe('applyBrandingUpdate', () => {
 })
 
 describe('resetBranding', () => {
-  it('resets a single scalar field', async () => {
+  it('resets a single scalar field [spec: branding/reset-field]', async () => {
     const { deps, del } = makeDeps()
     await resetBranding(deps, { field: 'wordmark_text' })
     expect(del).toHaveBeenCalledWith(BRANDING_KEYS.wordmark_text)

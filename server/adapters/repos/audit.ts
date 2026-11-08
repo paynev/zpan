@@ -1,6 +1,6 @@
 import { and, count, desc, eq, getTableColumns, gte, lte, sql } from 'drizzle-orm'
 import { generateId } from '../../../shared/ids'
-import { organization, user } from '../../db/auth-schema'
+import { user } from '../../db/auth-schema'
 import { auditEvents } from '../../db/schema'
 import { assertAuditEvent } from '../../domain/audit-events'
 import type { Database } from '../../platform/interface'
@@ -10,7 +10,6 @@ export function auditEventValues(event: RecordAuditEventInput): typeof auditEven
   assertAuditEvent(event)
   return {
     id: generateId(),
-    orgId: event.orgId,
     userId: event.userId ?? null,
     actorType: event.actorType ?? (event.userId ? 'user' : 'anonymous'),
     actorRef: event.actorRef ?? null,
@@ -21,39 +20,6 @@ export function auditEventValues(event: RecordAuditEventInput): typeof auditEven
     targetName: event.targetName,
     metadata: event.metadata ? JSON.stringify(event.metadata) : null,
     createdAt: new Date(),
-  }
-}
-
-export function idempotentSystemEventValues(input: {
-  action: string
-  sourceId: string
-  targetId?: string
-  targetName?: string
-  orgId: string
-  userId?: string | null
-  actorType?: RecordAuditEventInput['actorType']
-  actorRef?: string | null
-  actorIssuer?: string | null
-  targetType: string
-  occurredAt: Date
-  metadata: Record<string, unknown>
-}): typeof auditEvents.$inferInsert {
-  const targetId = input.targetId ?? input.sourceId
-  return {
-    ...auditEventValues({
-      orgId: input.orgId,
-      userId: input.userId ?? null,
-      actorType: input.actorType ?? 'system',
-      actorRef: input.actorRef ?? 'domain',
-      actorIssuer: input.actorIssuer ?? null,
-      action: input.action,
-      targetType: input.targetType,
-      targetId,
-      targetName: input.targetName ?? targetId,
-      metadata: input.metadata,
-    }),
-    eventKey: `event:${input.action}:${input.sourceId}`,
-    createdAt: input.occurredAt,
   }
 }
 
@@ -127,14 +93,13 @@ export function createAuditRepo(db: Database): AuditRepo {
         .onConflictDoNothing({ target: auditEvents.eventKey })
     },
 
-    async list(orgId, opts) {
+    async list(opts) {
       const page = opts.page ?? 1
       const pageSize = opts.pageSize ?? 20
       const offset = (page - 1) * pageSize
       const rows = await db
         .select({
           id: auditEvents.id,
-          orgId: auditEvents.orgId,
           userId: auditEvents.userId,
           actorType: auditEvents.actorType,
           actorRef: auditEvents.actorRef,
@@ -151,21 +116,19 @@ export function createAuditRepo(db: Database): AuditRepo {
         })
         .from(auditEvents)
         .leftJoin(user, eq(auditEvents.userId, user.id))
-        .where(eq(auditEvents.orgId, orgId))
         .orderBy(desc(auditEvents.createdAt))
         .limit(pageSize)
         .offset(offset)
 
       let total = Number(rows[0]?.pageTotal ?? 0)
       if (rows.length === 0 && page > 1) {
-        const countRows = await db.select({ count: count() }).from(auditEvents).where(eq(auditEvents.orgId, orgId))
+        const countRows = await db.select({ count: count() }).from(auditEvents)
         total = countRows[0]?.count ?? 0
       }
       const items = rows.map((row) => {
         const actorType = normalizeActorType(row.actorType, row.userId)
         return {
           id: row.id,
-          orgId: row.orgId,
           userId: row.userId,
           actorType,
           actorRef: row.actorRef,
@@ -194,7 +157,6 @@ export function createAuditRepo(db: Database): AuditRepo {
       const offset = (page - 1) * pageSize
 
       const filters = [
-        opts.orgId ? eq(auditEvents.orgId, opts.orgId) : undefined,
         opts.userId ? eq(auditEvents.userId, opts.userId) : undefined,
         opts.action ? eq(auditEvents.action, opts.action) : undefined,
         opts.targetType ? eq(auditEvents.targetType, opts.targetType) : undefined,
@@ -206,7 +168,6 @@ export function createAuditRepo(db: Database): AuditRepo {
       const rows = await db
         .select({
           id: auditEvents.id,
-          orgId: auditEvents.orgId,
           userId: auditEvents.userId,
           actorType: auditEvents.actorType,
           actorRef: auditEvents.actorRef,
@@ -219,12 +180,10 @@ export function createAuditRepo(db: Database): AuditRepo {
           createdAt: auditEvents.createdAt,
           userName: user.name,
           userImage: user.image,
-          orgName: organization.name,
           pageTotal: sql<number>`COUNT(*) OVER()`.as('page_total'),
         })
         .from(auditEvents)
         .leftJoin(user, eq(auditEvents.userId, user.id))
-        .leftJoin(organization, eq(auditEvents.orgId, organization.id))
         .where(whereClause)
         .orderBy(desc(auditEvents.createdAt))
         .limit(pageSize)
@@ -239,7 +198,6 @@ export function createAuditRepo(db: Database): AuditRepo {
         const actorType = normalizeActorType(row.actorType, row.userId)
         return {
           id: row.id,
-          orgId: row.orgId,
           userId: row.userId,
           actorType,
           actorRef: row.actorRef,
@@ -256,7 +214,6 @@ export function createAuditRepo(db: Database): AuditRepo {
             image: row.userImage ?? null,
           },
           actor: actorProfile(actorType, row.actorRef, row.userId, row.userName, row.userImage),
-          orgName: row.orgName ?? null,
         }
       })
 
@@ -267,11 +224,7 @@ export function createAuditRepo(db: Database): AuditRepo {
       const page = opts.page ?? 1
       const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 50))
       const offset = (page - 1) * pageSize
-      const whereClause = and(
-        eq(auditEvents.orgId, opts.orgId),
-        eq(auditEvents.targetType, opts.targetType),
-        eq(auditEvents.targetId, opts.targetId),
-      )
+      const whereClause = and(eq(auditEvents.targetType, opts.targetType), eq(auditEvents.targetId, opts.targetId))
 
       const rows = await db
         .select({

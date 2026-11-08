@@ -3,7 +3,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import worker from './bootstrap'
 
-const testEnv = { ...env, BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || 'ci-test-secret-that-is-at-least-32-chars' }
+const testEnv = { ...env }
 
 const fakeSpaHtml = '<html><head><title>ZPan</title></head><body></body></html>'
 const fakeAssets = {
@@ -12,12 +12,26 @@ const fakeAssets = {
 } as unknown as Fetcher
 
 describe('[CF] Worker fetch handler', () => {
-  it('throws when BETTER_AUTH_SECRET is missing', async () => {
+  it('throws when neither an explicit secret nor admin credentials are configured', async () => {
     const request = new Request('http://localhost/api/health')
-    const envWithoutSecret = { ...env, BETTER_AUTH_SECRET: '' }
-    await expect(worker.fetch(request, envWithoutSecret)).rejects.toThrow(
-      'BETTER_AUTH_SECRET is not configured for this deployment.',
+    const envWithoutCredentials = {
+      ...env,
+      BETTER_AUTH_SECRET: '',
+      ZPAN_USERNAME: '',
+      ZPAN_PASSWORD: '',
+    }
+    await expect(worker.fetch(request, envWithoutCredentials)).rejects.toThrow(
+      'ZPAN_USERNAME and ZPAN_PASSWORD are required to derive BETTER_AUTH_SECRET',
     )
+  })
+
+  it('derives the signing secret from ZPAN_USERNAME / ZPAN_PASSWORD', async () => {
+    // Preview slot forces a fresh app initialization even though the isolate
+    // already cached an app built with the explicit test secret.
+    const derivedEnv = { ...env, BETTER_AUTH_SECRET: undefined, ZPAN_PREVIEW: 'true' }
+    const res = await worker.fetch(new Request('https://derived-secret.example.com/api/health'), derivedEnv)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: 'ok' })
   })
 
   it('returns a response for a valid request', async () => {
@@ -89,15 +103,15 @@ describe('[CF] SSR share OG meta injection', () => {
   it('injects real file name into og:title for valid landing share', async () => {
     const now = Date.now()
     await env.DB.prepare(
-      `INSERT INTO matters (id, org_id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
-       VALUES ('ssrmatter1', 'org1', 'ssralias1', 'design-spec.pdf', 'application/pdf', 4096, 0, '', 'obj/key.pdf', 'st1', 'active', ?, ?)`,
+      `INSERT INTO matters (id, alias, name, type, size, dirtype, parent, object, storage_id, status, created_at, updated_at)
+       VALUES ('ssrmatter1', 'ssralias1', 'design-spec.pdf', 'application/pdf', 4096, 0, '', 'obj/key.pdf', 'st1', 'active', ?, ?)`,
     )
       .bind(now, now)
       .run()
 
     await env.DB.prepare(
-      `INSERT INTO shares (id, token, kind, matter_id, org_id, creator_id, password_hash, expires_at, download_limit, views, downloads, status, created_at)
-       VALUES ('ssrshare1', 'ssrtoken01', 'landing', 'ssrmatter1', 'org1', 'user1', NULL, NULL, NULL, 0, 0, 'active', ?)`,
+      `INSERT INTO shares (id, token, kind, matter_id, creator_id, password_hash, expires_at, download_limit, views, downloads, status, created_at)
+       VALUES ('ssrshare1', 'ssrtoken01', 'landing', 'ssrmatter1', 'user1', NULL, NULL, NULL, 0, 0, 'active', ?)`,
     )
       .bind(now)
       .run()

@@ -33,7 +33,6 @@ describe('audit route registry', () => {
     })
 
     expect(event).toEqual({
-      orgId: 'org-1',
       action: 'widget_update',
       targetType: 'widget',
       targetId: 'widget 1',
@@ -82,7 +81,6 @@ async function requestEvent(
   let event: Omit<RecordAuditEventInput, 'userId' | 'actorType' | 'actorRef'> | null = null
   const app = new Hono<Env>()
   app.use('*', async (c, next) => {
-    c.set('orgId', 'org-1')
     await next()
     const matched = matchAuditRoute([route], c.req.method, new URL(c.req.url).pathname)
     if (matched) event = await resolveAuditRouteEvent(c, matched, undefined)

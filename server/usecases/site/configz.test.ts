@@ -1,10 +1,6 @@
-import { SignupMode } from '@shared/constants'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { LicenseBindingRepo, SystemOptionsRepo } from '../ports'
+import type { SystemOptionsRepo } from '../ports'
 import { getSiteConfig } from './configz'
-import { resolveEffectiveSignupMode } from './licensing'
-
-vi.mock('./licensing', () => ({ resolveEffectiveSignupMode: vi.fn() }))
 
 function makeDeps(entries: Array<[string, string]> = []) {
   const values = new Map(entries)
@@ -18,12 +14,11 @@ function makeDeps(entries: Array<[string, string]> = []) {
     setMany: async () => {},
     delete: async () => {},
   }
-  return { systemOptions, licenseBinding: {} as LicenseBindingRepo }
+  return { systemOptions }
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(resolveEffectiveSignupMode).mockResolvedValue(SignupMode.INVITE_ONLY)
 })
 
 describe('getSiteConfig', () => {
@@ -39,34 +34,19 @@ describe('getSiteConfig', () => {
         hidePoweredBy: false,
         theme: { mode: 'preset', preset: 'default', custom: null, configured: false },
       },
-      auth: { signupMode: SignupMode.INVITE_ONLY, captcha: { enabled: false }, providers: [] },
       services: { webdav: { enabled: true, url: 'https://pan.example.com/dav/' } },
     })
   })
 
-  it('projects configured values without exposing secrets', async () => {
-    vi.mocked(resolveEffectiveSignupMode).mockResolvedValue(SignupMode.CLOSED)
-    const provider = JSON.stringify({
-      providerId: 'github',
-      type: 'builtin',
-      clientId: 'client-id',
-      clientSecret: 'oauth-secret',
-      enabled: true,
-    })
+  it('projects configured values', async () => {
     const config = await getSiteConfig(
       makeDeps([
         ['site_name', 'My ZPan'],
         ['site_description', 'Files'],
         ['site_public_origin', 'https://files.example.com'],
         ['webdav_verified_origin', 'https://dav.files.example.com'],
-        ['auth_signup_mode', SignupMode.CLOSED],
-        ['captcha_enabled', 'true'],
-        ['captcha_provider', 'hcaptcha'],
-        ['captcha_site_key', 'site-key'],
-        ['captcha_secret_key', 'captcha-secret'],
         ['branding_wordmark_text', 'My Cloud'],
         ['branding_hide_powered_by', 'true'],
-        ['oauth_provider_github', provider],
       ]),
       'https://request.example.com/api/configz',
     )
@@ -77,15 +57,8 @@ describe('getSiteConfig', () => {
       publicUrl: 'https://files.example.com',
     })
     expect(config.branding.wordmark).toBe('My Cloud')
-    expect(config.auth).toEqual({
-      signupMode: SignupMode.CLOSED,
-      captcha: { enabled: true, provider: 'hcaptcha', siteKey: 'site-key' },
-      providers: [{ id: 'github', type: 'builtin', name: 'GitHub', icon: 'github' }],
-    })
+    expect(config.branding.hidePoweredBy).toBe(true)
     expect(config.services.webdav.url).toBe('https://dav.files.example.com/')
-    expect(JSON.stringify(config)).not.toContain('captcha-secret')
-    expect(JSON.stringify(config)).not.toContain('oauth-secret')
-    expect(JSON.stringify(config)).not.toContain('client-id')
   })
 
   it('falls back to the path URL when the verified origin belongs to an old Public URL', async () => {

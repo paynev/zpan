@@ -1,24 +1,7 @@
-import { expect, type Page, request as playwrightRequest, test } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 export const ADMIN_EMAIL = 'e2e-admin@test.local'
 export const ADMIN_PASSWORD = 'password123456'
-
-export type BindingState = {
-  bound: boolean
-  active?: boolean
-  account_email?: string
-  cloud_dashboard_url?: string
-}
-
-export type PairingInfo = {
-  code: string
-  pairingUrl: string
-}
-
-export type PairingPollResult = {
-  status: string
-  cloud_store_id?: string
-}
 
 export async function expandSignInForm(page: Page) {
   const identityInput = page.locator('#identity')
@@ -41,25 +24,22 @@ export async function signInAsAdmin(page: Page) {
   await expect(page).toHaveURL(/admin\/storages/)
 }
 
-export async function expandSignUpForm(page: Page) {
-  const usernameInput = page.locator('#username')
-  if (await usernameInput.isVisible().catch(() => false)) return
-  const expandButton = page.getByRole('button', { name: /sign up with email/i })
-  if (await expandButton.isVisible().catch(() => false)) await expandButton.click()
-  await expect(usernameInput).toBeVisible()
-}
-
+// Single-admin instances have no self-service sign-up. Suite helpers still call
+// this by its historical name; it now signs in as the seeded administrator and
+// leaves the browser on the file manager.
 export async function signUpAndGoToFiles(page: Page) {
-  const identity = testIdentity('e2e')
-  await page.goto('/sign-up')
-  await expandSignUpForm(page)
-  await page.locator('#email').fill(`${identity}@example.com`)
-  await page.locator('#username').fill(identity)
-  await page.locator('#password').fill('password123456')
-  const responsePromise = page.waitForResponse((response) => response.url().includes('/api/auth/sign-up'))
-  await page.getByRole('button', { name: /sign up/i }).click()
+  await page.goto('/sign-in')
+  await expandSignInForm(page)
+  await page.locator('#identity').fill(ADMIN_EMAIL)
+  await page.locator('#password').fill(ADMIN_PASSWORD)
+  const responsePromise = page.waitForResponse((response) => response.url().includes('/api/auth/sign-in'))
+  await page.getByRole('button', { name: /sign in/i }).click()
   expect((await responsePromise).status()).toBe(200)
   await expect(page).toHaveURL(/files/, { timeout: 10_000 })
+}
+
+export async function expandSignUpForm(page: Page) {
+  await expandSignInForm(page)
 }
 
 export async function createFolder(page: Page, name: string): Promise<void> {
@@ -73,58 +53,6 @@ export async function createFolder(page: Page, name: string): Promise<void> {
   const response = await responsePromise
   expect(response.ok(), `folder creation failed (${response.status()}) — ensure storage is configured`).toBe(true)
   await expect(dialog).not.toBeVisible({ timeout: 10_000 })
-}
-
-export async function pairAndApprove(page: Page): Promise<PairingPollResult> {
-  await unbindCurrentCloudBinding()
-  const pairing = await postJson<PairingInfo>(page, '/api/site/licensing/pairings')
-  const cloudRequest = await playwrightRequest.newContext({ baseURL: new URL(pairing.pairingUrl).origin })
-  try {
-    const approval = await cloudRequest.patch(`/_test/pairings/${encodeURIComponent(pairing.code)}/approve`, {
-      data: { action: 'approve' },
-    })
-    if (!approval.ok()) throw new Error(`Cloud fake approval failed: ${approval.status()} ${await approval.text()}`)
-  } finally {
-    await cloudRequest.dispose()
-  }
-
-  let approved: PairingPollResult | null = null
-  await expect
-    .poll(
-      async () => {
-        const result = await getJson<PairingPollResult>(page, `/api/site/licensing/pairings/${pairing.code}`)
-        if (result.status === 'approved') approved = result
-        return result.status
-      },
-      { timeout: 10_000 },
-    )
-    .toBe('approved')
-  await expect
-    .poll(async () => {
-      const state = await getJson<BindingState>(page, '/api/site/licensing/binding')
-      return state.bound && state.active
-    })
-    .toBe(true)
-  if (!approved) throw new Error('Cloud pairing approval did not resolve')
-  return approved
-}
-
-export async function unbindCurrentCloudBinding() {
-  const baseURL = process.env.E2E_BASE_URL
-  if (!baseURL) throw new Error('E2E_BASE_URL is required')
-  const headers = { Origin: new URL(baseURL).origin }
-  const request = await playwrightRequest.newContext({ baseURL })
-  try {
-    const signIn = await request.post('/api/auth/sign-in/email', {
-      headers,
-      data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
-    })
-    if (!signIn.ok()) throw new Error(`E2E admin sign-in failed during Cloud binding cleanup: ${signIn.status()}`)
-    const unbind = await request.delete('/api/site/licensing/binding', { headers })
-    if (!unbind.ok()) throw new Error(`Cloud binding cleanup failed: ${unbind.status()} ${await unbind.text()}`)
-  } finally {
-    await request.dispose()
-  }
 }
 
 export async function getJson<T>(page: Page, url: string): Promise<T> {

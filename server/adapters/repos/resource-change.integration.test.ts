@@ -6,8 +6,8 @@ describe('resource change repository', () => {
   it('lists scoped changes after a sequence and filters resource types', async () => {
     const { db } = await createTestApp()
     await resourceChangeQuery(db, {
-      scopeType: 'organization',
-      scopeId: 'org-1',
+      scopeType: 'site',
+      scopeId: 'default',
       resourceType: 'object',
       resourceId: 'object-1',
       changeType: 'upsert',
@@ -16,16 +16,16 @@ describe('resource change repository', () => {
       occurredAt: new Date(100),
     })
     await resourceChangeQuery(db, {
-      scopeType: 'organization',
-      scopeId: 'org-1',
+      scopeType: 'site',
+      scopeId: 'default',
       resourceType: 'notification',
       resourceId: 'notification-1',
       changeType: 'delete',
       occurredAt: new Date(200),
     })
     await resourceChangeQuery(db, {
-      scopeType: 'organization',
-      scopeId: 'org-2',
+      scopeType: 'site',
+      scopeId: 'default-2',
       resourceType: 'object',
       resourceId: 'object-2',
       changeType: 'upsert',
@@ -34,14 +34,14 @@ describe('resource change repository', () => {
 
     const repo = createResourceChangeRepo(db)
     const all = await repo.listAfter({
-      scopeType: 'organization',
-      scopeId: 'org-1',
+      scopeType: 'site',
+      scopeId: 'default',
       sequence: 0,
       limit: 10,
     })
     const objects = await repo.listAfter({
-      scopeType: 'organization',
-      scopeId: 'org-1',
+      scopeType: 'site',
+      scopeId: 'default',
       resourceTypes: ['object'],
       sequence: 0,
       limit: 10,
@@ -62,8 +62,8 @@ describe('resource change repository', () => {
     expect(objects.map((change) => change.resourceId)).toEqual(['object-1'])
     await expect(
       repo.listAfter({
-        scopeType: 'organization',
-        scopeId: 'org-1',
+        scopeType: 'site',
+        scopeId: 'default',
         resourceTypes: [],
         sequence: 0,
         limit: 10,
@@ -121,8 +121,8 @@ describe('resource change repository', () => {
       ['boundary', 200],
     ] as const) {
       await resourceChangeQuery(db, {
-        scopeType: 'organization',
-        scopeId: 'org-1',
+        scopeType: 'site',
+        scopeId: 'default',
         resourceType: 'object',
         resourceId,
         changeType: 'upsert',
@@ -135,8 +135,8 @@ describe('resource change repository', () => {
     await expect(repo.purgeBefore(new Date(200))).resolves.toBe(2)
     await expect(
       repo.listAfter({
-        scopeType: 'organization',
-        scopeId: 'org-1',
+        scopeType: 'site',
+        scopeId: 'default',
         sequence: 0,
         limit: 10,
       }),

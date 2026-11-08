@@ -1,4 +1,4 @@
-export const ROLLUP_VERSION = 3
+export const ROLLUP_VERSION = 4
 
 export type AdminStatsRollupScope = 'counters' | 'snapshots' | 'full'
 
@@ -17,14 +17,12 @@ export const ADMIN_STATS_DIMENSIONS = {
   actorType: 'actor_type',
   ageBucket: 'age_bucket',
   category: 'category',
-  downloader: 'downloader_id',
   direction: 'direction',
   fileType: 'file_type_group',
   jobType: 'job_type',
   kind: 'kind',
   lifecycle: 'lifecycle',
   metric: 'metric_key',
-  orgType: 'org_type',
   outcome: 'outcome',
   provider: 'provider',
   reason: 'reason',
@@ -42,9 +40,6 @@ export type AdminStatsDimension = (typeof ADMIN_STATS_DIMENSIONS)[keyof typeof A
 export const ADMIN_STATS_METRICS = {
   backgroundJobFinished: 'background_job.finished',
   backgroundJobSnapshot: 'background_job.snapshot',
-  downloaderSnapshot: 'downloader.snapshot',
-  remoteDownloadTaskFinished: 'remote_download.task_finished',
-  remoteDownloadTaskSnapshot: 'remote_download.task_snapshot',
   shareCreated: 'share.created',
   shareDownloadIssued: 'share.download_issued',
   shareInventory: 'share.inventory',
@@ -53,19 +48,14 @@ export const ADMIN_STATS_METRICS = {
   statsMissingBytes: 'stats.quality_missing_bytes',
   statsRollupRun: 'stats.rollup_run',
   storageInventory: 'storage.inventory',
-  storageLedgerBalance: 'storage.ledger_balance',
-  storageLedgerChange: 'storage.ledger_change',
-  storageQuota: 'storage.quota',
   storageTrashSnapshot: 'storage.trash_snapshot',
   storageUsed: 'storage.used',
-  trafficReportSnapshot: 'traffic.report_snapshot',
   transferDownloadFailed: 'transfer.download_failed',
   transferDownloadIssued: 'transfer.download_issued',
   transferUpload: 'transfer.upload',
   userSignup: 'user.signup',
   userActiveSnapshot: 'user.active_snapshot',
   userInventory: 'user.inventory',
-  webhookSnapshot: 'webhook.snapshot',
 } as const
 
 export type AdminStatsMetric = (typeof ADMIN_STATS_METRICS)[keyof typeof ADMIN_STATS_METRICS]
@@ -73,7 +63,7 @@ export type AdminStatsMetric = (typeof ADMIN_STATS_METRICS)[keyof typeof ADMIN_S
 export interface AdminStatsMetricDefinition {
   kind: AdminStatsMetricKind
   dimensions: readonly AdminStatsDimension[]
-  countUnit: 'events' | 'entities' | 'credits' | null
+  countUnit: 'events' | 'entities' | null
   bytesUnit: 'bytes' | null
 }
 
@@ -82,9 +72,6 @@ const M = ADMIN_STATS_METRICS
 export const ADMIN_STATS_METRIC_REGISTRY = {
   [M.backgroundJobFinished]: counter(['job_type', 'outcome']),
   [M.backgroundJobSnapshot]: gauge(['job_type', 'status'], 'entities'),
-  [M.downloaderSnapshot]: gauge(['downloader_id', 'status'], 'entities'),
-  [M.remoteDownloadTaskFinished]: counter(['category', 'downloader_id', 'outcome']),
-  [M.remoteDownloadTaskSnapshot]: gauge(['downloader_id', 'status'], 'entities'),
   [M.shareCreated]: counter(['kind']),
   [M.shareDownloadIssued]: counter(['actor_type', 'kind', 'share_id', 'source'], true),
   [M.shareInventory]: gauge(['kind', 'lifecycle'], 'entities'),
@@ -93,19 +80,14 @@ export const ADMIN_STATS_METRIC_REGISTRY = {
   [M.statsMissingBytes]: counter(['direction', 'source']),
   [M.statsRollupRun]: counter(['metric_key', 'outcome']),
   [M.storageInventory]: gauge(['age_bucket', 'file_type_group', 'size_bucket', 'storage_id'], 'entities', true),
-  [M.storageLedgerBalance]: counter(['storage_id'], true),
-  [M.storageLedgerChange]: counter(['direction', 'reason', 'storage_id'], true),
-  [M.storageQuota]: gauge(['status'], null, true),
   [M.storageTrashSnapshot]: gauge(['storage_id'], 'entities', true),
   [M.storageUsed]: gauge(['storage_id'], null, true),
-  [M.trafficReportSnapshot]: gauge(['status'], 'entities', true),
   [M.transferDownloadFailed]: counter(['reason', 'source'], true),
   [M.transferDownloadIssued]: counter(['actor_type', 'source', 'storage_id'], true),
   [M.transferUpload]: counter(['reason', 'source', 'status', 'storage_id'], true),
   [M.userSignup]: counter(['provider']),
   [M.userActiveSnapshot]: gauge(['window'], 'entities'),
   [M.userInventory]: gauge(['status'], 'entities'),
-  [M.webhookSnapshot]: gauge(['status'], 'entities'),
 } satisfies Record<AdminStatsMetric, AdminStatsMetricDefinition>
 
 function counter(dimensions: readonly AdminStatsDimension[], bytes = false): AdminStatsMetricDefinition {

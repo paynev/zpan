@@ -43,16 +43,6 @@ export const adminOverviewSchema = z
       new7Days: nn,
       activity: z.object({ total: nn, today: nn, last7Days: nn, last30Days: nn, inactive: nn }),
       trend: z.array(dated.extend({ totalUsers: nn, activeUsers: nn, newUsers: nn })),
-      topUsage: z.array(
-        z.object({
-          userId: opaqueIdSchema,
-          name: z.string(),
-          email: z.string(),
-          usedBytes: n,
-          quotaBytes: n,
-          utilization: nn,
-        }),
-      ),
     }),
     storages: z.object({
       total: ni,
@@ -71,28 +61,6 @@ export const adminOverviewSchema = z
           used: n,
           capacity: n,
           writable: z.boolean(),
-        }),
-      ),
-    }),
-    downloaders: z.object({
-      total: ni,
-      online: ni,
-      activeTasks: ni,
-      totalSlots: ni,
-      availableSlots: ni,
-      downloadBps: n,
-      uploadBps: n,
-      items: z.array(
-        z.object({
-          id: opaqueIdSchema,
-          name: z.string(),
-          status: z.enum(['online', 'offline', 'disabled']),
-          currentTasks: ni,
-          maxConcurrentTasks: ni,
-          downloadBps: n,
-          uploadBps: n,
-          freeDiskBytes: n,
-          lastHeartbeatAt: z.string().nullable(),
         }),
       ),
     }),
@@ -177,16 +145,6 @@ export const adminAnalyticsStorageSchema = z
     typeBreakdown: z.array(z.object({ type: z.string(), bytes: n, files: n, percent: n })),
     sizeBreakdown: z.array(z.object({ name: z.string(), bytes: n, files: n, percent: n })),
     ageBreakdown: z.array(z.object({ name: z.string(), bytes: n, files: n, percent: n })),
-    topSpaces: z.array(
-      z.object({
-        orgId: opaqueIdSchema,
-        orgName: z.string(),
-        orgType: z.string(),
-        usedBytes: n,
-        quotaBytes: n,
-        utilization: nn,
-      }),
-    ),
   })
   .openapi('AdminAnalyticsStorage')
 

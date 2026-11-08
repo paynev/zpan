@@ -54,6 +54,9 @@ zpan.db-wal
 .claude/
 .tanstack/
 
+# WorkBuddy session data (local memory / task state, not part of the repo)
+.workbuddy/
+
 # agent skills (managed by daemon)
 .agents/
 skills-lock.json

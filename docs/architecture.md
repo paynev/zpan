@@ -6,13 +6,14 @@ future scope live in [V2_ROADMAP.md](../V2_ROADMAP.md) and
 
 ## System Shape
 
-ZPan is a single-package full-stack TypeScript application. The server is the
-control plane for auth, metadata, quotas, sharing, WebDAV, background jobs, and
-paid-tier entitlement checks. File bytes live in S3-compatible object storage and
-are uploaded or downloaded through presigned URLs whenever possible.
+ZPan is a single-package full-stack TypeScript application built for one
+administrator per installation. The server is the control plane for auth,
+metadata, sharing, WebDAV, background jobs, and site settings.
+File bytes live in S3-compatible object storage and are uploaded or downloaded
+through presigned URLs whenever possible.
 
 ```text
-Browser SPA / WebDAV / API clients / downloader agents
+Browser SPA / WebDAV / API clients
                     |
                     v
              Hono application
@@ -28,8 +29,12 @@ Browser SPA / WebDAV / API clients / downloader agents
    |                |                |
  repos          gateways         providers
    |                |                |
-Drizzle DB    S3 / Cloud / mail   CF APIs / changelog
+Drizzle DB       S3 / mail      CF APIs / changelog
 ```
+
+There are no organizations, teams, workspaces, quotas, paid tiers, or license
+bindings. Every file, share, storage, and site setting belongs to the single
+installation and is owned by the administrator account.
 
 Primary deployment target is Cloudflare Workers. Node.js/Docker is the backup
 runtime, and the same Hono app is adapted for other serverless targets.
@@ -42,7 +47,7 @@ runtime, and the same Hono app is adapted for other serverless targets.
 | API typing | Hono RPC for frontend, OpenAPI for external clients | Frontend gets compile-time path/type safety; non-TS clients get a stable REST contract |
 | Runtime database | D1 on Workers, SQLite or Turso/libSQL elsewhere | One SQLite-family schema across every deployment target |
 | ORM | Drizzle | Type-safe SQLite/D1 schema and migrations with low runtime overhead |
-| Auth | Better Auth | Email/password, social/OIDC, organizations, API keys, device flow |
+| Auth | Better Auth | Password sessions, API keys, and the seeded single administrator |
 | Object storage | S3-compatible protocol | Works with R2, S3, MinIO, B2, Tigris, RustFS, and similar providers |
 | Frontend | React 19 + Vite + TanStack Router | SPA with typed file routes and no server-rendering framework lock-in |
 | UI | shadcn/ui-style components, Radix UI, Tailwind CSS 4, Lucide | Local component ownership with consistent interaction primitives |
@@ -72,18 +77,17 @@ zpan/
 │   ├── i18n/           # Frontend translations
 │   ├── lib/            # RPC clients, API wrappers, formatters, utilities
 │   └── routes/         # TanStack Router file routes
-├── shared/             # Shared schemas, constants, feature registry, types
-├── workers/            # Cloudflare Worker fetch/scheduled/queue entry
+├── shared/             # Shared schemas, constants, authorization scopes, types
+├── workers/            # Cloudflare Worker fetch/scheduled entry
 ├── migrations/         # drizzle-kit generated SQL migrations
 ├── e2e/                # Playwright tests
 ├── wrangler.toml       # Cloudflare Workers configuration
 └── package.json        # Single pnpm package
 ```
 
-There is no native desktop or mobile client workspace in this repository.
-Native client implementations are expected to live in separate projects. This
-repository can still own server-side API contracts and isolated automation
-clients when they are part of the ZPan server/web product boundary.
+There is no native desktop or mobile client workspace in this repository, and
+no Go downloader/CLI workspace. The Go `cmd/` tree and its generated OpenAPI
+client were retired together with the remote-download feature.
 
 ## Runtime Entry Points
 
@@ -95,8 +99,8 @@ clients when they are part of the ZPan server/web product boundary.
   cached Better Auth instance per isolate, injects Open Graph tags for share
   pages, then delegates to `createApp`.
 - `scheduled` delegates to [`workers/scheduled.ts`](../workers/scheduled.ts) for
-  licensing refresh, traffic sync, quota reset, trash purge, and telemetry.
-- `queue` runs archive-job messages through the archive jobs gateway.
+  hourly stats rollups, WebDAV lock expiry, resource-change retention, image
+  domain reconciliation, daily trash purge, and instance telemetry.
 
 ### Node / Docker / Cloud Run
 
@@ -107,7 +111,8 @@ the built SPA from `dist/`. It chooses the platform at boot:
 - otherwise: local SQLite via `createNodePlatform`
 
 Because Node has no platform scheduler, the entry starts interval-based jobs for
-license refresh, traffic sync, quota reset, trash purge, and telemetry.
+stats rollups, WebDAV lock expiry, resource-change retention, trash purge, and
+instance telemetry.
 
 ### Other Serverless Targets
 
@@ -149,8 +154,7 @@ The server follows a ports-and-adapters shape.
 Creates the Hono app, installs global middleware, exposes OpenAPI/Scalar docs,
 mounts WebDAV, and mounts each API resource. `/api/openapi.json` includes ZPan's
 explicit resource contracts plus operations admitted by the declarative Better
-Auth OpenAPI registry. The registry currently contains only the two Downloader
-Device Flow operations. Better Auth's full runtime schema remains available
+Auth OpenAPI registry. Better Auth's full runtime schema remains available
 only from its own reference endpoints.
 
 ### `server/http/`
@@ -169,28 +173,26 @@ business workflows.
 
 Usecases own business workflows and coordination:
 
-- file object create/upload/complete/trash/restore/transfer
-- quota checks and traffic metering
+- file object create/upload/complete/trash/restore/purge
 - sharing and save-to-drive behavior
-- team and user administration
-- site settings, licensing, announcements, branding, audit
-- archive processing and remote download task orchestration
+- site settings, announcements, branding, audit, and statistics
+- WebDAV operations
 
 Usecases receive `deps` as their first argument and reach the outside world only
-through ports.
+through ports. They must not import Drizzle or repository implementations
+directly; `pnpm lint:arch` enforces this boundary.
 
 ### `server/usecases/ports*.ts`
 
 Ports define the contracts usecases need from persistence and external systems:
-repos, S3, email, zip, Cloud licensing, image upload, download tokens, and
-similar dependencies.
+repos, S3, and similar dependencies.
 
 ### `server/adapters/`
 
 Adapters implement ports:
 
 - `repos/` persists to Drizzle tables.
-- `gateways/` talks to S3, email, ZPan Cloud, archive queues, and zip handling.
+- `gateways/` talks to S3.
 - `providers/` wraps platform/provider-specific APIs such as Cloudflare custom
   hostnames or changelog fetching.
 
@@ -200,13 +202,14 @@ the only place concrete adapters are assembled into the `Deps` object.
 ### `server/domain/`
 
 Pure policy and transformation helpers live here when they do not need I/O:
-licensing checks, path templating, WebDAV XML helpers, share rules, quota math,
-name-conflict planning, and similar logic.
+path templating, WebDAV XML helpers, share rules, name-conflict planning, and
+similar logic.
 
 ## Authentication And Principals
 
 Better Auth owns the core auth tables and session lifecycle. ZPan adds route
-guards and principal normalization in [`server/middleware/auth.ts`](../server/middleware/auth.ts).
+guards and principal normalization in [`server/middleware/auth.ts`](../server/middleware/auth.ts)
+and [`server/middleware/authz.ts`](../server/middleware/authz.ts).
 
 The auth middleware is intentionally soft-fail: it tries to identify the caller
 and sets context variables, while each route decides whether anonymous access is
@@ -215,38 +218,34 @@ allowed.
 Supported principals:
 
 - `user` — browser cookie session or bearer session
-- `api-key` — Better Auth API key plugin, including org-scoped keys
-- `downloader` — remote downloader agent token
-- `download-task-upload` — scoped token that lets a downloader upload one task's
-  completed output
+- `api-key` — Better Auth API key, checked against `AuthorizationScope` values
 
-Route guards then enforce `requireAuth`, `requireAdmin`, `requireDownloader`, or
-`requireTeamRole('viewer' | 'editor' | 'owner')`.
+Route declarations use `authRoute` / `publicRoute` with a scoped authorization
+policy (`scopes`, `siteRole`, `auditDenied`). Only the first registered user can
+self-register; afterwards registration is closed and the administrator is seeded
+from environment credentials at bootstrap.
 
 ## Data Model
 
 Drizzle schemas live in [`server/db/schema.ts`](../server/db/schema.ts) and
 [`server/db/auth-schema.ts`](../server/db/auth-schema.ts). Migrations live at the
 repo root in `migrations/` and are generated with `pnpm db:generate`.
+`0094_single_admin.sql` drops the organization/quota/licensing tables and
+removes all `org_id` columns.
 
 Major table groups:
 
-- **Auth and organizations**: `user`, `session`, `account`, `organization`,
-  `member`, `invitation`, `apikey`, `deviceCode`
+- **Auth**: `user`, `session`, `account`, `verification`, `jwks`, `apikey`
 - **Objects and storage**: `matters`, `storages`, `object_upload_sessions`
-- **Quota and billing**: `org_quotas`, `org_quota_entitlements`,
-  `cloud_traffic_reports`, `webhook_events`
 - **Sharing and notifications**: `shares`, `share_recipients`, `notifications`
-- **Site administration**: `system_options`, `license_bindings`,
-  `announcements`, `activity_events`, invite tables
+- **Site administration**: `system_options`, `announcements`, `audit_events`,
+  `resource_changes`, `stats_rollups_hourly`
 - **WebDAV**: `webdav_dead_properties`, `webdav_locks`
-- **Jobs and downloaders**: `background_jobs`, `downloaders`, `download_tasks`,
-  `remote_download_usage_reports`
-- **Image hosting**: `image_hosting_configs`, `image_hostings`
 
-`matters` is the file tree. Every object belongs to an organization (`orgId`),
-not directly to a user. Storage object keys are implementation details hidden
-behind ZPan's object and storage abstractions.
+`matters` is the file tree. Objects belong to the single installation, not to an
+organization; the unique active-name index is scoped by parent path only.
+Storage object keys are implementation details hidden behind ZPan's object and
+storage abstractions.
 
 ## File And Object Flow
 
@@ -257,7 +256,7 @@ behind ZPan's object and storage abstractions.
 3. Server returns presigned upload instructions.
 4. Browser uploads bytes directly to S3/R2 with raw `fetch` to the presigned URL.
 5. Frontend calls the completion endpoint.
-6. Server verifies and activates the `matters` row, updates quota/usage, and
+6. Server verifies and activates the `matters` row, reconciles usage, and
    records activity.
 
 Abort paths discard the draft and try to clean up storage-side multipart state
@@ -266,31 +265,15 @@ where possible.
 ### Download
 
 Authenticated object downloads and public share downloads resolve metadata in
-ZPan, enforce access/quota/credit rules, and return or redirect to a presigned
+ZPan, enforce access rules, and return or redirect to a presigned
 object-storage URL. ZPan does not proxy file bytes unless a feature explicitly
 requires it.
-
-### Remote Download
-
-1. A user creates a `download_tasks` row.
-2. A registered downloader agent heartbeats to `/api/downloads/downloaders`.
-3. The server assigns queued tasks based on availability/capabilities.
-4. The downloader fetches source bytes outside the main ZPan runtime.
-5. The downloader uploads completed output back through a scoped task-upload
-   token and the normal object upload path.
-6. ZPan records status, activity, and optional remote-download usage reports.
 
 ### WebDAV
 
 WebDAV paths resolve to `matters` records through the WebDAV usecases and repos.
 Object keys remain private implementation details. Browser UI, API, and WebDAV
 all share the same authorization and storage model.
-
-### Archive Jobs
-
-Archive operations use `background_jobs` for durable status and progress. On
-Workers, queue messages execute archive work. On Node, archive work runs through
-the gateway path available to the current runtime.
 
 ## Frontend Architecture
 
@@ -313,10 +296,9 @@ external URLs that are not ZPan APIs, such as presigned S3 upload URLs.
 ## API Surfaces
 
 - `/api/*` — primary JSON API, mounted from route modules in `server/http/`
-- `/api/auth/*` — Better Auth routes
+- `/api/auth/*` — Better Auth routes (sign-in, session, API keys)
 - `/api/openapi.json` — public ZPan product contract; Better Auth operations are
-  denied by default and currently only the registered Downloader Device Flow
-  operations are included
+  denied by default
 - `/api/auth/reference` and `/api/auth/open-api/generate-schema` — Better Auth's
   complete reference UI and generated runtime schema
 - `/api/docs` — Scalar API reference
@@ -324,11 +306,10 @@ external URLs that are not ZPan APIs, such as presigned S3 upload URLs.
 - `/api/events` — one resumable server-sent event stream for scoped durable
   resource changes
 - `/r/*` and `/s/*` — public redirect/share surfaces
-- `/api/store/*` — quota store and Cloud webhook endpoints
 
-Public, authenticated, admin, downloader, and webhook routes can share a path
-prefix. Authorization is per route or per mounted sub-app, so mount order matters
-when a public/user router and admin router share a prefix.
+Public and authenticated routes can share a path prefix. Authorization is per
+route or per mounted sub-app, so mount order matters when a public/user router
+and an authenticated router share a prefix.
 
 Unbounded list APIs use signed opaque keyset tokens and the SPA consumes them
 with infinite queries. Realtime mutations append an atomic `resource_changes`
@@ -341,48 +322,36 @@ the contract, replay, retention, and indexing rules.
 
 Cloudflare Workers:
 
-- `scheduled()` handles license refresh, traffic report sync, quota reset, trash
-  purge, and telemetry.
-- `queue()` handles archive job messages.
+- `scheduled()` refreshes hourly stats rollups, purges expired WebDAV locks and
+  resource changes, purges expired trash daily, and reports instance telemetry.
 
 Node/Docker:
 
 - `server/entry-node.ts` runs equivalent recurring work with `setInterval`.
 
-Background jobs must be idempotent where possible. External delivery and Cloud
-reporting tables use stable event ids to prevent duplicate effects.
-
-## Paid-Tier Architecture
-
-Paid-tier availability is certificate based.
-
-- ZPan Cloud is the source of truth for subscriptions and bound instances.
-- ZPan stores the active binding in `license_bindings`.
-- ZPan verifies signed entitlement certificates locally.
-- `shared/feature-registry.ts` is the feature-comparison and gate-key source of
-  truth.
-- `server/middleware/require-feature.ts` gates API routes that require a paid
-  feature.
-
-The quota store uses Cloud for checkout/payment and ZPan for local catalog,
-entitlement delivery, quota calculation, and usage enforcement.
+Scheduled work must be idempotent where possible.
 
 ## Testing And Quality Gates
 
 Configured test projects in [`vitest.config.ts`](../vitest.config.ts):
 
-- `unit` — pure utilities, schemas, domain helpers, and frontend components in
-  jsdom
-- `integration` — Hono route/usecase integration against SQLite
-- `cloudflare` — Workers runtime tests with D1 migrations applied through
-  `@cloudflare/vitest-pool-workers`
+- `backend-unit` / `frontend-unit` — pure utilities, schemas, domain helpers,
+  and frontend components in jsdom
+- `backend-integration-http` / `backend-integration-data` — Hono route/usecase
+  integration against SQLite
+- `cloudflare-contract` / `cloudflare-isolated` — Workers runtime tests with D1
+  migrations applied through `@cloudflare/vitest-pool-workers`
 - `libsql` — platform smoke tests for the libSQL/Turso path
 
 Other gates:
 
-- `pnpm lint` — Biome lint and format check
+- `pnpm lint` — Biome lint/format, agent skills, ID generation, test boundaries,
+  and changelog i18n
+- `pnpm lint:arch` — dependency-cruiser layering rules
+- `pnpm lint:http` — HTTP boundary rules
+- `pnpm lint:spec` — Gherkin scenario ↔ `[spec: id]` traceability
 - `pnpm typecheck` — server and frontend TypeScript projects
-- `pnpm test` — unit + integration
+- `pnpm test` — backend/frontend unit + integration
 - `pnpm test:cf` — Workers runtime tests
 - `pnpm test:libsql` — libSQL platform tests
 - `pnpm e2e` — Playwright browser flows
@@ -404,5 +373,5 @@ verification per [CONTRIBUTING.md](../CONTRIBUTING.md).
   entries.
 - Preserve direct-to-object-storage upload/download paths unless a feature has a
   concrete reason to proxy bytes.
-- Treat personal spaces and team spaces as organization-owned data containers;
-  quota, sharing, WebDAV, and future clients must preserve that ownership model.
+- Keep all data site-scoped. Do not reintroduce organization, team, workspace,
+  quota, or entitlement ownership columns.

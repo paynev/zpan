@@ -8,10 +8,10 @@ const POLL = 2000
 function change(sequence: number): ResourceChange {
   return {
     sequence,
-    scopeType: 'organization',
-    scopeId: 'o1',
-    resourceType: 'download_task',
-    resourceId: `task-${sequence}`,
+    scopeType: 'site',
+    scopeId: 'default',
+    resourceType: 'matter',
+    resourceId: `matter-${sequence}`,
     changeType: 'upsert',
     action: 'updated',
     metadata: null,
@@ -27,15 +27,12 @@ function makeDeps(changes: ResourceChange[] = [], oldest = 1) {
   const oldestSequence = vi.fn(async () => (changes.length ? oldest : null))
   const deps = {
     resourceChanges: { listAfter, latestSequence, oldestSequence } as unknown as ResourceChangeRepo,
-    backgroundJobs: { activeSummary: vi.fn(async () => ({ count: 0, fingerprint: '' })) },
     notifications: { unreadCount: vi.fn(async () => 0) },
   } as unknown as Deps
   return { deps, listAfter }
 }
 
 const params = (over: Partial<EventsParams> = {}): EventsParams => ({
-  scope: 'download-tasks-only',
-  orgId: 'o1',
   userId: null,
   pollIntervalMs: POLL,
   heartbeatIntervalMs: 1_000_000,
@@ -65,20 +62,14 @@ describe('streamEvents', () => {
     expect(await run(deps, params())).toEqual([])
   })
 
-  it('resumes after Last-Event-ID and emits ordered resource changes', async () => {
+  it('resumes after Last-Event-ID and emits ordered resource changes [spec: events/stream]', async () => {
     const { deps } = makeDeps([change(1), change(2), change(3)])
     const events = await run(deps, params({ afterSequence: 1 }))
     expect(events.map((event) => [event.event, event.id])).toEqual([
       ['resource-change', 2],
       ['resource-change', 3],
     ])
-    expect(events[0].data).toMatchObject({ resourceType: 'download_task', resourceId: 'task-2' })
-  })
-
-  it('requests only download-task changes for an API-key stream', async () => {
-    const { deps, listAfter } = makeDeps()
-    await run(deps, params({ afterSequence: 0 }))
-    expect(listAfter).toHaveBeenCalledWith(expect.objectContaining({ resourceTypes: ['download_task'] }))
+    expect(events[0].data).toMatchObject({ resourceType: 'matter', resourceId: 'matter-2' })
   })
 
   it('emits resync when the resume cursor predates retained changes', async () => {
@@ -87,11 +78,18 @@ describe('streamEvents', () => {
     expect(events[0]).toEqual({ event: 'resync', data: { sequence: 10 }, id: 10 })
   })
 
-  it('reads both organization and user feeds for a browser stream', async () => {
+  it('reads both site and user feeds for a signed-in stream', async () => {
     const { deps, listAfter } = makeDeps()
-    await run(deps, params({ scope: 'user', userId: 'u1', afterSequence: 0 }))
-    expect(listAfter).toHaveBeenCalledWith(expect.objectContaining({ scopeType: 'organization', scopeId: 'o1' }))
+    await run(deps, params({ userId: 'u1', afterSequence: 0 }))
+    expect(listAfter).toHaveBeenCalledWith(expect.objectContaining({ scopeType: 'site', scopeId: 'default' }))
     expect(listAfter).toHaveBeenCalledWith(expect.objectContaining({ scopeType: 'user', scopeId: 'u1' }))
+  })
+
+  it('reads only the site feed for an anonymous stream', async () => {
+    const { deps, listAfter } = makeDeps()
+    await run(deps, params({ afterSequence: 0 }))
+    expect(listAfter).toHaveBeenCalledWith(expect.objectContaining({ scopeType: 'site', scopeId: 'default' }))
+    expect(listAfter).toHaveBeenCalledTimes(1)
   })
 
   it('emits a heartbeat when an idle stream reaches its interval', async () => {
@@ -108,7 +106,7 @@ describe('streamEvents', () => {
     ])
   })
 
-  it('ends a connection at its maximum lifetime so EventSource can resume it', async () => {
+  it('ends a connection at its maximum lifetime so EventSource can resume it [spec: events/abort]', async () => {
     const { deps, listAfter } = makeDeps()
     const done = streamEvents(
       deps,

@@ -1,4 +1,3 @@
-import type { ApiKeyScope } from '@shared/api-key-templates'
 import type { ApiKeyPermissions, AuthorizationScope } from '@shared/authorization'
 import type { Database } from '../../platform/interface'
 
@@ -6,7 +5,6 @@ export interface VerifiedApiKey {
   id: string
   configId: string
   referenceId: string
-  scope: ApiKeyScope
   permissions: ApiKeyPermissions | null
 }
 

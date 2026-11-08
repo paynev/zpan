@@ -8,7 +8,6 @@ function makeObject(overrides: Partial<StorageObject & { downloadUrl?: string }>
 } {
   return {
     id: 'track-1',
-    orgId: 'org-1',
     alias: 'track-1',
     name: 'song.mp3',
     type: 'audio/mpeg',

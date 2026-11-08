@@ -19,7 +19,6 @@ export const AUDIT_EVENT_ACTIONS = [
   'upload_cancel',
   'upload_failed',
   'object_download',
-  'image_hosting_download',
   'webdav_download',
   'download_failed',
   'share_create',

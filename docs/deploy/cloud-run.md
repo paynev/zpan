@@ -144,42 +144,15 @@ A personal ZPan instance with light usage fits entirely within free tiers across
 
 ---
 
-## Entitlement Refresh (License Cert)
+## Background work
 
-ZPan refreshes its entitlement certificate every 6 hours. On Cloud Run there is no persistent background process between requests, so you need to trigger a refresh via an external scheduler.
+Serverless targets have no persistent process, so the recurring maintenance jobs
+that Node/Docker run on intervals (hourly statistics rollups, WebDAV lock expiry,
+resource-change retention, and daily trash purge) do not run automatically on
+this target. They are maintenance-only and can be left to a scheduled invocation
+if needed.
 
-### Setup
-
-1. **Generate a secret:**
-   ```sh
-   openssl rand -hex 32
-   ```
-
-2. **Add the env var** as a Cloud Run environment variable (or via Secret Manager). With `gcloud`:
-   ```sh
-   gcloud run services update zpan \
-     --region <your-region> \
-     --update-env-vars REFRESH_CRON_SECRET=<your-secret>
-   ```
-
-3. **Schedule the calls** using [Cloud Scheduler](https://cloud.google.com/scheduler). Create the license refresh job:
-   ```sh
-   gcloud scheduler jobs create http zpan-license-refresh \
-     --schedule="0 */6 * * *" \
-     --uri="https://<your-cloud-run-url>/api/internal/licensing/refresh-runs" \
-     --http-method=POST \
-     --headers="Authorization=Bearer <your-secret>" \
-     --location=<your-region>
-   ```
-
-   Create the traffic sync job:
-   ```sh
-   gcloud scheduler jobs create http zpan-traffic-sync \
-     --schedule="*/10 * * * *" \
-     --uri="https://<your-cloud-run-url>/api/internal/traffic-sync-runs" \
-     --http-method=POST \
-     --headers="Authorization=Bearer <your-secret>" \
-     --location=<your-region>
-   ```
-
-Send `Authorization: Bearer <REFRESH_CRON_SECRET>` with every scheduler request. If `REFRESH_CRON_SECRET` is not set, the endpoint returns `401` for all requests.
+Optional instance telemetry is exposed at
+`POST /api/internal/instance-telemetry/report` and is gated by
+`ZPAN_INTERNAL_API_TOKEN`. The single-admin build has no license refresh or
+metered traffic sync endpoints.

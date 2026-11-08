@@ -65,7 +65,14 @@ function createCloudflarePlugin() {
     return {
       wrangler: { configPath: './wrangler.toml' },
       miniflare: {
-        bindings: { TEST_MIGRATIONS: migrations },
+        bindings: {
+          TEST_MIGRATIONS: migrations,
+          // Single-admin credentials. Derivation is exercised by the Worker
+          // bootstrap contract test, which drops the explicit secret.
+          ZPAN_USERNAME: 'cf-admin@example.com',
+          ZPAN_PASSWORD: 'cf-test-password',
+          BETTER_AUTH_SECRET: 'ci-test-secret-that-is-at-least-32-chars',
+        },
       },
     }
   })

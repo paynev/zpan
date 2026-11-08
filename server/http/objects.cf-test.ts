@@ -6,42 +6,55 @@ import { createApp } from '../app'
 import { createAuth } from '../auth'
 import { createCloudflarePlatform } from '../platform/cloudflare'
 
+const ADMIN_EMAIL = 'cf-admin@example.com'
+const ADMIN_PASSWORD = 'password123456'
+const ADMIN_NAME = 'CF Test'
+
 async function buildApp() {
   const platform = createCloudflarePlatform(env)
   const auth = await createAuth(platform.db, env.BETTER_AUTH_SECRET, 'http://localhost')
   return createApp(platform, auth)
 }
 
-async function authedHeaders(app: ReturnType<typeof buildApp>) {
-  const email = `cf-obj-${Date.now()}@example.com`
-  const res = await app.request('/api/auth/sign-up/email', {
+// Single-admin instances only allow the very first account to self-register.
+// Every other test signs in as that same admin to get a real Better Auth session.
+async function adminSession(app: ReturnType<typeof createApp>) {
+  const signUpRes = await app.request('/api/auth/sign-up/email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Test', email, password: 'password123456' }),
+    body: JSON.stringify({ name: ADMIN_NAME, email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
   })
-  const cookies = res.headers.getSetCookie()
+  const res = signUpRes.ok
+    ? signUpRes
+    : await app.request('/api/auth/sign-in/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
+      })
+  const cookies = res.headers.getSetCookie().map((cookie) => cookie.split(';')[0])
+  if (cookies.length === 0) throw new Error('auth response carried no session cookie')
   return { Cookie: cookies.join('; ') }
 }
 
 describe('[CF] Objects API', () => {
-  it('returns 401 without auth', async () => {
+  it('returns 401 without auth [spec: objects/auth-required]', async () => {
     const app = await buildApp()
     const res = await app.request('/api/objects')
     expect(res.status).toBe(401)
   })
 
-  it('GET /api/objects returns empty list', async () => {
+  it('GET /api/objects returns empty list [spec: objects/list-empty]', async () => {
     const app = await buildApp()
-    const headers = await authedHeaders(app)
+    const headers = await adminSession(app)
     const res = await app.request('/api/objects', { headers })
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body).toEqual({ items: [], nextPageToken: null })
   })
 
-  it('POST /api/objects returns 400 for invalid input', async () => {
+  it('POST /api/objects returns 400 for invalid input [spec: objects/create-invalid]', async () => {
     const app = await buildApp()
-    const headers = await authedHeaders(app)
+    const headers = await adminSession(app)
     const res = await app.request('/api/objects', {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
@@ -50,9 +63,9 @@ describe('[CF] Objects API', () => {
     expect(res.status).toBe(400)
   })
 
-  it('POST /api/objects returns 503 when no storage configured', async () => {
+  it('POST /api/objects returns 503 when no storage configured [spec: objects/create-no-storage]', async () => {
     const app = await buildApp()
-    const headers = await authedHeaders(app)
+    const headers = await adminSession(app)
     const res = await app.request('/api/objects', {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
@@ -61,16 +74,16 @@ describe('[CF] Objects API', () => {
     expect(res.status).toBe(503)
   })
 
-  it('GET /api/objects/:id returns 404 for missing object', async () => {
+  it('GET /api/objects/:id returns 404 for missing object [spec: objects/detail-missing]', async () => {
     const app = await buildApp()
-    const headers = await authedHeaders(app)
+    const headers = await adminSession(app)
     const res = await app.request('/api/objects/nonexistent', { headers })
     expect(res.status).toBe(404)
   })
 
   it('PATCH /api/objects/:id returns 404 for missing object', async () => {
     const app = await buildApp()
-    const headers = await authedHeaders(app)
+    const headers = await adminSession(app)
     const res = await app.request('/api/objects/nonexistent', {
       method: 'PATCH',
       headers: { ...headers, 'Content-Type': 'application/json' },
@@ -81,7 +94,7 @@ describe('[CF] Objects API', () => {
 
   it('DELETE /api/objects/:id returns 404 for missing object', async () => {
     const app = await buildApp()
-    const headers = await authedHeaders(app)
+    const headers = await adminSession(app)
     const res = await app.request('/api/objects/nonexistent', {
       method: 'DELETE',
       headers,
@@ -91,8 +104,8 @@ describe('[CF] Objects API', () => {
 })
 
 // ─── Upload + trash lifecycle against D1 ──────────────────────────────────────
-// The D1 instance is shared across tests, so each test uses a fresh signed-up
-// user (its own personal org) and a unique storage id to stay isolated.
+// The D1 instance is shared across tests, so each test uses a unique storage id
+// and unique matter ids to stay isolated.
 
 async function buildAppWithDb() {
   const platform = createCloudflarePlatform(env)
@@ -100,25 +113,15 @@ async function buildAppWithDb() {
   return { app: createApp(platform, auth), db: platform.db }
 }
 
-async function signUp(app: ReturnType<typeof createApp>, db: Awaited<ReturnType<typeof buildAppWithDb>>['db']) {
-  const email = `cf-obj-life-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`
-  const res = await app.request('/api/auth/sign-up/email', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'CF', email, password: 'password123456' }),
-  })
-  const headers = { Cookie: res.headers.getSetCookie().join('; ') }
-  const orgRows = await db.all<{ id: string }>(
-    sql`SELECT id FROM organization WHERE metadata LIKE '%"type":"personal"%' ORDER BY created_at DESC LIMIT 1`,
-  )
-  return { headers, orgId: orgRows[0].id }
+async function signUp(app: ReturnType<typeof createApp>) {
+  return { headers: await adminSession(app) }
 }
 
 async function insertStorage(db: Awaited<ReturnType<typeof buildAppWithDb>>['db'], id: string) {
   const now = Date.now()
   await db.run(sql`
-    INSERT OR IGNORE INTO storages (id, bucket, endpoint, region, access_key, secret_key, file_path, custom_host, capacity, used, status, created_at, updated_at)
-    VALUES (${id}, 'cf-bucket', 'https://s3.amazonaws.com', 'us-east-1', 'AK', 'SK', '', '', 0, 0, 'active', ${now}, ${now})
+    INSERT OR IGNORE INTO storages (id, bucket, endpoint, region, access_key, secret_key, file_path, capacity, used, status, created_at, updated_at)
+    VALUES (${id}, 'cf-bucket', 'https://s3.amazonaws.com', 'us-east-1', 'AK', 'SK', '', 0, 0, 'active', ${now}, ${now})
   `)
 }
 
@@ -137,21 +140,21 @@ describe('[CF] Objects upload + trash lifecycle (D1)', () => {
 
   it('lists only folders and reports whether they have child folders', async () => {
     const { app, db } = await buildAppWithDb()
-    const { headers, orgId } = await signUp(app, db)
+    const { headers } = await signUp(app)
     const storageId = `st-cf-tree-${Date.now()}`
     await insertStorage(db, storageId)
     const now = Date.now()
 
     await db.run(sql`
       INSERT INTO matters (
-        id, org_id, alias, name, type, size, dirtype, parent, object,
+        id, alias, name, type, size, dirtype, parent, object,
         storage_id, status, created_at, updated_at
       )
       VALUES
-        ('cf-parent', ${orgId}, ${`cf-parent-${now}`}, 'Parent', 'folder', 0, 1, '', '', ${storageId}, 'active', ${now}, ${now}),
-        ('cf-leaf', ${orgId}, ${`cf-leaf-${now}`}, 'Leaf', 'folder', 0, 1, '', '', ${storageId}, 'active', ${now}, ${now}),
-        ('cf-child', ${orgId}, ${`cf-child-${now}`}, 'Child', 'folder', 0, 1, 'Parent', '', ${storageId}, 'active', ${now}, ${now}),
-        ('cf-file', ${orgId}, ${`cf-file-${now}`}, 'file.txt', 'text/plain', 1, 0, '', 'file.txt', ${storageId}, 'active', ${now}, ${now})
+        ('cf-parent', ${`cf-parent-${now}`}, 'Parent', 'folder', 0, 1, '', '', ${storageId}, 'active', ${now}, ${now}),
+        ('cf-leaf', ${`cf-leaf-${now}`}, 'Leaf', 'folder', 0, 1, '', '', ${storageId}, 'active', ${now}, ${now}),
+        ('cf-child', ${`cf-child-${now}`}, 'Child', 'folder', 0, 1, 'Parent', '', ${storageId}, 'active', ${now}, ${now}),
+        ('cf-file', ${`cf-file-${now}`}, 'file.txt', 'text/plain', 1, 0, '', 'file.txt', ${storageId}, 'active', ${now}, ${now})
     `)
 
     const res = await app.request('/api/objects?type=folder&pageSize=100', { headers })
@@ -166,9 +169,9 @@ describe('[CF] Objects upload + trash lifecycle (D1)', () => {
     )
   })
 
-  it('creates a file draft, finalizes it via completions, then soft-deletes, restores, and purges', async () => {
+  it('creates a file draft, finalizes it via completions, then soft-deletes, restores, and purges [spec: objects/create-file-presign] [spec: objects/complete-upload] [spec: objects/trash] [spec: objects/list-trashed] [spec: objects/restore] [spec: objects/purge-file-s3]', async () => {
     const { app, db } = await buildAppWithDb()
-    const { headers } = await signUp(app, db)
+    const { headers } = await signUp(app)
     await insertStorage(db, `st-cf-life-${Date.now()}`)
 
     // Create draft → single-PUT upload instructions.
@@ -222,9 +225,9 @@ describe('[CF] Objects upload + trash lifecycle (D1)', () => {
     expect(gone.status).toBe(404)
   })
 
-  it('aborts an in-progress upload via DELETE /uploads/:sid and discards the draft', async () => {
+  it('aborts an in-progress upload via DELETE /uploads/:sid and discards the draft [spec: objects/abort-upload]', async () => {
     const { app, db } = await buildAppWithDb()
-    const { headers } = await signUp(app, db)
+    const { headers } = await signUp(app)
     await insertStorage(db, `st-cf-abort-${Date.now()}`)
 
     const createRes = await app.request('/api/objects', {

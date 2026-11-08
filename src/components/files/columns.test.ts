@@ -19,7 +19,6 @@ function makeObject(id: string, dirtype: number, extra: Partial<StorageObject> =
     storageId: '',
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-06-01T00:00:00.000Z',
-    orgId: '',
     alias: '',
     type: '',
     object: '',

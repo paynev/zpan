@@ -1,5 +1,12 @@
 # Clean Architecture Migration (hono-cf-clean-arch)
 
+> Historical record. The single-admin refactor later removed organizations,
+> teams, quotas, licensing, remote downloads, image hosting, ZIP archive
+> jobs (including the background task queue), R2-hosted avatars, and outbound
+> email. Lists below
+> describe the migration as it happened; the current code in `server/`,
+> `docs/architecture.md`, and `spec/` is authoritative.
+
 Living tracker for migrating `server/` to the canonical layout: `domain → usecases
 → adapters → http`, with a `composition.ts` root and `dependency-cruiser`
 enforcement. Strangler-style: **every commit is behavior-preserving and leaves

@@ -1,12 +1,10 @@
 import { DirType } from '@shared/constants'
 import type { StorageObject } from '@shared/types'
 import {
-  Archive,
   ArrowRightLeft,
   Copy,
   Download,
   Eye,
-  FileArchive,
   FolderInput,
   FolderOpen,
   Info,
@@ -79,16 +77,16 @@ function CopyUrlSubmenu({
   const items = (
     <>
       <MenuItem kind={kind} onClick={() => onCopyUrl(item, 'raw')}>
-        {t('ihost.copy.raw')}
+        {t('files.copy.raw')}
       </MenuItem>
       <MenuItem kind={kind} onClick={() => onCopyUrl(item, 'markdown')}>
-        {t('ihost.copy.markdown')}
+        {t('files.copy.markdown')}
       </MenuItem>
       <MenuItem kind={kind} onClick={() => onCopyUrl(item, 'html')}>
-        {t('ihost.copy.html')}
+        {t('files.copy.html')}
       </MenuItem>
       <MenuItem kind={kind} onClick={() => onCopyUrl(item, 'bbcode')}>
-        {t('ihost.copy.bbcode')}
+        {t('files.copy.bbcode')}
       </MenuItem>
     </>
   )
@@ -97,7 +95,7 @@ function CopyUrlSubmenu({
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
         <Link />
-        {t('ihost.copy.url')}
+        {t('files.copy.url')}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent>{items}</DropdownMenuSubContent>
     </DropdownMenuSub>
@@ -105,7 +103,7 @@ function CopyUrlSubmenu({
     <ContextMenuSub>
       <ContextMenuSubTrigger className="gap-2">
         <Link />
-        {t('ihost.copy.url')}
+        {t('files.copy.url')}
       </ContextMenuSubTrigger>
       <ContextMenuSubContent>{items}</ContextMenuSubContent>
     </ContextMenuSub>
@@ -115,15 +113,12 @@ function CopyUrlSubmenu({
 function FileActionsMenuItems({ kind, item, handlers }: FileActionsMenuProps & { kind: MenuKind }) {
   const { t } = useTranslation()
   const isFile = item.dirtype === DirType.FILE
-  const isZipFile = isFile && item.name.toLowerCase().endsWith('.zip')
   const hasManagementActions = !!(
     handlers.onRename ||
     handlers.onCopy ||
     handlers.onMove ||
     handlers.onTransfer ||
-    handlers.onShare ||
-    handlers.onCompress ||
-    (isZipFile && handlers.onExtract)
+    handlers.onShare
   )
   const hasDestructiveActions = !!(handlers.onTrash || handlers.onDelete)
 
@@ -176,18 +171,6 @@ function FileActionsMenuItems({ kind, item, handlers }: FileActionsMenuProps & {
         <MenuItem kind={kind} onClick={() => handlers.onShare?.(item)}>
           <Share2 />
           {t('share.menuItem')}
-        </MenuItem>
-      )}
-      {handlers.onCompress && (
-        <MenuItem kind={kind} onClick={() => handlers.onCompress?.(item)}>
-          <Archive />
-          {t('files.compress')}
-        </MenuItem>
-      )}
-      {isZipFile && handlers.onExtract && (
-        <MenuItem kind={kind} onClick={() => handlers.onExtract?.(item)}>
-          <FileArchive />
-          {t('files.extract')}
         </MenuItem>
       )}
 

@@ -1,4 +1,4 @@
-import type { AdminAuditEvent } from '@shared/types'
+import type { AuditEvent } from '@shared/types'
 import { useTranslation } from 'react-i18next'
 import { ActorIdentity, auditEventActor } from '@/components/actor-identity'
 import { Badge } from '@/components/ui/badge'
@@ -8,7 +8,7 @@ export function AdminAuditActivityFeed({
   isLoading,
   isError,
 }: {
-  events: AdminAuditEvent[]
+  events: AuditEvent[]
   isLoading: boolean
   isError: boolean
 }) {
@@ -55,7 +55,7 @@ export function AdminAuditActivityFeed({
   )
 }
 
-function AdminAuditActivityItem({ event }: { event: AdminAuditEvent }) {
+function AdminAuditActivityItem({ event }: { event: AuditEvent }) {
   const { t } = useTranslation()
   const metadata = parseActivityMetadata(event.metadata)
   const status = metadata?.status ?? metadata?.result
@@ -77,7 +77,6 @@ function AdminAuditActivityItem({ event }: { event: AdminAuditEvent }) {
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span>{formatTimestamp(event.createdAt)}</span>
-          {event.orgName && <span>{event.orgName}</span>}
           {event.targetId && <span>{event.targetId}</span>}
         </div>
         {metadata && (metadata.from || metadata.to || metadataDetails.length > 0) && (

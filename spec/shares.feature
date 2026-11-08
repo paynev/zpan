@@ -51,9 +51,9 @@ Feature: Shares
     When it is created
     Then the API responds 400 DIRECT_NO_RECIPIENTS
 
-  @shares/create-cross-org @api
-  Scenario: A share's matter must belong to the org
-    Given a matterId from another org
+  @shares/create-unknown-matter @api
+  Scenario: A share's matter must exist
+    Given a matterId that does not exist
     When a share is created
     Then the API responds 404
 
@@ -171,18 +171,6 @@ Feature: Shares
     When a recipient saves it to their personal drive
     Then a 201 is returned
 
-  @shares/save-quota-exceeded @api
-  Scenario: Saving over quota is refused
-    Given an exhausted target-org quota
-    When a share is saved
-    Then the API responds 400 QUOTA_EXCEEDED
-
-  @shares/save-target-permission @api
-  Scenario: Saving to a team org requires membership
-    Given a non-personal target org where the user has no member role
-    When a share is saved there
-    Then the API responds 403
-
   @shares/save-recipient-bypass @api
   Scenario: A listed recipient can save a password share
     Given a password-protected share and a listed recipient
@@ -194,12 +182,6 @@ Feature: Shares
     Given a non-recipient with a valid sharetk cookie
     When they save a password-protected share
     Then the password wall is bypassed
-
-  @shares/save-viewer-forbidden @api
-  Scenario: A viewer role cannot save into the org
-    Given a user with a viewer role in the target org
-    When they save a share there
-    Then the API responds 403
 
   @shares/revoke @api
   Scenario: A creator revokes their share

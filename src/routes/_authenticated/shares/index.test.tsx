@@ -58,7 +58,6 @@ function share(overrides: Partial<ShareListItem>): ShareListItem {
     token: 'sShareTok001',
     kind: 'landing',
     matterId: 'matter-1',
-    orgId: 'org-1',
     creatorId: 'user-1',
     expiresAt: null,
     downloadLimit: null,

@@ -72,37 +72,6 @@ const ADMIN_AUTH_KEYS = [
   'admin.auth.runtimeRestartNote',
   'admin.auth.deleteProviderTitle',
   'admin.auth.deleteProviderConfirm',
-  'admin.auth.emailSection',
-  'admin.auth.emailEnabled',
-  'admin.auth.emailEnabledHint',
-  'admin.auth.emailVerificationRequired',
-  'admin.auth.emailVerificationHint',
-  'admin.auth.emailProvider',
-  'admin.auth.emailProviderPlaceholder',
-  'admin.auth.emailCloudflare',
-  'admin.auth.emailSmtp',
-  'admin.auth.emailHttp',
-  'admin.auth.emailFrom',
-  'admin.auth.emailFromPlaceholder',
-  'admin.auth.smtpHost',
-  'admin.auth.smtpHostPlaceholder',
-  'admin.auth.smtpPort',
-  'admin.auth.smtpPortPlaceholder',
-  'admin.auth.smtpUser',
-  'admin.auth.smtpUserPlaceholder',
-  'admin.auth.smtpPass',
-  'admin.auth.smtpPassPlaceholder',
-  'admin.auth.smtpSecure',
-  'admin.auth.httpUrl',
-  'admin.auth.httpUrlPlaceholder',
-  'admin.auth.httpApiKey',
-  'admin.auth.httpApiKeyPlaceholder',
-  'admin.auth.testEmail',
-  'admin.auth.testEmailTo',
-  'admin.auth.testEmailSent',
-  'admin.auth.testEmailFailed',
-  'admin.auth.emailSaved',
-  'admin.auth.emailNotConfigured',
 ]
 
 const ALL_KEYS = [...ADMIN_NAV_AUTH_KEYS, ...ADMIN_AUTH_KEYS]
@@ -220,46 +189,6 @@ describe('admin.auth locale keys — English values contract', () => {
 
   it('admin.auth.callbackUriCopied is "Callback URI copied"', () => {
     expect(enLocale['admin.auth.callbackUriCopied']).toBe('Callback URI copied')
-  })
-
-  it('admin.auth.emailSection is "Email Configuration"', () => {
-    expect(enLocale['admin.auth.emailSection']).toBe('Email Configuration')
-  })
-
-  it('admin.auth.emailEnabled is "Enable Email"', () => {
-    expect(enLocale['admin.auth.emailEnabled']).toBe('Enable Email')
-  })
-
-  it('admin.auth.emailCloudflare is "Cloudflare Email"', () => {
-    expect(enLocale['admin.auth.emailCloudflare']).toBe('Cloudflare Email')
-  })
-
-  it('admin.auth.emailSmtp is "SMTP"', () => {
-    expect(enLocale['admin.auth.emailSmtp']).toBe('SMTP')
-  })
-
-  it('admin.auth.emailHttp is "HTTP API"', () => {
-    expect(enLocale['admin.auth.emailHttp']).toBe('HTTP API')
-  })
-
-  it('admin.auth.testEmail is "Send Test Email"', () => {
-    expect(enLocale['admin.auth.testEmail']).toBe('Send Test Email')
-  })
-
-  it('admin.auth.testEmailSent is "Test email sent"', () => {
-    expect(enLocale['admin.auth.testEmailSent']).toBe('Test email sent')
-  })
-
-  it('admin.auth.testEmailFailed is "Test email failed"', () => {
-    expect(enLocale['admin.auth.testEmailFailed']).toBe('Test email failed')
-  })
-
-  it('admin.auth.emailSaved is "Email configuration saved"', () => {
-    expect(enLocale['admin.auth.emailSaved']).toBe('Email configuration saved')
-  })
-
-  it('admin.auth.emailNotConfigured is "Email not configured yet"', () => {
-    expect(enLocale['admin.auth.emailNotConfigured']).toBe('Email not configured yet')
   })
 
   it('admin.auth.providerSaved is "Provider saved"', () => {
@@ -386,18 +315,6 @@ describe('admin.auth locale keys — i18n runtime translation', () => {
     expect(i18n.t('admin.auth.oauthSection')).toBe('OAuth 提供商')
   })
 
-  it('translates admin.auth.emailSection to English', async () => {
-    const { default: i18n } = await import('./index')
-    await i18n.changeLanguage('en')
-    expect(i18n.t('admin.auth.emailSection')).toBe('Email Configuration')
-  })
-
-  it('translates admin.auth.emailSection to Chinese', async () => {
-    const { default: i18n } = await import('./index')
-    await i18n.changeLanguage('zh')
-    expect(i18n.t('admin.auth.emailSection')).toBe('邮件配置')
-  })
-
   it('translates admin.auth.inviteCodesSection to English', async () => {
     const { default: i18n } = await import('./index')
     await i18n.changeLanguage('en')
@@ -432,17 +349,5 @@ describe('admin.auth locale keys — i18n runtime translation', () => {
     const { default: i18n } = await import('./index')
     await i18n.changeLanguage('zh')
     expect(i18n.t('admin.auth.noProviders')).toBe('暂未配置 OAuth 提供商')
-  })
-
-  it('translates admin.auth.emailSaved to English', async () => {
-    const { default: i18n } = await import('./index')
-    await i18n.changeLanguage('en')
-    expect(i18n.t('admin.auth.emailSaved')).toBe('Email configuration saved')
-  })
-
-  it('translates admin.auth.emailSaved to Chinese', async () => {
-    const { default: i18n } = await import('./index')
-    await i18n.changeLanguage('zh')
-    expect(i18n.t('admin.auth.emailSaved')).toBe('邮件配置已保存')
   })
 })

@@ -27,120 +27,6 @@ export {
 } from './announcement'
 export type { ListAdminAuditQuery } from './audit'
 export { listAdminAuditQuerySchema } from './audit'
-export type {
-  ArchiveCompressJobRequest,
-  ArchiveExtractJobRequest,
-  BackgroundJobStatusInput,
-  BackgroundJobTypeInput,
-  CreateBackgroundJobRequest,
-  ListBackgroundJobsQuery,
-} from './background-jobs'
-export {
-  archiveCompressJobRequestSchema,
-  archiveExtractJobRequestSchema,
-  backgroundJobStatusSchema,
-  backgroundJobTypeSchema,
-  createBackgroundJobRequestSchema,
-  listBackgroundJobsQuerySchema,
-} from './background-jobs'
-export type {
-  CapacityPurchaseResult,
-  CheckoutInput,
-  CloudCreditBalanceResponse,
-  CloudCreditBucket,
-  CloudCreditBucketsResponse,
-  CloudCreditLedgerEntry,
-  CloudCreditLedgerResponse,
-  CloudOrder,
-  CloudOrderFulfillmentPayload,
-  CloudOrderItem,
-  CloudOrderQuotaChange,
-  CloudProductInput,
-  CloudProductPatchInput,
-  CreateGiftCardInput,
-  DisableGiftCardInput,
-  DiscountQuote,
-  DiscountQuoteInput,
-  GiftCardStatus,
-  RedeemGiftCardInput,
-  RedeemGiftCardResponse,
-  X402PaymentRequired,
-} from './cloud-store'
-export {
-  capacityPurchaseDeliveredResultSchema,
-  capacityPurchasePendingResultSchema,
-  capacityPurchaseResultSchema,
-  checkoutInputSchema,
-  cloudCreditBalanceResponseSchema,
-  cloudCreditBucketSchema,
-  cloudCreditBucketsResponseSchema,
-  cloudCreditLedgerEntrySchema,
-  cloudCreditLedgerResponseSchema,
-  cloudOrderFulfillmentPayloadSchema,
-  cloudOrderItemSchema,
-  cloudOrderQuotaChangeSchema,
-  cloudOrderSchema,
-  cloudOrdersResponseSchema,
-  cloudProductInputSchema,
-  cloudProductPatchSchema,
-  createGiftCardInputSchema,
-  disableGiftCardSchema,
-  discountQuoteInputSchema,
-  discountQuoteSchema,
-  giftCardStatusSchema,
-  redeemGiftCardInputSchema,
-  redeemGiftCardResponseSchema,
-  x402PaymentRequiredSchema,
-} from './cloud-store'
-export type {
-  CompleteObjectUploadInput,
-  CreateDownloaderInput,
-  CreateDownloadTaskInput,
-  DownloaderHeartbeatInput,
-  DownloaderHeartbeatResult,
-  DownloadTaskActionInput,
-  DownloadTaskEvent,
-  DownloadTaskListItem,
-  DownloadTaskRuntime,
-  DownloadTaskSchema,
-  ListDownloadTasksQuery,
-  PresignObjectUploadPartsInput,
-  UpdateDownloaderCreditBillingInput,
-  UpdateDownloaderInput,
-  UpdateDownloadTaskInput,
-} from './downloads'
-export {
-  completeObjectUploadSchema,
-  createDownloaderResponseSchema,
-  createDownloaderSchema,
-  createDownloadTaskSchema,
-  downloaderEngineSchema,
-  downloaderHeartbeatResponseSchema,
-  downloaderHeartbeatResultSchema,
-  downloaderHeartbeatSchema,
-  downloaderListSchema,
-  downloaderSchema,
-  downloaderStatusSchema,
-  downloadSourceTypeSchema,
-  downloadTaskActionInputSchema,
-  downloadTaskActionSchema,
-  downloadTaskAttemptSchema,
-  downloadTaskEventSchema,
-  downloadTaskListItemRuntimeSchema,
-  downloadTaskListItemSchema,
-  downloadTaskListPageSchema,
-  downloadTaskPageSchema,
-  downloadTaskRuntimeSchema,
-  downloadTaskSchema,
-  downloadTaskStatusSchema,
-  downloadTaskStatusUpdateSchema,
-  downloadTaskTimelineSchema,
-  listDownloadTasksQuerySchema,
-  presignObjectUploadPartsSchema,
-  updateDownloaderCreditBillingSchema,
-  updateDownloaderSchema,
-  updateDownloadTaskSchema,
-} from './downloads'
 export type { CanonicalStatus, ErrorInfo, ErrorResponse } from './errors'
 export {
   canonicalStatuses,
@@ -151,36 +37,11 @@ export {
   errorInfoSchema,
   errorResponseSchema,
 } from './errors'
-export { base62IdSchema, imageTokenSchema, opaqueIdSchema, opaqueTokenSchema, shareTokenSchema } from './id'
+export { base62IdSchema, opaqueIdSchema, opaqueTokenSchema, shareTokenSchema } from './id'
 export type { ListNotificationsQuery } from './notification'
 export { listNotificationsQuerySchema } from './notification'
-export type { WorkspaceAuthorizationDetail } from './oauth-authorization'
-export { parseWorkspaceAuthorizationDetails, workspaceAuthorizationDetailSchema } from './oauth-authorization'
-export type {
-  OAuthConsentContext,
-  OAuthConsentContextRequest,
-  OAuthConsentResult,
-  OAuthConsentSubmit,
-  OAuthGrant,
-  OAuthGrantList,
-  OAuthGrantStatus,
-} from './oauth-grants'
-export {
-  oauthConsentContextRequestSchema,
-  oauthConsentContextSchema,
-  oauthConsentResultSchema,
-  oauthConsentSubmitSchema,
-  oauthGrantDTO,
-  oauthGrantListSchema,
-  oauthGrantSchema,
-  oauthGrantStatusSchema,
-} from './oauth-grants'
-export type { OAuthGrantScope, OAuthResourceScope } from './oauth-resource'
-export { oauthGrantScopeSchema, oauthResourceScopeSchema } from './oauth-resource'
 export type { CursorPage, CursorPageQuery, Page, PageQuery } from './pagination'
 export { cursorPageQuerySchema, cursorPageSchema, pageQuerySchema, pageSchema } from './pagination'
-export type { PublicProfile, PublicProfileShare, PublicUser } from './profile'
-export { publicProfileSchema, publicProfileShareSchema, publicUserSchema } from './profile'
 export type {
   CreateShareInput,
   CreateShareRequest,
@@ -201,83 +62,29 @@ export {
   shareRecipientViewSchema,
 } from './share'
 export type {
-  CreateTestEmailInput,
-  EmailSettings,
-  ImageDomainDnsRecord,
-  ImageDomainProviderResponse,
-  ImageDomainSettings,
   SiteBranding,
-  SiteCaptchaSettings,
   SiteConfig,
   SiteIdentitySettings,
-  SiteQuotaSettings,
-  SiteRegistrationSettings,
   SiteSettings,
   SiteWebDavSettings,
-  UpdateEmailSettingsInput,
-  UpdateImageDomainSettingsInput,
-  UpdateSiteCaptchaInput,
   UpdateSiteIdentityInput,
-  UpdateSiteQuotasInput,
-  UpdateSiteRegistrationInput,
   UpdateSiteWebDavInput,
 } from './site-config'
 export {
-  captchaProviderSchema,
-  cloudflareEmailSettingsSchema,
-  cloudflareSaasImageDomainSettingsSchema,
-  createTestEmailSchema,
-  emailSettingsSchema,
-  emptyEmailSettingsSchema,
-  emptyImageDomainSettingsSchema,
-  httpEmailSettingsSchema,
-  imageDomainDnsRecordSchema,
-  imageDomainProviderResponseSchema,
-  imageDomainProviderStatusSchema,
-  imageDomainSettingsSchema,
-  manualImageDomainSettingsSchema,
-  publicAuthProviderSchema,
-  publicCaptchaSchema,
-  signupModeSchema,
   siteBrandingSchema,
-  siteCaptchaSettingsSchema,
   siteConfigSchema,
   siteIdentitySettingsSchema,
-  siteQuotaSettingsSchema,
-  siteRegistrationSettingsSchema,
   siteSettingsSchema,
   siteWebDavSettingsSchema,
-  smtpEmailSettingsSchema,
-  updateEmailSettingsSchema,
-  updateImageDomainSettingsSchema,
-  updateSiteCaptchaSchema,
   updateSiteIdentitySchema,
-  updateSiteQuotasSchema,
-  updateSiteRegistrationSchema,
   updateSiteWebDavSchema,
   webDavVerificationStatusSchema,
 } from './site-config'
-export type {
-  CreateStorageInput,
-  PatchStorageInput,
-  ReplaceStorageInput,
-  UpdateStorageEgressBillingInput,
-} from './storage'
-export {
-  createStorageSchema,
-  patchStorageSchema,
-  replaceStorageSchema,
-  updateStorageEgressBillingSchema,
-} from './storage'
+export type { CreateStorageInput, PatchStorageInput, ReplaceStorageInput } from './storage'
+export { createStorageSchema, patchStorageSchema, replaceStorageSchema } from './storage'
 
 export const signInSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(6),
-})
-
-export const signUpSchema = z.object({
-  email: z.string().email(),
-  username: z.string().min(3).max(30),
   password: z.string().min(6),
 })
 
@@ -378,6 +185,29 @@ export const presignObjectUploadPartsResponseSchema = z.object({
   parts: z.array(presignedObjectUploadPartSchema),
 })
 
+// Re-presign expired part URLs mid-upload (multipart sessions only). The happy
+// path uses the URLs returned by POST /objects; this is the fallback.
+export const presignObjectUploadPartsSchema = z.object({
+  partNumbers: z.array(z.number().int().min(1).max(10_000)).min(1).max(100),
+})
+
+// POST /api/objects/:id/uploads/:sid/completions — finalize the upload.
+// Uniform for every file: one entry for a ≤5 GiB single PutObject, N entries for
+// a >5 GiB multipart. Each etag comes from the S3 PUT response header.
+export const completeObjectUploadSchema = z.object({
+  parts: z
+    .array(
+      z.object({
+        partNumber: z.number().int().min(1).max(10_000),
+        etag: z.string().min(1),
+      }),
+    )
+    .min(1),
+})
+
+export type PresignObjectUploadPartsInput = z.infer<typeof presignObjectUploadPartsSchema>
+export type CompleteObjectUploadInput = z.infer<typeof completeObjectUploadSchema>
+
 // PATCH /api/objects/:id — partial update of a live object (rename / move).
 export const patchMatterSchema = z.object({
   name: z.string().min(1).optional(),
@@ -409,66 +239,3 @@ export const copyObjectBodySchema = z.object({
 })
 
 export type CopyObjectBodyInput = z.infer<typeof copyObjectBodySchema>
-
-export const transferMatterSchema = z.object({
-  targetOrgId: opaqueIdSchema,
-  targetParent: z.string().default(''),
-  mode: z.enum(['copy', 'move']),
-})
-
-export type TransferMatterInput = z.infer<typeof transferMatterSchema>
-
-// ─── Image Hosting Config ─────────────────────────────────────────────────────
-
-// Valid hostname regex: lowercase labels separated by dots, max 253 chars total,
-// each label max 63 chars, no leading/trailing dots, no port.
-const hostnameRegex = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/
-
-// Valid referer origin: protocol + host + optional port, no path/query.
-const refererOriginRegex = /^https?:\/\/[a-zA-Z0-9.-]+(:\d+)?$/
-
-export const putIhostConfigSchema = z.object({
-  enabled: z.literal(true),
-  customDomain: z.string().max(253).regex(hostnameRegex, 'Invalid hostname format').nullable().optional(),
-  refererAllowlist: z
-    .array(z.string().regex(refererOriginRegex, 'Each entry must be a valid origin (e.g. https://example.com)'))
-    .max(50)
-    .nullable()
-    .optional(),
-})
-
-export type PutIhostConfigInput = z.infer<typeof putIhostConfigSchema>
-
-// ─── Image Hosting ────────────────────────────────────────────────────────────
-
-export const MAX_IMAGE_SIZE = 20 * 1024 * 1024
-export const ALLOWED_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
-export type AllowedImageMime = (typeof ALLOWED_IMAGE_MIMES)[number]
-
-export const createIhostImageSchema = z.object({
-  path: z.string().min(1).max(256),
-  mime: z.enum(ALLOWED_IMAGE_MIMES),
-  size: z.number().int().positive(),
-})
-
-export type CreateIhostImageInput = z.infer<typeof createIhostImageSchema>
-
-export const patchIhostImageSchema = z.discriminatedUnion('action', [z.object({ action: z.literal('confirm') })])
-
-export type PatchIhostImageInput = z.infer<typeof patchIhostImageSchema>
-
-export const listIhostImagesSchema = z.object({
-  pathPrefix: z.string().optional(),
-  pageToken: z.string().min(1).optional(),
-  pageSize: z.coerce.number().int().min(1).max(100).default(50),
-})
-
-// ─── Public image upload (avatar, org logo) ─────────────────────────────────
-// Constants only — avatars/logos are hosted on the ZPan Cloud avatar service; the
-// client uses these for pre-submit validation + UI hints. Kept in sync with the
-// SDK's AVATAR_CONTENT_TYPES + MAX_AVATAR_BYTES so the client rejects what Cloud
-// would reject (the server is the source of truth via zpan-cloud-sdk).
-
-export const PUBLIC_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
-export type PublicImageMime = (typeof PUBLIC_IMAGE_MIMES)[number]
-export const MAX_PUBLIC_IMAGE_SIZE = 1 * 1024 * 1024 // 1 MiB (SDK MAX_AVATAR_BYTES)

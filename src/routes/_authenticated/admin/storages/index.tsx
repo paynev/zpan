@@ -1,4 +1,4 @@
-import { FREE_STORAGE_LIMIT, StorageStatus, StorageStatusReason } from '@shared/constants'
+import { StorageStatus, StorageStatusReason } from '@shared/constants'
 import type { Storage } from '@shared/types'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
@@ -28,7 +28,6 @@ import { AdminFormDrawer, AdminFormLabel } from '@/components/admin/admin-form-d
 import { AdminPageHeader } from '@/components/admin/admin-page-header'
 import { DeleteStorageDialog } from '@/components/admin/delete-storage-dialog'
 import { StorageFormDrawer } from '@/components/admin/storage-form-drawer'
-import { ProBadge } from '@/components/ProBadge'
 import { UpgradeHint } from '@/components/UpgradeHint'
 import { Button } from '@/components/ui/button'
 import {
@@ -48,16 +47,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { useEntitlement } from '@/hooks/useEntitlement'
-import {
-  ApiError,
-  abortObjectUpload,
-  createObject,
-  listStorages,
-  patchStorage,
-  updateStorageEgressBilling,
-} from '@/lib/api'
+import { ApiError, abortObjectUpload, createObject, listStorages, patchStorage } from '@/lib/api'
 import { eplistProviderLabel, listEplistProviders } from '@/lib/eplist'
 import { formatSize } from '@/lib/format'
 
@@ -85,10 +75,6 @@ type DataUnit = keyof typeof DATA_UNITS
 type BillingForm = {
   capacityValue: string
   capacityUnit: DataUnit
-  enabled: boolean
-  unitValue: string
-  unit: DataUnit
-  credits: string
 }
 
 export function corsJsonForOrigin(origin: string) {
@@ -130,7 +116,6 @@ function formatCapacityPair(used: number, capacity: number) {
 export function StoragesPage() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const { hasFeature } = useEntitlement()
   const [formOpen, setFormOpen] = useState(false)
   const [editingStorage, setEditingStorage] = useState<Storage | null>(null)
   const [billingTarget, setBillingTarget] = useState<Storage | null>(null)
@@ -156,8 +141,8 @@ export function StoragesPage() {
 
   const storages = storagesQuery.data?.items ?? []
   const providers = providersQuery.data ?? []
-  const storagesLimitReached = !hasFeature('storages_unlimited') && storages.length >= FREE_STORAGE_LIMIT
-  const hasTrafficBilling = hasFeature('quota_store')
+  // Single-admin builds have no storage-count or traffic-billing limits.
+  const storagesLimitReached = false
   const visibleStorages = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
     const items = storages.filter((storage) => {
@@ -182,9 +167,6 @@ export function StoragesPage() {
   const billingMutation = useMutation({
     mutationFn: async ({ storage, form }: { storage: Storage; form: BillingForm }) => {
       await patchStorage(storage.id, { capacity: capacityPayload(form) })
-      if (hasTrafficBilling) {
-        await updateStorageEgressBilling(storage.id, egressBillingPayload(form))
-      }
     },
     onSuccess: () => {
       setBillingTarget(null)
@@ -424,12 +406,11 @@ export function StoragesPage() {
         onCreated={handleTest}
       />
 
-      <StorageEgressBillingDrawer
+      <StorageCapacityDrawer
         storage={billingTarget}
         form={billingForm}
         open={billingTarget !== null}
         pending={billingMutation.isPending}
-        hasTrafficBilling={hasTrafficBilling}
         onFormChange={setBillingForm}
         onOpenChange={(open) => !open && setBillingTarget(null)}
         onConfirm={() => billingTarget && billingMutation.mutate({ storage: billingTarget, form: billingForm })}
@@ -962,12 +943,11 @@ function StorageTestResult({ health }: { health: StorageHealth }) {
   )
 }
 
-function StorageEgressBillingDrawer({
+function StorageCapacityDrawer({
   storage,
   form,
   open,
   pending,
-  hasTrafficBilling,
   onFormChange,
   onOpenChange,
   onConfirm,
@@ -976,16 +956,12 @@ function StorageEgressBillingDrawer({
   form: BillingForm
   open: boolean
   pending: boolean
-  hasTrafficBilling: boolean
   onFormChange: (form: BillingForm) => void
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
 }) {
   const { t } = useTranslation()
-  const validCapacity = Number(form.capacityValue) >= 0
-  const validEgress = Number(form.unitValue) >= 1 && Number(form.credits) >= 1
-  const canSave = validCapacity && (!hasTrafficBilling || !form.enabled || validEgress)
-  const billingFieldsDisabled = !hasTrafficBilling || !form.enabled
+  const canSave = Number(form.capacityValue) >= 0
 
   return (
     <AdminFormDrawer
@@ -1035,71 +1011,6 @@ function StorageEgressBillingDrawer({
           />
         </div>
       </section>
-
-      <section className="space-y-2 border-t pt-3">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <AdminFormLabel
-              htmlFor="egressCreditBillingEnabled"
-              className="font-medium"
-              help={t('admin.storages.egressBillingHint')}
-            >
-              <span>{t('admin.storages.egressBilling')}</span>
-              <ProBadge className="px-1.5 py-0 text-[10px] leading-4" />
-            </AdminFormLabel>
-            {!hasTrafficBilling && (
-              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                {t('admin.storages.egressBillingBusinessOnly')}
-              </p>
-            )}
-          </div>
-          <Switch
-            id="egressCreditBillingEnabled"
-            className="mt-0.5"
-            disabled={!hasTrafficBilling}
-            checked={form.enabled}
-            onCheckedChange={(enabled) => onFormChange({ ...form, enabled: hasTrafficBilling && enabled })}
-          />
-        </div>
-
-        <div className="space-y-2.5">
-          <div className="space-y-1">
-            <AdminFormLabel htmlFor="storage-egress-credit-unit-value" required={hasTrafficBilling && form.enabled}>
-              {t('admin.storages.egressBillingUnit')}
-            </AdminFormLabel>
-            <div className="flex items-center gap-2">
-              <DataAmountInput
-                id="storage-egress-credit-unit-value"
-                min={1}
-                placeholder={t('admin.storages.egressBillingUnitPlaceholder')}
-                value={form.unitValue}
-                unit={form.unit}
-                disabled={billingFieldsDisabled}
-                required={hasTrafficBilling && form.enabled}
-                onValueChange={(unitValue) => onFormChange({ ...form, unitValue })}
-                onUnitChange={(unit) => onFormChange({ ...form, unit })}
-              />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <AdminFormLabel htmlFor="storage-egress-credit-per-unit" required={hasTrafficBilling && form.enabled}>
-              {t('admin.storages.egressBillingCredits')}
-            </AdminFormLabel>
-            <Input
-              id="storage-egress-credit-per-unit"
-              type="number"
-              min={1}
-              step={1}
-              value={form.credits}
-              placeholder={t('admin.storages.egressBillingCreditsPlaceholder')}
-              disabled={billingFieldsDisabled}
-              aria-required={hasTrafficBilling && form.enabled ? true : undefined}
-              onChange={(event) => onFormChange({ ...form, credits: event.target.value })}
-              className="w-48"
-            />
-          </div>
-        </div>
-      </section>
     </AdminFormDrawer>
   )
 }
@@ -1108,36 +1019,19 @@ function emptyBillingForm(): BillingForm {
   return {
     capacityValue: '0',
     capacityUnit: 'GB',
-    enabled: false,
-    unitValue: '100',
-    unit: 'MB',
-    credits: '1',
   }
 }
 
 function billingFormFromStorage(storage: Storage): BillingForm {
   const capacityUnit = storage.capacity > 0 ? bytesToUnit(storage.capacity) : 'GB'
-  const unit = bytesToUnit(storage.egressCreditUnitBytes)
   return {
     capacityValue: String(storage.capacity > 0 ? storage.capacity / DATA_UNITS[capacityUnit] : 0),
     capacityUnit,
-    enabled: storage.egressCreditBillingEnabled,
-    unitValue: String(Math.max(1, storage.egressCreditUnitBytes / DATA_UNITS[unit])),
-    unit,
-    credits: String(storage.egressCreditPerUnit),
   }
 }
 
 function capacityPayload(form: BillingForm) {
   return Math.max(0, Math.floor(Number(form.capacityValue))) * DATA_UNITS[form.capacityUnit]
-}
-
-function egressBillingPayload(form: BillingForm) {
-  return {
-    enabled: form.enabled,
-    unitBytes: Math.max(1, Math.floor(Number(form.unitValue))) * DATA_UNITS[form.unit],
-    creditsPerUnit: Math.max(1, Math.floor(Number(form.credits))),
-  }
 }
 
 function DataAmountInput({

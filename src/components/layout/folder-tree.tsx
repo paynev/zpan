@@ -6,22 +6,21 @@ import { useEffect, useState } from 'react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from '@/components/ui/sidebar'
 import { listObjectsByPath } from '@/lib/api'
-import { useActiveOrganization } from '@/lib/auth-client'
 
-function useFolders(orgId: string | undefined, path: string, enabled: boolean) {
+function useFolders(path: string, enabled: boolean) {
   const query = useInfiniteQuery({
-    queryKey: ['objects', 'active', 'folders', orgId, path],
+    queryKey: ['objects', 'active', 'folders', path],
     queryFn: ({ pageParam }) => listObjectsByPath(path, pageParam, 100, { type: 'folder' }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextPageToken ?? undefined,
-    enabled: !!orgId && enabled,
+    enabled,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   })
 
   useEffect(() => {
-    if (orgId && enabled && query.hasNextPage && !query.isFetchingNextPage) void query.fetchNextPage()
-  }, [enabled, orgId, query.fetchNextPage, query.hasNextPage, query.isFetchingNextPage])
+    if (enabled && query.hasNextPage && !query.isFetchingNextPage) void query.fetchNextPage()
+  }, [enabled, query.fetchNextPage, query.hasNextPage, query.isFetchingNextPage])
 
   return {
     ...query,
@@ -37,12 +36,10 @@ function FolderNode({
   folder,
   parentPath,
   currentPath,
-  orgId,
 }: {
   folder: ObjectListItem
   parentPath: string
   currentPath: string
-  orgId: string
 }) {
   const folderPath = parentPath ? `${parentPath}/${folder.name}` : folder.name
   const shouldAutoExpand = isAncestorOf(folderPath, currentPath)
@@ -53,7 +50,7 @@ function FolderNode({
     if (isAncestorOf(folderPath, currentPath)) setOpen(true)
   }, [folderPath, currentPath])
 
-  const query = useFolders(orgId, folderPath, open && folder.hasChildren)
+  const query = useFolders(folderPath, open && folder.hasChildren)
   const subFolders = query.items
 
   return (
@@ -84,7 +81,7 @@ function FolderNode({
           {subFolders.length > 0 && (
             <SidebarMenuSub className="mx-0 px-1.5">
               {subFolders.map((sub) => (
-                <FolderNode key={sub.id} folder={sub} parentPath={folderPath} currentPath={currentPath} orgId={orgId} />
+                <FolderNode key={sub.id} folder={sub} parentPath={folderPath} currentPath={currentPath} />
               ))}
             </SidebarMenuSub>
           )}
@@ -95,19 +92,18 @@ function FolderNode({
 }
 
 export function FolderTree() {
-  const { data: activeOrg } = useActiveOrganization()
   const search = useSearch({ strict: false }) as { path?: string }
   const currentPath = search.path ?? ''
 
-  const query = useFolders(activeOrg?.id, '', true)
+  const query = useFolders('', true)
   const folders = query.items
 
-  if (!activeOrg || folders.length === 0) return null
+  if (folders.length === 0) return null
 
   return (
     <SidebarMenuSub className="mx-1 px-1.5">
       {folders.map((folder) => (
-        <FolderNode key={folder.id} folder={folder} parentPath="" currentPath={currentPath} orgId={activeOrg.id} />
+        <FolderNode key={folder.id} folder={folder} parentPath="" currentPath={currentPath} />
       ))}
     </SidebarMenuSub>
   )

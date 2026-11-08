@@ -49,7 +49,8 @@ describe('API key scope backfill', () => {
         ('ihost', '{"ihost":["upload"]}'),
         ('webdav', '{"webdav":["read","write"]}'),
         ('remote', '{"remoteDownload":["read","create","cancel"]}'),
-        ('canonical', '{"download-tasks":["read"]}'),
+        ('removed', '{"download-tasks":["read"]}'),
+        ('canonical', '{"objects":["read"]}'),
         ('empty', NULL);
     `)
 
@@ -64,17 +65,22 @@ describe('API key scope backfill', () => {
     expect(
       backfillApiKeyScopePermissionsRows(db.prepare('SELECT id, permissions FROM apikey').all() as typeof rows),
     ).toEqual([])
+    // Image-hosting permissions belonged to a removed feature and are dropped.
     expect(db.prepare('SELECT permissions FROM apikey WHERE id = ?').get('ihost')).toEqual({
-      permissions: '{"images":["upload"]}',
+      permissions: '{}',
     })
     expect(db.prepare('SELECT permissions FROM apikey WHERE id = ?').get('webdav')).toEqual({
       permissions: '{"objects":["create","delete","read","update"]}',
     })
+    // Permissions belonging to removed features are dropped during backfill.
     expect(db.prepare('SELECT permissions FROM apikey WHERE id = ?').get('remote')).toEqual({
-      permissions: '{"download-tasks":["cancel","create","read"]}',
+      permissions: '{}',
+    })
+    expect(db.prepare('SELECT permissions FROM apikey WHERE id = ?').get('removed')).toEqual({
+      permissions: '{}',
     })
     expect(db.prepare('SELECT permissions FROM apikey WHERE id = ?').get('canonical')).toEqual({
-      permissions: '{"download-tasks":["read"]}',
+      permissions: '{"objects":["read"]}',
     })
     db.close()
   })
@@ -207,14 +213,14 @@ describe('API key scope backfill', () => {
       expect(options).toEqual({ encoding: 'utf8', stdio: 'pipe' })
       return JSON.stringify([
         { results: [{ id: 'legacy', permissions: '{"ihost":["upload"]}' }] },
-        { results: [{ id: 'canonical', permissions: '{"images":["upload"]}' }] },
+        { results: [{ id: 'canonical', permissions: '{"objects":["read"]}' }] },
       ])
     }).then((mockedModule) => {
       expect(
         mockedModule.listApiKeyScopeBackfillRows({ kind: 'd1', database: 'zpan-db', remote: true, env: 'staging' }),
       ).toEqual([
         { id: 'legacy', permissions: '{"ihost":["upload"]}' },
-        { id: 'canonical', permissions: '{"images":["upload"]}' },
+        { id: 'canonical', permissions: '{"objects":["read"]}' },
       ])
     })
   })

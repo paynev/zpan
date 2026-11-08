@@ -75,9 +75,9 @@ describe('useClipboard', () => {
   it('uses a custom successKey when provided', async () => {
     const { copy } = useClipboard()
 
-    await copy('some text', 'ihost.copy.copied')
+    await copy('some text', 'files.copy.copied')
 
-    expect(i18next.t).toHaveBeenCalledWith('ihost.copy.copied')
+    expect(i18next.t).toHaveBeenCalledWith('files.copy.copied')
   })
 
   it('calls i18next.t with the custom key, not the default', async () => {

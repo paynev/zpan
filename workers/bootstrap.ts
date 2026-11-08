@@ -1,25 +1,27 @@
 import { waitUntil } from 'cloudflare:workers'
 import { createCloudflareKvBackend } from '../server/adapters/cache/cloudflare-kv'
 import { createRuntimeCache, resolveCacheMode } from '../server/adapters/cache/runtime-cache'
-import { createArchiveJobsGateway } from '../server/adapters/gateways/archive-jobs'
+import { ensureAdminSeed } from '../server/adapters/repos/admin-seed'
 import { createShareRepo } from '../server/adapters/repos/share'
 import { createApp } from '../server/app'
 import type { Auth } from '../server/auth'
 import { createAuth } from '../server/auth'
 import { createDeps } from '../server/composition'
 import { isPotentialWebDavPublicRequest } from '../server/domain/webdav-public-url'
-import { isHandledError, standaloneJsonError } from '../server/middleware/error-handler'
-import { handleImageHostingDomainRequest } from '../server/middleware/image-hosting-domain'
 import { createCloudflarePlatform } from '../server/platform/cloudflare'
 import { platformContext } from '../server/platform/context'
 import type { Deps } from '../server/usecases/deps'
-import type { ArchiveJobMessage, CacheService } from '../server/usecases/ports'
-import { DirType } from '../shared/constants'
+import type { CacheService } from '../server/usecases/ports'
+import { resolveAuthSecret } from '../shared/auth-secret'
+import { APP_INITIALIZATION_TIMEOUT_MS, DirType } from '../shared/constants'
 import { handleScheduled } from './scheduled'
 
 interface Env {
   DB: D1Database
-  BETTER_AUTH_SECRET: string
+  // Optional: when absent, the signing secret is derived from the admin credentials.
+  BETTER_AUTH_SECRET?: string
+  ZPAN_USERNAME?: string
+  ZPAN_PASSWORD?: string
   ZPAN_PREVIEW?: string
   BETTER_AUTH_URL?: string
   TRUSTED_ORIGINS?: string
@@ -30,6 +32,13 @@ interface Env {
 
 const SHARE_TOKEN_RE = /^\/s\/([^/?#]+)/
 
+function envReader(env: Env): (key: string) => string | undefined {
+  return (key) => {
+    const value = env[key]
+    return typeof value === 'string' ? value : undefined
+  }
+}
+
 // Cache auth instances at isolate scope to avoid per-request DB queries and
 // better-auth init CPU. createAuth resolves $context before returning, so the
 // cache never carries a pending promise tied to its creating request (which
@@ -38,7 +47,6 @@ const SHARE_TOKEN_RE = /^\/s\/([^/?#]+)/
 // allowing arbitrary Host headers to grow the cache. Changes to OAuth provider
 // configs or env vars take effect on isolate recycle.
 type AuthSlot = 'configured' | 'primary' | 'webdav' | `preview:${string}`
-export const APP_INITIALIZATION_TIMEOUT_MS = 10_000
 
 interface WorkerRuntime {
   platform: ReturnType<typeof createCloudflarePlatform>
@@ -58,11 +66,13 @@ type InitializeApp = (
 type KeepAlive = (promise: Promise<unknown>) => void
 
 const initializeApp: InitializeApp = async (runtime, env, baseURL, trustedOrigins) => {
-  const auth = await createAuth(runtime.platform, env.BETTER_AUTH_SECRET, baseURL, trustedOrigins, waitUntil)
+  const secret = await resolveAuthSecret(envReader(env))
+  const auth = await createAuth(runtime.platform, secret, baseURL, trustedOrigins, waitUntil)
   return { auth, app: createApp(runtime.platform, auth, runtime.deps) }
 }
 
 let cachedRuntime: WorkerRuntime | undefined
+let adminSeedPromise: Promise<unknown> | undefined
 const responseCache = (
   caches as unknown as {
     default: {
@@ -165,13 +175,16 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message:
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const { BETTER_AUTH_SECRET } = env
-    if (!BETTER_AUTH_SECRET) {
-      throw new Error('BETTER_AUTH_SECRET is not configured for this deployment.')
-    }
+    // Fail fast when neither an explicit secret nor the credential pair is set.
+    // The same resolver (and its memoized derivation) feeds auth initialization.
+    await resolveAuthSecret(envReader(env))
     const runtime = runtimeFor(env)
-    const imageDomainResponse = await handleImageDomainBeforeAuth(request, env, runtime)
-    if (imageDomainResponse) return imageDomainResponse
+    // Single-user bootstrap: create the admin account from ZPAN_USERNAME/ZPAN_PASSWORD
+    // when the instance is empty. Fire-and-forget; runs at most once per isolate.
+    adminSeedPromise ??= ensureAdminSeed(runtime.platform).catch((error: unknown) => {
+      console.error(`admin.seed.error code=${error instanceof Error ? error.message : String(error)}`)
+    })
+    await adminSeedPromise
     const edgeCached = await matchConfigzResponseCache(request, runtime.cache)
     if (edgeCached) return edgeCached
     const app = await appForRequest(runtime, request, env)
@@ -193,48 +206,6 @@ export default {
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     await handleScheduled(event, env)
   },
-
-  async queue(batch: MessageBatch<ArchiveJobMessage>, env: Env): Promise<void> {
-    const runtime = runtimeFor(env)
-    const archiveJobs = createArchiveJobsGateway(runtime.platform)
-    for (const message of batch.messages) {
-      await archiveJobs.runMessage(message.body)
-      message.ack()
-    }
-  },
-}
-
-async function handleImageDomainBeforeAuth(
-  request: Request,
-  env: Env,
-  runtime: WorkerRuntime,
-): Promise<Response | null> {
-  if (!isImageDomainFastPathRequest(request, env)) return null
-
-  try {
-    return await platformContext.run(runtime.platform, () =>
-      handleImageHostingDomainRequest({
-        request,
-        deps: runtime.deps,
-        platform: runtime.platform,
-        appHosts: [new URL(env.BETTER_AUTH_URL!).hostname.toLowerCase(), 'workers.dev'],
-        webDavMountPath: '/dav',
-      }),
-    )
-  } catch (error) {
-    if (!isHandledError(error)) console.error(`image_domain.unhandled_error code=${String(error)}`)
-    return standaloneJsonError(error)
-  }
-}
-
-export function isImageDomainFastPathRequest(request: Request, env: Pick<Env, 'BETTER_AUTH_URL'>): boolean {
-  if (!env.BETTER_AUTH_URL) return false
-  const url = new URL(request.url)
-  if (url.pathname !== '/ih' && !url.pathname.startsWith('/ih/')) return false
-
-  const host = (request.headers.get('host') ?? url.host).replace(/:\d+$/, '').toLowerCase()
-  const appHost = new URL(env.BETTER_AUTH_URL).hostname.toLowerCase()
-  return host !== appHost && !host.endsWith('.workers.dev')
 }
 
 function configzCacheKey(request: Request, includeValidators = false): Request | null {

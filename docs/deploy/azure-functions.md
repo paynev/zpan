@@ -145,37 +145,15 @@ Requires the [Azure Functions Core Tools v4](https://learn.microsoft.com/en-us/a
 
 ---
 
-## Entitlement Refresh (License Cert)
+## Background work
 
-ZPan refreshes its entitlement certificate every 6 hours. On Azure Functions there is no persistent process, so you need to trigger a refresh via an external scheduler.
+Serverless targets have no persistent process, so the recurring maintenance jobs
+that Node/Docker run on intervals (hourly statistics rollups, WebDAV lock expiry,
+resource-change retention, and daily trash purge) do not run automatically on
+this target. They are maintenance-only and can be left to a scheduled invocation
+if needed.
 
-### Setup
-
-1. **Generate a secret:**
-   ```sh
-   openssl rand -hex 32
-   ```
-
-2. **Add the env var** in the Azure portal (**Function App → Configuration → Application settings**) or via CLI:
-   ```sh
-   az functionapp config appsettings set \
-     --name <your-function-app> \
-     --resource-group <your-rg> \
-     --settings REFRESH_CRON_SECRET=<your-secret>
-   ```
-
-3. **Schedule the calls** using [Azure Logic Apps](https://learn.microsoft.com/en-us/azure/logic-apps/) or Timer Trigger functions.
-
-   Make an HTTP POST to:
-   ```
-   POST https://<your-function-app>.azurewebsites.net/api/internal/licensing/refresh-runs
-   ```
-   Use a recurrence schedule of `0 */6 * * *` (every 6 hours).
-
-   Make another HTTP POST to:
-   ```
-   POST https://<your-function-app>.azurewebsites.net/api/internal/traffic-sync-runs
-   ```
-   Use a recurrence schedule of `*/10 * * * *` (every 10 minutes).
-
-Send `Authorization: Bearer <REFRESH_CRON_SECRET>` with every scheduler request. If `REFRESH_CRON_SECRET` is not set, the endpoint returns `401` for all requests.
+Optional instance telemetry is exposed at
+`POST /api/internal/instance-telemetry/report` and is gated by
+`ZPAN_INTERNAL_API_TOKEN`. The single-admin build has no license refresh or
+metered traffic sync endpoints.

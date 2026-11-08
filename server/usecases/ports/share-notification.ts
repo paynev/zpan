@@ -11,7 +11,3 @@ export interface ShareNotificationRecipient {
   recipientUserId?: string | null
   recipientEmail?: string | null
 }
-
-export interface ShareNotificationRepo {
-  getUserEmail(userId: string): Promise<string | null>
-}

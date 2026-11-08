@@ -15,7 +15,6 @@ vi.mock('@/lib/api', () => ({ getObjectCreator: vi.fn() }))
 
 const item: StorageObject = {
   id: 'file-1',
-  orgId: 'org-1',
   alias: 'alias-1',
   name: 'report.pdf',
   type: 'application/pdf',

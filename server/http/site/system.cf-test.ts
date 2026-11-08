@@ -11,7 +11,7 @@ async function buildApp() {
 }
 
 describe('[CF] System API', () => {
-  it('GET /api/configz returns structured public configuration', async () => {
+  it('GET /api/configz returns structured public configuration [spec: system/public-config]', async () => {
     const app = await buildApp()
     const res = await app.request('https://pan.example.com/api/configz')
     expect(res.status).toBe(200)

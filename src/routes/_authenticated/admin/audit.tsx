@@ -1,4 +1,4 @@
-import type { AdminAuditEvent } from '@shared/types'
+import type { AuditEvent } from '@shared/types'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
@@ -39,7 +39,7 @@ function relativeTime(timestamp: string | Date): string {
   return date.toLocaleDateString()
 }
 
-function metaDetail(event: AdminAuditEvent, t: (key: string, opts?: Record<string, unknown>) => string): string {
+function metaDetail(event: AuditEvent, t: (key: string, opts?: Record<string, unknown>) => string): string {
   const actionLabel = t(`activity.action.${event.action}`, { defaultValue: event.action })
   const targetTypeLabel = t(`activity.target.${event.targetType}`, { defaultValue: event.targetType })
   let detail = `${actionLabel} ${targetTypeLabel} "${event.targetName}"`
@@ -58,7 +58,7 @@ function metaDetail(event: AdminAuditEvent, t: (key: string, opts?: Record<strin
   return detail
 }
 
-function AuditRow({ event }: { event: AdminAuditEvent }) {
+function AuditRow({ event }: { event: AuditEvent }) {
   const { t } = useTranslation()
   const createdAt = new Date(event.createdAt as unknown as string | number)
   return (
@@ -68,10 +68,7 @@ function AuditRow({ event }: { event: AdminAuditEvent }) {
           <ActorIdentity actor={auditEventActor(event)} />
           <span className="text-muted-foreground">{metaDetail(event, t)}</span>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {event.orgName && <span className="mr-1">{event.orgName} ·</span>}
-          {relativeTime(createdAt)}
-        </p>
+        <p className="text-xs text-muted-foreground">{relativeTime(createdAt)}</p>
       </div>
     </div>
   )

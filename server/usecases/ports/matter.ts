@@ -8,7 +8,6 @@ export type { ConflictStrategy } from '@shared/schemas'
 
 export interface Matter {
   id: string
-  orgId: string
   alias: string
   name: string
   type: string
@@ -28,7 +27,6 @@ export interface Matter {
 }
 
 export interface CreateMatterInput {
-  orgId: string
   name: string
   type: string
   size?: number
@@ -89,7 +87,7 @@ export interface ConflictResolveOptions {
 
 /**
  * Planned resolution of a name conflict. Callers can inspect the plan, run their
- * own preconditions (quota, permissions), and commit it via `commitConflictPlan`.
+ * own preconditions (permissions), and commit it via `commitConflictPlan`.
  */
 export interface ConflictPlan {
   finalName: string
@@ -112,50 +110,42 @@ export class NameConflictError extends Error {
 
 export interface MatterRepo {
   create(input: CreateMatterInput): Promise<Matter>
-  list(orgId: string, filters: MatterListFilters): Promise<MatterListResult>
-  get(id: string, orgId: string): Promise<Matter | null>
-  getMany(orgId: string, ids: string[]): Promise<Matter[]>
-  update(id: string, orgId: string, input: UpdateMatterInput): Promise<Matter | null>
+  list(filters: MatterListFilters): Promise<MatterListResult>
+  get(id: string): Promise<Matter | null>
+  update(id: string, input: UpdateMatterInput): Promise<Matter | null>
   copy(source: Matter, targetParent: string, newObject: string, opts?: CopyMatterOptions): Promise<Matter>
-  cancelDraft(id: string, orgId: string): Promise<Matter | null>
-  trash(orgId: string, id: string): Promise<Matter | null>
-  restore(orgId: string, id: string, onConflict?: ConflictStrategy): Promise<Matter | null>
-  collectForPurge(orgId: string, idOrMatter: string): Promise<Matter[] | null>
-  collectForPurge(orgId: string, idOrMatter: Matter): Promise<Matter[]>
-  purge(orgId: string, ids: string[]): Promise<void>
+  cancelDraft(id: string): Promise<Matter | null>
+  trash(id: string): Promise<Matter | null>
+  restore(id: string, onConflict?: ConflictStrategy): Promise<Matter | null>
+  collectForPurge(idOrMatter: string): Promise<Matter[] | null>
+  collectForPurge(idOrMatter: Matter): Promise<Matter[]>
+  purge(ids: string[]): Promise<void>
   // Active descendants of a folder path (parent LIKE `${parentPath}/%`). Used by the
   // WebDAV recursive COPY/MOVE to enumerate a subtree.
-  listActiveDescendants(orgId: string, parentPath: string): Promise<Matter[]>
+  listActiveDescendants(parentPath: string): Promise<Matter[]>
   // Raw bulk status flips for WebDAV COPY rollback/overwrite (no conflict handling).
-  trashByIds(orgId: string, ids: string[]): Promise<void>
-  restoreActiveByIds(orgId: string, ids: string[]): Promise<void>
+  trashByIds(ids: string[]): Promise<void>
+  restoreActiveByIds(ids: string[]): Promise<void>
   // Bump updatedAt only (WebDAV PROPPATCH touches the matter's mtime).
-  touch(orgId: string, id: string): Promise<void>
+  touch(id: string): Promise<void>
   // Overwrite a file matter's content fields after a WebDAV PUT to an existing path.
-  applyUpload(orgId: string, matter: Matter, fields: { type: string; size: number; object: string }): Promise<void>
-  listTrashedRoots(orgId: string): Promise<Matter[]>
-  listTrashedRootPage(
-    orgId: string,
-    opts: { pageSize: number; after?: { trashedAt: number; createdAt: Date; id: string } },
-  ): Promise<{
+  applyUpload(matter: Matter, fields: { type: string; size: number; object: string }): Promise<void>
+  listTrashedRoots(): Promise<Matter[]>
+  listTrashedRootPage(opts: { pageSize: number; after?: { trashedAt: number; createdAt: Date; id: string } }): Promise<{
     items: Matter[]
     nextBoundary: { trashedAt: number; createdAt: Date; id: string } | null
   }>
-  /** Distinct orgIds holding at least one trashed matter older than the cutoff (epoch ms). */
-  listOrgIdsWithExpiredTrash(cutoff: number): Promise<string[]>
-  // Conflict-resolution primitives the confirmUpload usecase composes between
-  // its quota reservation and the draft→active flip.
-  findActiveConflict(orgId: string, parent: string, name: string, excludeId?: string): Promise<Matter | null>
+  // Conflict-resolution primitives the confirmUpload usecase composes around the
+  // draft→active flip.
+  findActiveConflict(parent: string, name: string, excludeId?: string): Promise<Matter | null>
   planConflictResolution(
-    orgId: string,
     parent: string,
     name: string,
     strategy: ConflictStrategy,
     options?: ConflictResolveOptions,
   ): Promise<ConflictPlan>
-  commitConflictPlan(orgId: string, plan: ConflictPlan): Promise<void>
+  commitConflictPlan(plan: ConflictPlan): Promise<void>
   applyConflictResolution(
-    orgId: string,
     parent: string,
     name: string,
     strategy: ConflictStrategy,
@@ -165,5 +155,5 @@ export interface MatterRepo {
    * Flips a draft row to active under `finalName`, scoped to status='draft' as a
    * concurrent-confirm safety net. Returns false when no draft row matched (race).
    */
-  activateDraft(id: string, orgId: string, finalName: string, type: string, now: Date): Promise<boolean>
+  activateDraft(id: string, finalName: string, type: string, now: Date): Promise<boolean>
 }

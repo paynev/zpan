@@ -4,20 +4,33 @@ import { createApp } from '../app'
 import { createAuth } from '../auth'
 import { createCloudflarePlatform } from '../platform/cloudflare'
 
+const ADMIN_EMAIL = 'cf-admin@example.com'
+const ADMIN_PASSWORD = 'password123456'
+const ADMIN_NAME = 'CF Test'
+
 async function buildApp() {
   const platform = createCloudflarePlatform(env)
   const auth = await createAuth(platform.db, env.BETTER_AUTH_SECRET, 'http://localhost')
   return createApp(platform, auth)
 }
 
+// Single-admin instances only allow the very first account to self-register.
+// Every other test signs in as that same admin to get a real Better Auth session.
 async function authedHeaders(app: ReturnType<typeof buildApp>) {
-  const email = `cf-notif-${Date.now()}@example.com`
-  const res = await app.request('/api/auth/sign-up/email', {
+  const signUpRes = await app.request('/api/auth/sign-up/email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Test', email, password: 'password123456' }),
+    body: JSON.stringify({ name: ADMIN_NAME, email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
   })
-  const cookies = res.headers.getSetCookie()
+  const res = signUpRes.ok
+    ? signUpRes
+    : await app.request('/api/auth/sign-in/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
+      })
+  const cookies = res.headers.getSetCookie().map((cookie) => cookie.split(';')[0])
+  if (cookies.length === 0) throw new Error('auth response carried no session cookie')
   return { Cookie: cookies.join('; ') }
 }
 

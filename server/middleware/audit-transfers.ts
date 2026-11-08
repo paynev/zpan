@@ -24,41 +24,6 @@ export const TRANSFER_AUDIT_ROUTES: AuditRoute[] = [
       statuses: (status) => status === 200 || UPLOAD_FAILURE_STATUSES.has(status),
       prepare: prepareObjectUpload,
       when: hasTransferTarget,
-      orgId: ({ resource }) => transferTargetValue(resource)?.orgId,
-      metadata: uploadMetadata,
-    },
-  ),
-  auditRoute(
-    'PUT',
-    '/api/image-hosting/images/:imageId/status',
-    uploadAction,
-    {
-      type: transferTargetType,
-      id: async (context) => stringField(await context.response(), 'id') ?? transferTarget(context)?.targetId,
-      name: async (context) => stringField(await context.response(), 'path') ?? transferTarget(context)?.targetName,
-    },
-    {
-      statuses: (status) => status === 200 || UPLOAD_FAILURE_STATUSES.has(status),
-      prepare: prepareImageUpload,
-      when: hasTransferTarget,
-      orgId: ({ resource }) => transferTargetValue(resource)?.orgId,
-      metadata: uploadMetadata,
-    },
-  ),
-  auditRoute(
-    'POST',
-    '/api/image-hosting/images',
-    'upload_confirm',
-    {
-      type: transferTargetType,
-      id: ({ resource }) => transferTargetValue(resource)?.targetId,
-      name: transferTargetName,
-    },
-    {
-      statuses: [201],
-      resolve: resolveCreatedImageUpload,
-      when: hasTransferTarget,
-      orgId: ({ resource }) => transferTargetValue(resource)?.orgId,
       metadata: uploadMetadata,
     },
   ),
@@ -75,7 +40,6 @@ export const TRANSFER_AUDIT_ROUTES: AuditRoute[] = [
       statuses: isDownloadFailureStatus,
       prepare: prepareObjectDownload,
       when: hasTransferTarget,
-      orgId: ({ resource }) => transferTargetValue(resource)?.orgId,
       metadata: downloadFailureMetadata,
     },
   ),
@@ -92,7 +56,6 @@ export const TRANSFER_AUDIT_ROUTES: AuditRoute[] = [
       statuses: isDownloadFailureStatus,
       prepare: prepareShareDownload,
       when: hasTransferTarget,
-      orgId: ({ resource }) => transferTargetValue(resource)?.orgId,
       metadata: downloadFailureMetadata,
     },
   ),
@@ -118,15 +81,12 @@ export function transferAuditActor(principal: AuthPrincipal | null): AuditActor 
 }
 
 async function prepareObjectUpload({ c, params }: { c: Context<Env>; params: Record<string, string> }) {
-  const orgId = c.get('orgId')
-  if (!orgId) return null
   const [matter, session] = await Promise.all([
-    c.get('deps').matter.get(params.objectId, orgId),
-    c.get('deps').objectUploadSessions.get(orgId, params.objectId, params.sessionId),
+    c.get('deps').matter.get(params.objectId),
+    c.get('deps').objectUploadSessions.get(params.objectId, params.sessionId),
   ])
   if (!matter || !session || session.status !== 'active') return null
   return {
-    orgId,
     targetType: 'file',
     targetId: matter.id,
     targetName: matter.name,
@@ -136,26 +96,8 @@ async function prepareObjectUpload({ c, params }: { c: Context<Env>; params: Rec
   } satisfies TransferAuditTarget
 }
 
-async function prepareImageUpload({ c, params }: { c: Context<Env>; params: Record<string, string> }) {
-  const orgId = c.get('orgId')
-  if (!orgId) return null
-  const image = await c.get('deps').imageHosting.get(params.imageId, orgId)
-  return image?.status === 'draft' ? imageUploadTarget(image) : null
-}
-
-async function resolveCreatedImageUpload(context: AuditRouteContext): Promise<TransferAuditTarget | null> {
-  const response = await context.response()
-  const data = objectField(response, 'data')
-  const token = data && tokenFromUrl(stringField(data, 'urlAlt'))
-  if (!token) return null
-  const resolved = await context.c.get('deps').imageHosting.resolveActiveByToken(token)
-  return resolved ? imageUploadTarget(resolved.image) : null
-}
-
 async function prepareObjectDownload({ c, params }: { c: Context<Env>; params: Record<string, string> }) {
-  const orgId = c.get('orgId')
-  if (!orgId) return null
-  return matterDownloadTarget(await c.get('deps').matter.get(params.objectId, orgId))
+  return matterDownloadTarget(await c.get('deps').matter.get(params.objectId))
 }
 
 async function prepareShareDownload({ c, params }: { c: Context<Env>; params: Record<string, string> }) {
@@ -163,10 +105,9 @@ async function prepareShareDownload({ c, params }: { c: Context<Env>; params: Re
   if (!matterId) return null
   const resolved = await c.get('deps').share.resolveByToken(params.token)
   if (resolved.status !== 'ok' || resolved.share.kind !== 'landing') return null
-  const matter = await c.get('deps').matter.get(matterId, resolved.share.orgId)
+  const matter = await c.get('deps').matter.get(matterId)
   if (!matter || matter.trashedAt !== null || matter.dirtype !== DirType.FILE) return null
   return {
-    orgId: resolved.share.orgId,
     targetType: 'share',
     targetId: resolved.share.id,
     targetName: matter.name,
@@ -179,31 +120,12 @@ async function prepareShareDownload({ c, params }: { c: Context<Env>; params: Re
 function matterDownloadTarget(matter: Matter | null): TransferAuditTarget | null {
   if (!matter || matter.trashedAt !== null || matter.dirtype !== DirType.FILE || !matter.object) return null
   return {
-    orgId: matter.orgId,
     targetType: 'file',
     targetId: matter.id,
     targetName: matter.name,
     bytes: matter.size ?? 0,
     source: 'object_download',
     metadata: { matterId: matter.id, storageId: matter.storageId },
-  }
-}
-
-function imageUploadTarget(image: {
-  id: string
-  orgId: string
-  path: string
-  size: number
-  storageId: string
-}): TransferAuditTarget {
-  return {
-    orgId: image.orgId,
-    targetType: 'image',
-    targetId: image.id,
-    targetName: image.path,
-    bytes: image.size,
-    source: 'image_hosting_upload',
-    metadata: { imageId: image.id, storageId: image.storageId },
   }
 }
 
@@ -259,18 +181,4 @@ function transferTargetName(context: AuditRouteContext): string | undefined {
 
 function stringField(value: Record<string, unknown>, field: string): string | undefined {
   return typeof value[field] === 'string' ? value[field] : undefined
-}
-
-function objectField(value: Record<string, unknown>, field: string): Record<string, unknown> | undefined {
-  const nested = value[field]
-  return nested && typeof nested === 'object' && !Array.isArray(nested)
-    ? (nested as Record<string, unknown>)
-    : undefined
-}
-
-function tokenFromUrl(value: string | undefined): string | null {
-  if (!value) return null
-  const pathname = new URL(value, 'https://zpan.invalid').pathname
-  const match = pathname.match(/^\/r\/([^/]+)$/)
-  return match ? decodeURIComponent(match[1]).replace(/\.[^.]+$/, '') : null
 }

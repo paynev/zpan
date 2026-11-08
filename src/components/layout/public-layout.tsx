@@ -1,6 +1,6 @@
 import { DEFAULT_SITE_DESCRIPTION, DEFAULT_SITE_NAME } from '@shared/constants'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ChevronsUpDown, LogOut, Moon, Settings, ShieldCheck, Sun, UserRound } from 'lucide-react'
+import { ChevronsUpDown, LogOut, Moon, Settings, ShieldCheck, Sun } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -101,14 +101,6 @@ export function PublicLayout({ children }: PublicLayoutProps) {
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  {user.username && (
-                    <DropdownMenuItem asChild>
-                      <Link to="/u/$username" params={{ username: user.username }}>
-                        <UserRound className="mr-2 size-4" />
-                        {t('nav.profile')}
-                      </Link>
-                    </DropdownMenuItem>
-                  )}
                   <DropdownMenuItem asChild>
                     <Link to="/settings">
                       <Settings className="mr-2 size-4" />

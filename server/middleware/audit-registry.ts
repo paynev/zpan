@@ -13,7 +13,6 @@ export type AuditTarget = {
 }
 
 export type AuditRouteOptions = {
-  orgId?: AuditValue<string | null | undefined>
   statuses?: readonly number[] | ((status: number) => boolean)
   prepare?: (context: AuditPrepareContext) => MaybePromise<unknown>
   resolve?: (context: AuditRouteContext) => MaybePromise<unknown>
@@ -130,11 +129,8 @@ export async function resolveAuditRouteEvent(
   const targetType = await resolveValue(route.target.type, context)
   const targetId = route.target.id ? await resolveValue(route.target.id, context) : undefined
   const targetName = route.target.name ? await resolveValue(route.target.name, context) : undefined
-  const orgId = route.options.orgId ? await resolveValue(route.options.orgId, context) : c.get('orgId')
-  if (!orgId) throw new Error(`audit_org_context_missing:${action}`)
 
   return {
-    orgId,
     action,
     targetType,
     targetId: targetId ?? undefined,

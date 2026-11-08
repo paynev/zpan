@@ -37,17 +37,15 @@
 
 ## What is ZPan?
 
-ZPan is a lightweight file hosting platform built on top of S3-compatible storage. Files upload directly from the client to S3 through presigned URLs, bypassing server bandwidth entirely. The server is the control plane: auth, metadata, shares, quotas, teams, WebDAV, tool integrations, and admin operations.
+ZPan is a lightweight file hosting platform built on top of S3-compatible storage. Files upload directly from the client to S3 through presigned URLs, bypassing server bandwidth entirely. The server is the control plane: auth, metadata, shares, WebDAV, API keys, background jobs, and site settings.
 
-The product boundary is intentional: ZPan is a purpose-built S3-backed web drive, not a wrapper around every consumer cloud drive and not a full groupware suite. You bring an S3-compatible bucket; ZPan gives it a clean web UI, public sharing, image-hosting APIs, and deployment options that do not require a VPS or NAS.
+The product boundary is intentional: ZPan is a purpose-built S3-backed web drive, not a wrapper around every consumer cloud drive and not a full groupware suite. You bring an S3-compatible bucket; ZPan gives it a clean web UI, public sharing, WebDAV access, and deployment options that do not require a VPS or NAS.
 
 **Core scenarios:**
 
-- **S3 web drive** — Manage files, folders, previews, trash, quotas, and team workspaces on top of your own object storage
-- **Image hosting** — Upload via PicGo, PicList, uPic, ShareX, Flameshot, or API and get a stable URL instantly
+- **S3 web drive** — Manage files, folders, previews, and trash on top of your own object storage
 - **File sharing** — Publish share links with password, expiration, download limits, direct links, and save-to-drive flows
-- **Personal homepage** — Give each user a public `/u/username` page for public shared files and folder-style browsing
-- **External access** — Mount files through WebDAV and run downloader workers for remote-download workflows
+- **External access** — Mount files through WebDAV or use scoped API keys for automation
 
 ## Why ZPan?
 
@@ -57,9 +55,9 @@ The product boundary is intentional: ZPan is a purpose-built S3-backed web drive
 
 **Direct transfer path.** Uploads and downloads use presigned object-storage URLs whenever possible. That keeps server bandwidth low, avoids a central file-transfer bottleneck, and lets object storage do the heavy lifting.
 
-**Practical file workflows.** ZPan includes a web file manager, public sharing, image-hosting configuration, API keys, WebDAV access, teams, quotas, remote-download tasks, file previews, and admin controls without turning into a provider-aggregation platform.
+**Practical file workflows.** ZPan includes a web file manager, public sharing, API keys, WebDAV access, file previews, audit logs, and admin controls without turning into a provider-aggregation platform.
 
-**Deployable downloader workers.** Remote download does not have to run inside the main ZPan instance. You can deploy the downloader together with ZPan for a simple setup, or run it separately in an environment with better network access and fewer source-site restrictions, then let ZPan import the completed files into object storage.
+**Single-admin by design.** One administrator owns the instance; self-service registration is disabled after the first account is created.
 
 ## Product Boundaries
 
@@ -88,10 +86,6 @@ Most self-hosted file projects start from either server files, desktop sync, col
 | Direct browser-to-object-storage path | ✅ | ⚠️ | ⚠️ | ❌ | ❌ | ❌ |
 | Cloudflare Workers deployment | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | No VPS/NAS required | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| PicGo/ShareX image-hosting workflow | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Per-user public file homepage | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ |
-| Remote download workflow | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Separately deployable downloader/node | ✅ | ✅ | ⚠️ | ❌ | ❌ | ❌ |
 | Multi net-disk aggregation | ❌ | ❌ | ✅ | ⚠️ | ❌ | ❌ |
 | Server local directory as primary file root | ❌ | ⚠️ | ⚠️ | ⚠️ | ❌ | ✅ |
 | Real-time document co-editing | ❌ | ❌ | ❌ | ✅ | ⚠️ | ❌ |
@@ -107,17 +101,37 @@ Legend: ✅ first-class or core capability; ⚠️ partial, edition-dependent, o
 
 ### Cloudflare Workers (Recommended)
 
+There are two supported paths. Choose based on **where the code you want to run lives**.
+
+#### A. Cloudflare Workers Builds — deploy this repository's code
+
+Use this when you maintain your own fork or customisations: connect the repository in the Cloudflare dashboard and every push to `main` builds and deploys automatically, with no GitHub Actions secrets. **The D1 database and KV namespace are created automatically** on the first deploy — `wrangler.toml` contains no account-specific resource IDs.
+
+1. Create/connect a Worker named **`zpan`** from this repository (*Workers & Pages → Create → Workers → Connect to Git*). The name must match `wrangler.toml`.
+2. One-time setup: set `ZPAN_USERNAME` + `ZPAN_PASSWORD` under the Worker's **Variables and Secrets** — before the first request. Add **D1:Edit** to the auto-generated `Workers Builds` token if the first deploy reports a D1 authorization error. No D1/KV/rate-limit resources need creating (Wrangler auto-provisions D1 + KV; the rate limiter's `namespace_id` is just an account-local integer).
+3. Set **Build command** = `pnpm workers-builds:build`, **Deploy command** = `pnpm workers-builds:deploy`, **Production branch** = `main`. The deploy command runs `wrangler deploy` first so the database exists, then applies D1 migrations.
+4. Remove the four Cloudflare **Actions** secrets (or disable the deploy workflow) so a push is not deployed twice.
+
+Full checklist, Deploy-to-Cloudflare button, optional resource pinning, WebDAV post-processing and troubleshooting: [Deploy with Cloudflare Workers Builds](docs/deploy/workers-builds.md).
+
+#### B. GitHub Actions — deploy the upstream release (forks)
+
+> This workflow checks out the **upstream `saltbo/zpan` release tag**, not your fork's source. Local customisations are **not** included — use path A for those.
+
 Deploy via GitHub Actions with zero server management. Free tier covers personal use.
 
 1. **Fork** this repository
 2. In your fork, go to **Settings → Secrets and variables → Actions** and add:
    - `CLOUDFLARE_ACCOUNT_ID` — found on the [Cloudflare dashboard](https://dash.cloudflare.com/) sidebar
-   - `CLOUDFLARE_API_TOKEN` — create one [here](https://dash.cloudflare.com/profile/api-tokens) with **Workers Scripts:Edit**, **D1:Edit**, and **R2 Storage:Edit** permissions (R2 scope is needed to auto-provision the avatar/logo bucket)
+   - `CLOUDFLARE_API_TOKEN` — create one [here](https://dash.cloudflare.com/profile/api-tokens) with **Workers Scripts:Edit** and **D1:Edit** permissions
+   - `ZPAN_USERNAME` and `ZPAN_PASSWORD` — the single administrator's login identity (an email address) and password. Self-service sign-up is disabled, so the instance seeds this account from these secrets on its first request. Set them **before the first deploy**; adding them later requires a new deployment because the seed runs once per isolate.
+   
+   `BETTER_AUTH_SECRET` is **not** configured separately: the app derives a fixed 64-character signing key from `ZPAN_USERNAME` + `ZPAN_PASSWORD` using HMAC-SHA256. The key is stable across restarts and isolates, needs no backup, and rotates automatically when either credential changes (invalidating existing sessions). If an explicit `BETTER_AUTH_SECRET` is present from an older deployment it takes precedence — delete it with `pnpm exec wrangler secret delete BETTER_AUTH_SECRET` to switch to the derived key.
 3. Go to the **Actions** tab, select **Deploy to Cloudflare Workers**, and click **Run workflow**
 
 After initial setup, the workflow runs automatically every time you sync your fork with the latest release.
 
-This `CLOUDFLARE_API_TOKEN` is the **deployment token** used only by GitHub Actions/Wrangler to deploy ZPan and manage its D1/R2 resources. It is separate from the zone-scoped Cloudflare token entered later in **Admin Settings → Image custom domains**. The latter lets a running ZPan instance manage Cloudflare for SaaS hostnames and does not need D1 or R2 permissions. See [Image custom domains](docs/image-custom-domains.md).
+This `CLOUDFLARE_API_TOKEN` is the **deployment token** used only by GitHub Actions/Wrangler to deploy ZPan and manage its D1 resources. It does not need broad account permissions.
 
 Dedicated WebDAV domain: enable WebDAV and configure its optional hostname in Admin Settings, then extend the API token with **Transform Rules:Edit**. When the hostname is left blank, a primary Worker Custom Domain such as `files.example.com` produces `dav.files.example.com`; the deployment workflow automatically attaches and verifies that derived hostname, manages the root-to-`/dav` rewrite, and records its readiness. Other deployments can verify their manually configured DNS/proxy from **Admin Settings → WebDAV**. Until verification succeeds, ZPan advertises the original `/dav/` endpoint. See [WebDAV custom domains](docs/webdav-custom-domain.md).
 

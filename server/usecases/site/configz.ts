@@ -1,25 +1,14 @@
-import {
-  CAPTCHA_ENABLED_KEY,
-  CAPTCHA_MIN_SCORE_KEY,
-  CAPTCHA_PROVIDER_KEY,
-  CAPTCHA_SECRET_OPTION_KEY,
-  CAPTCHA_SITE_KEY_KEY,
-} from '@shared/captcha'
 import { DEFAULT_SITE_DESCRIPTION, DEFAULT_SITE_NAME } from '@shared/constants'
 import type { SiteBranding, SiteConfig } from '@shared/schemas'
-import { readCaptchaConfig } from '../../domain/captcha'
 import { normalizePublicOrigin } from '../../domain/site-public-origin'
 import { effectiveWebDavUrl } from '../../domain/webdav-public-url'
-import type { CacheService, LicenseBindingRepo, SystemOptionsRepo } from '../ports'
-import { listPublicAuthProviders } from './auth-provider'
+import type { CacheService, SystemOptionsRepo } from '../ports'
 import { readBranding } from './branding'
 import { SITE_CONFIG_CACHE_KEY, SITE_CONFIG_CACHE_POLICY } from './config-cache'
-import { resolveEffectiveSignupMode } from './licensing'
 import { SITE_SETTING_KEYS } from './setting-keys'
 
 export type ConfigzDeps = {
   systemOptions: SystemOptionsRepo
-  licenseBinding: LicenseBindingRepo
   cache?: CacheService
 }
 
@@ -27,12 +16,6 @@ const CONFIG_KEYS = [
   SITE_SETTING_KEYS.name,
   SITE_SETTING_KEYS.description,
   SITE_SETTING_KEYS.publicOrigin,
-  SITE_SETTING_KEYS.signupMode,
-  SITE_SETTING_KEYS.captchaEnabled,
-  SITE_SETTING_KEYS.captchaProvider,
-  SITE_SETTING_KEYS.captchaSiteKey,
-  SITE_SETTING_KEYS.captchaSecretKey,
-  SITE_SETTING_KEYS.captchaMinScore,
   SITE_SETTING_KEYS.webdavEnabled,
   SITE_SETTING_KEYS.webdavDomain,
   SITE_SETTING_KEYS.webdavVerifiedOrigin,
@@ -62,20 +45,9 @@ function brandingView(config: Awaited<ReturnType<typeof readBranding>>): SiteBra
 }
 
 async function loadSiteConfig(deps: ConfigzDeps, requestUrl: string): Promise<SiteConfig> {
-  const [rows, branding, providers] = await Promise.all([
-    deps.systemOptions.getMany(CONFIG_KEYS),
-    readBranding(deps),
-    listPublicAuthProviders(deps),
-  ])
+  const [rows, branding] = await Promise.all([deps.systemOptions.getMany(CONFIG_KEYS), readBranding(deps)])
   const values = new Map(rows.map((row) => [row.key, row.value]))
   const publicUrl = normalizePublicOrigin(values.get(SITE_SETTING_KEYS.publicOrigin)) ?? new URL(requestUrl).origin
-  const captcha = readCaptchaConfig({
-    [CAPTCHA_ENABLED_KEY]: values.get(SITE_SETTING_KEYS.captchaEnabled),
-    [CAPTCHA_PROVIDER_KEY]: values.get(SITE_SETTING_KEYS.captchaProvider),
-    [CAPTCHA_SITE_KEY_KEY]: values.get(SITE_SETTING_KEYS.captchaSiteKey),
-    [CAPTCHA_SECRET_OPTION_KEY]: values.get(SITE_SETTING_KEYS.captchaSecretKey),
-    [CAPTCHA_MIN_SCORE_KEY]: values.get(SITE_SETTING_KEYS.captchaMinScore),
-  })
 
   return {
     site: {
@@ -84,11 +56,6 @@ async function loadSiteConfig(deps: ConfigzDeps, requestUrl: string): Promise<Si
       publicUrl,
     },
     branding: brandingView(branding),
-    auth: {
-      signupMode: await resolveEffectiveSignupMode(deps, values.get(SITE_SETTING_KEYS.signupMode)),
-      captcha: captcha ? { enabled: true, provider: captcha.provider, siteKey: captcha.siteKey } : { enabled: false },
-      providers,
-    },
     services: {
       webdav: {
         enabled: values.get(SITE_SETTING_KEYS.webdavEnabled) !== 'false',

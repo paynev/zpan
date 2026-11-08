@@ -61,9 +61,9 @@ export type BrandingUpdateInput = {
   theme: ThemeUpdate
 }
 
-// On an image-upload failure the handler maps `status`/`error` straight to its
-// response (400 invalid type, 413 too large). On success the freshly-read config
-// is returned for serialization.
+// On a logo/favicon validation failure the handler maps `status`/`error` straight
+// to its response (400 invalid type, 413 too large). On success the freshly-read
+// config is returned for serialization.
 export type BrandingUpdateOutcome =
   | { ok: true; config: BrandingConfig; changedFields: string[] }
   | { ok: false; status: 400 | 413; error: string }

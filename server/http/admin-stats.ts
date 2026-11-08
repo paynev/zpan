@@ -10,7 +10,6 @@ import {
 } from '@shared/schemas'
 import { addCalendarDays, utcDateStart } from '../domain/admin-stats-time'
 import type { Env } from '../middleware/platform'
-import { requireFeature } from '../middleware/require-feature'
 import {
   getAdminDashboardGrowthStats,
   getAdminDashboardOperationsStats,
@@ -53,13 +52,7 @@ function parseDashboardDate(value: string, boundary: 'start' | 'end'): Date {
   return new Date(value)
 }
 
-function analyticsRoute(
-  operationId: string,
-  summary: string,
-  path: string,
-  schema: Parameters<typeof jsonContent>[0],
-  gated = true,
-) {
+function analyticsRoute(operationId: string, summary: string, path: string, schema: Parameters<typeof jsonContent>[0]) {
   return authRoute(
     { scopes: [AuthorizationScope.SITE_ANALYTICS_READ], siteRole: 'admin' },
     {
@@ -68,7 +61,6 @@ function analyticsRoute(
       tags: ['Site Analytics'],
       method: 'get',
       path,
-      middleware: gated ? [requireFeature('analytics')] : [],
       request: { query: rangeQuerySchema },
       responses: { 200: jsonContent(schema, summary) },
     },
@@ -80,7 +72,6 @@ const overviewRoute = analyticsRoute(
   'Get analytics overview',
   '/overview',
   adminAnalyticsOverviewSchema,
-  false,
 )
 const operationsRoute = analyticsRoute(
   'getAdminAnalyticsOperations',

@@ -17,34 +17,6 @@ permissions:
 # All primary gates start together. The stable aggregate check waits for every
 # required proof before main can merge.
 jobs:
-  downloader:
-    name: Downloader / Go
-    runs-on: ubuntu-latest
-    if: github.repository == 'saltbo/zpan'
-    defaults:
-      run:
-        working-directory: cmd
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: cmd/go.mod
-          cache-dependency-path: cmd/go.sum
-      - name: Check formatting
-        run: |
-          files="$(gofmt -l .)"
-          if [ -n "$files" ]; then
-            echo "$files"
-            exit 1
-          fi
-      - name: Test with coverage threshold
-        run: bash scripts/test-coverage.sh
-      - name: Install live downloader engines
-        run: sudo apt-get update && sudo apt-get install -y aria2 qbittorrent-nox
-        working-directory: .
-      - name: Verify live downloads
-        run: LIVE_DOWNLOAD_VERIFY=1 go test ./pkg/downloaders -run 'TestLive(DownloadThreeSourceTypes|QBittorrentDownloadTorrentURL)' -count=1 -v
-
   quality:
     name: Quality / TypeScript
     runs-on: ubuntu-latest
@@ -56,10 +28,6 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: cmd/go.mod
-          cache-dependency-path: cmd/go.sum
       - run: pnpm install --frozen-lockfile
       - name: Audit dependencies
         run: pnpm audit --audit-level high --ignore-registry-errors
@@ -68,7 +36,6 @@ jobs:
       - run: pnpm lint:http
       - run: pnpm lint:spec
       - run: pnpm typecheck
-      - run: pnpm openapi:client:check
 
   tests-node:
     name: Tests / ${{ matrix.label }}
@@ -177,7 +144,7 @@ jobs:
     strategy:
       fail-fast: false
       # Package proofs are independent but not latency-critical. Running one at
-      # a time prevents two image builds from competing with the test layers;
+      # a time prevents image builds from competing with the test layers;
       # warm builds still finish before the slowest test gate.
       max-parallel: 1
       matrix:
@@ -187,11 +154,6 @@ jobs:
             target: ''
             tag: zpan-zpan:latest
             cache: docker-server
-          - label: CLI image
-            scope: cli
-            target: cli
-            tag: zpan-cli-smoke:latest
-            cache: docker-cli
     steps:
       - uses: actions/checkout@v6
         with:
@@ -214,7 +176,6 @@ jobs:
           tags: ${{ matrix.tag }}
           cache-from: type=gha,scope=${{ matrix.cache }}
           cache-to: type=gha,mode=max,scope=${{ matrix.cache }}
-      # Downloader engines and protocol behavior have their own live local job.
       # This smoke gate only needs to prove the current production server image boots.
       - name: Start server image
         if: steps.scope.outputs.run == 'true' && matrix.target == ''
@@ -222,9 +183,6 @@ jobs:
       - name: Assert server health from host
         if: steps.scope.outputs.run == 'true' && matrix.target == ''
         run: curl --fail --retry 5 --retry-delay 3 --retry-connrefused http://localhost:8222/api/health
-      - name: Verify CLI entrypoint
-        if: steps.scope.outputs.run == 'true' && matrix.target == 'cli'
-        run: docker run --rm zpan-cli-smoke:latest --help
       - name: Dump logs on failure
         if: ${{ failure() && steps.scope.outputs.run == 'true' && matrix.target == '' }}
         run: docker compose -f docker-compose.yml logs --no-color
@@ -268,7 +226,8 @@ jobs:
       - name: Verify pruned Node package
         if: steps.packaging.outputs.run != 'true'
         env:
-          BETTER_AUTH_SECRET: ci-production-smoke-secret-at-least-32-bytes
+          ZPAN_USERNAME: ci-admin@example.com
+          ZPAN_PASSWORD: ci-production-smoke-password
           DATABASE_URL: ${{ runner.temp }}/zpan-production-smoke.db
           PORT: 8222
           ZPAN_RUNTIME: docker
@@ -323,7 +282,6 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ always() && github.repository == 'saltbo/zpan' }}
     needs:
-      - downloader
       - quality
       - tests-node
       - tests-cf
@@ -372,17 +330,3 @@ jobs:
           tags: ghcr.io/${{ github.repository }}:dev
           cache-from: type=gha,scope=docker-server
           cache-to: type=gha,mode=max,scope=docker-server
-
-      - name: Build & push CLI image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: cli
-          push: true
-          platforms: linux/amd64
-          build-args: |
-            APP_VERSION=dev
-            APP_COMMIT=${{ github.sha }}
-          tags: ghcr.io/${{ github.repository }}:dev-cli
-          cache-from: type=gha,scope=docker-cli
-          cache-to: type=gha,mode=max,scope=docker-cli

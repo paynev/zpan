@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { deriveAuthSecret } from '../../shared/auth-secret'
 import type { Platform } from '../platform/interface'
 import {
   createdAtIdCursorCodec,
@@ -11,11 +12,16 @@ import {
   trashCursorCodec,
 } from './page-token'
 
-function platform(secret = 'test-secret'): Platform {
+const username = 'page-token@example.com'
+const password = 'test-password'
+
+// Mirrors production: no explicit BETTER_AUTH_SECRET, so page tokens are
+// signed with the key derived from the admin credentials.
+function platform(secretPassword: string = password): Platform {
   return {
     db: {} as Platform['db'],
     getBinding: () => undefined,
-    getEnv: (key) => (key === 'BETTER_AUTH_SECRET' ? secret : undefined),
+    getEnv: (key) => (key === 'ZPAN_USERNAME' ? username : key === 'ZPAN_PASSWORD' ? secretPassword : undefined),
   }
 }
 
@@ -117,14 +123,25 @@ describe('page tokens', () => {
     })
   })
 
-  it('fails fast when the signing secret is missing', async () => {
+  it('fails fast when the admin credentials are missing', async () => {
     await expect(encodePageToken(platform(''), { boundary: { id: 'item-1' }, query: 'query' })).rejects.toThrow(
-      'BETTER_AUTH_SECRET is required',
+      'ZPAN_USERNAME and ZPAN_PASSWORD are required',
     )
   })
 
+  it('verifies a token signed with the derived credential secret', async () => {
+    const derived = await deriveAuthSecret(username, password)
+    const payload = { v: 1, boundary: { id: 'item-1' }, query: 'query', expiresAt: 5_000 }
+    const token = await signRawBody(JSON.stringify(payload), derived)
+
+    await expect(decodePageToken(platform(), token, { query: 'query', now: 2_000 })).resolves.toEqual({
+      id: 'item-1',
+    })
+  })
+
   it('rejects a correctly signed token with a malformed payload', async () => {
-    const token = await signRawBody('not-json', 'test-secret')
+    const derived = await deriveAuthSecret(username, password)
+    const token = await signRawBody('not-json', derived)
 
     await expect(decodePageToken(platform(), token, { query: 'query' })).rejects.toMatchObject({
       httpStatus: 400,

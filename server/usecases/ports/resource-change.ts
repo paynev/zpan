@@ -1,4 +1,4 @@
-export type ResourceChangeScopeType = 'organization' | 'user' | 'system'
+export type ResourceChangeScopeType = 'site' | 'user' | 'system'
 export type ResourceChangeType = 'upsert' | 'delete'
 
 export interface ResourceChange {

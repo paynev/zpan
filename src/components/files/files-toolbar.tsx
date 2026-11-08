@@ -1,4 +1,4 @@
-import { Archive, Copy, Download, FolderInput, LayoutGrid, List, Share2, Trash2, X } from 'lucide-react'
+import { Copy, Download, FolderInput, LayoutGrid, List, Share2, Trash2, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -13,7 +13,6 @@ interface FilesToolbarProps {
   onBatchMove?: () => void
   onBatchCopy?: () => void
   onBatchDownload?: () => void
-  onBatchCompress?: () => void
   onClearSelection?: () => void
   onShare?: () => void
 }
@@ -27,12 +26,11 @@ export function FilesToolbar({
   onBatchMove,
   onBatchCopy,
   onBatchDownload,
-  onBatchCompress,
   onClearSelection,
   onShare,
 }: FilesToolbarProps) {
   const { t } = useTranslation()
-  const selectionActive = selectedCount > 0 && !!(onBatchMove || onBatchTrash || onBatchCompress || onClearSelection)
+  const selectionActive = selectedCount > 0 && !!(onBatchMove || onBatchTrash || onClearSelection)
 
   if (selectionActive) {
     return (
@@ -52,11 +50,6 @@ export function FilesToolbar({
         {onBatchDownload && (
           <Button variant="outline" size="icon-sm" onClick={onBatchDownload} title={t('files.download')}>
             <Download />
-          </Button>
-        )}
-        {onBatchCompress && (
-          <Button variant="outline" size="icon-sm" onClick={onBatchCompress} title={t('files.compress')}>
-            <Archive />
           </Button>
         )}
         {selectedCount === 1 && onShare && (

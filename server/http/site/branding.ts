@@ -2,7 +2,6 @@ import { OpenAPIHono, z } from '@hono/zod-openapi'
 import { AuthorizationScope } from '@shared/authorization'
 import { type BrandingField, type BrandingThemeMode, isBrandingThemePresetId } from '../../../shared/types'
 import type { Env } from '../../middleware/platform'
-import { requireFeature } from '../../middleware/require-feature'
 import { AppError, badRequest, payloadTooLarge, unsupportedMediaType } from '../../usecases/ports'
 import { applyBrandingUpdate, resetBranding, type ThemeUpdate } from '../../usecases/site/branding'
 import { authRoute, errorResponse, jsonContent } from '../openapi'
@@ -97,7 +96,6 @@ const updateRoute = authRoute(
     tags: ['Branding'],
     method: 'put',
     path: '/',
-    middleware: [requireFeature('white_label')] as const,
     // Body is multipart/form-data (logo/favicon files + theme fields); parsed
     // directly in the handler rather than via a request schema (the form validator
     // conflicts with formData()).
@@ -119,7 +117,6 @@ const resetRoute = authRoute(
     tags: ['Branding'],
     method: 'delete',
     path: '/{field}',
-    middleware: [requireFeature('white_label')] as const,
     request: { params: z.object({ field: z.string() }) },
     responses: {
       204: { description: 'Reset field' },

@@ -21,7 +21,6 @@ const HOUR_MS = 3_600_000
 
 export interface HourlyMetricRow {
   bucketStart: Date
-  orgId: string
   dimensionKey: string
   dimensionValue: string
   count: number
@@ -141,7 +140,6 @@ export class AdminStatsHourlyReader {
     const rows = await this.db
       .select({
         bucketStart: statsRollupsHourly.bucketStart,
-        orgId: statsRollupsHourly.orgId,
         dimensionKey: statsRollupsHourly.dimensionKey,
         dimensionValue: statsRollupsHourly.dimensionValue,
         count: statsRollupsHourly.count,
@@ -170,7 +168,6 @@ export class AdminStatsHourlyReader {
       })
       .map((row) => ({
         bucketStart: row.bucketStart,
-        orgId: row.orgId,
         dimensionKey: row.dimensionKey,
         dimensionValue: row.dimensionValue,
         count: row.count,
@@ -205,7 +202,6 @@ export class AdminStatsHourlyReader {
       .where(
         and(
           eq(statsRollupsHourly.metricKey, ADMIN_STATS_METRICS.statsRollupRun),
-          eq(statsRollupsHourly.orgId, ''),
           metric
             ? or(
                 and(eq(statsRollupsHourly.dimensionKey, ''), eq(statsRollupsHourly.dimensionValue, '')),

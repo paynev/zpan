@@ -7,7 +7,6 @@ export type DeadPropertyUpdate =
   | { action: 'remove'; property: DavPropertyName }
 
 export interface CreateLockInput {
-  orgId: string
   resourcePath: string
   owner: string
   depth: string
@@ -17,17 +16,17 @@ export interface CreateLockInput {
 // WebDAV lock + dead-property state. Reads exclude expired locks; scheduled
 // cleanup removes their rows.
 export interface WebDavStateRepo {
-  listDeadPropertiesForResources(orgId: string, resourcePaths: string[]): Promise<Map<string, DavDeadProperty[]>>
-  applyDeadPropertyUpdate(orgId: string, resourcePath: string, operations: DeadPropertyUpdate[]): Promise<void>
-  copyDeadProperties(orgId: string, sourcePath: string, targetPath: string): Promise<void>
-  deleteWebDavState(orgId: string, resourcePath: string): Promise<void>
-  moveWebDavState(orgId: string, oldPath: string, newPath: string): Promise<void>
-  activeLocks(orgId: string, resourcePath: string): Promise<DavLock[]>
-  activeLocksForResources(orgId: string, resourcePaths: string[]): Promise<Map<string, DavLock[]>>
-  conflictingLocks(orgId: string, resourcePath: string): Promise<DavLock[]>
+  listDeadPropertiesForResources(resourcePaths: string[]): Promise<Map<string, DavDeadProperty[]>>
+  applyDeadPropertyUpdate(resourcePath: string, operations: DeadPropertyUpdate[]): Promise<void>
+  copyDeadProperties(sourcePath: string, targetPath: string): Promise<void>
+  deleteWebDavState(resourcePath: string): Promise<void>
+  moveWebDavState(oldPath: string, newPath: string): Promise<void>
+  activeLocks(resourcePath: string): Promise<DavLock[]>
+  activeLocksForResources(resourcePaths: string[]): Promise<Map<string, DavLock[]>>
+  conflictingLocks(resourcePath: string): Promise<DavLock[]>
   createLock(input: CreateLockInput): Promise<DavLock>
   tryCreateLock(input: CreateLockInput): Promise<DavLock | null>
-  refreshLock(orgId: string, resourcePath: string, token: string, timeoutSeconds: number): Promise<DavLock | null>
-  removeLock(orgId: string, resourcePath: string, token: string): Promise<boolean>
+  refreshLock(resourcePath: string, token: string, timeoutSeconds: number): Promise<DavLock | null>
+  removeLock(resourcePath: string, token: string): Promise<boolean>
   purgeExpiredLocks(now?: number): Promise<void>
 }

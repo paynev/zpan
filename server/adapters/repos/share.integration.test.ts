@@ -39,12 +39,11 @@ const verifyPassword = (share: { passwordHash: string | null }, plaintext: strin
 
 async function seedMatter(
   db: Awaited<ReturnType<typeof createTestApp>>['db'],
-  opts: { orgId: string; storageId?: string; dirtype?: number; status?: string; trashedAt?: number | null },
+  opts: { storageId?: string; dirtype?: number; status?: string; trashedAt?: number | null } = {},
 ) {
   const now = new Date()
   const matter = {
     id: nanoid(),
-    orgId: opts.orgId,
     alias: nanoid(10),
     name: `test-${nanoid(6)}`,
     type: opts.dirtype !== DirType.FILE ? 'folder' : 'application/pdf',
@@ -67,12 +66,10 @@ async function seedMatter(
 describe('createShare', () => {
   it('creates a landing share for a file with password and recipients', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
 
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'user-1',
       kind: 'landing',
       password: 'secret123',
@@ -89,12 +86,10 @@ describe('createShare', () => {
 
   it('creates a direct share for a file with no password and no recipients', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
 
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'user-1',
       kind: 'direct',
     })
@@ -105,23 +100,20 @@ describe('createShare', () => {
 
   it('throws DIRECT_NO_PASSWORD when direct share has a password', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
 
     await expect(
-      createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'direct', password: 'oops' }),
+      createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'direct', password: 'oops' }),
     ).rejects.toThrow('DIRECT_NO_PASSWORD')
   })
 
   it('throws DIRECT_NO_RECIPIENTS when direct share has recipients', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
 
     await expect(
       createShare(db, {
         matterId: matter.id,
-        orgId,
         creatorId: 'u1',
         kind: 'direct',
         recipients: [{ recipientEmail: 'bob@example.com' }],
@@ -131,10 +123,9 @@ describe('createShare', () => {
 
   it('throws DIRECT_NO_FOLDER when direct share targets a folder', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const folder = await seedMatter(db, { orgId, dirtype: DirType.USER_FOLDER })
+    const folder = await seedMatter(db, { dirtype: DirType.USER_FOLDER })
 
-    await expect(createShare(db, { matterId: folder.id, orgId, creatorId: 'u1', kind: 'direct' })).rejects.toThrow(
+    await expect(createShare(db, { matterId: folder.id, creatorId: 'u1', kind: 'direct' })).rejects.toThrow(
       'DIRECT_NO_FOLDER',
     )
   })
@@ -142,29 +133,18 @@ describe('createShare', () => {
   it('throws MATTER_NOT_FOUND when matter does not exist', async () => {
     const { db } = await createTestApp()
 
-    await expect(
-      createShare(db, { matterId: 'nonexistent', orgId: 'org-1', creatorId: 'u1', kind: 'landing' }),
-    ).rejects.toThrow('MATTER_NOT_FOUND')
-  })
-
-  it('throws MATTER_NOT_FOUND when matter belongs to a different org', async () => {
-    const { db } = await createTestApp()
-    const matter = await seedMatter(db, { orgId: 'org-a' })
-
-    await expect(
-      createShare(db, { matterId: matter.id, orgId: 'org-b', creatorId: 'u1', kind: 'landing' }),
-    ).rejects.toThrow('MATTER_NOT_FOUND')
+    await expect(createShare(db, { matterId: 'nonexistent', creatorId: 'u1', kind: 'landing' })).rejects.toThrow(
+      'MATTER_NOT_FOUND',
+    )
   })
 
   it('sets downloadLimit and expiresAt when provided', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const expiresAt = new Date(Date.now() + 86400000)
 
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       downloadLimit: 5,
@@ -181,12 +161,10 @@ describe('createShare', () => {
 describe('resolveShareByToken', () => {
   it('returns full data including matter and recipients when found', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
 
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       recipients: [{ recipientUserId: 'user-42' }],
@@ -211,9 +189,8 @@ describe('resolveShareByToken', () => {
 
   it('returns revoked when share status is revoked', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db)
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
 
     await revokeShareByToken(db, share.token, 'u1')
     const resolved = await resolveShareByToken(db, share.token)
@@ -224,9 +201,8 @@ describe('resolveShareByToken', () => {
 
   it('returns trashed when underlying matter is trashed', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId, status: 'active', trashedAt: Date.now() })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db, { status: 'active', trashedAt: Date.now() })
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
 
     const resolved = await resolveShareByToken(db, share.token)
     expect(resolved.status === 'ok').toBe(false)
@@ -236,9 +212,8 @@ describe('resolveShareByToken', () => {
 
   it('returns found again after matter is restored from trash', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId, status: 'active' })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db, { status: 'active' })
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
 
     // Trash it
     await db.update(matters).set({ trashedAt: Date.now() }).where(eq(matters.id, matter.id))
@@ -258,11 +233,9 @@ describe('resolveShareByToken', () => {
 describe('verifyPassword', () => {
   it('returns true for the correct password', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       password: 'correct-password',
@@ -273,11 +246,9 @@ describe('verifyPassword', () => {
 
   it('returns false for the wrong password', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       password: 'correct-password',
@@ -288,9 +259,8 @@ describe('verifyPassword', () => {
 
   it('returns false when share has no password hash', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db)
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
 
     expect(verifyPassword(share, 'any-password')).toBe(false)
   })
@@ -319,54 +289,44 @@ describe('isAccessibleByUser', () => {
 // ─── listForApi ──────────────────────────────────────────────────────────────
 
 describe('listForApi', () => {
-  it('filters creator shares to the requested org', async () => {
+  it('lists only the creator shares', async () => {
     const { db } = await createTestApp()
     const creatorId = 'creator-list-filter'
-    const orgA = `org-${nanoid()}`
-    const orgB = `org-${nanoid()}`
-    const matterA = await seedMatter(db, { orgId: orgA })
-    const matterB = await seedMatter(db, { orgId: orgB })
-    const shareA = await createShare(db, { matterId: matterA.id, orgId: orgA, creatorId, kind: 'landing' })
-    const shareB = await createShare(db, { matterId: matterB.id, orgId: orgB, creatorId, kind: 'landing' })
+    const matterA = await seedMatter(db)
+    const matterB = await seedMatter(db)
+    const shareA = await createShare(db, { matterId: matterA.id, creatorId, kind: 'landing' })
+    await createShare(db, { matterId: matterB.id, creatorId: 'someone-else', kind: 'landing' })
 
-    const filtered = await listSharesForApi(db, creatorId, { pageSize: 10, orgId: orgA })
-    const unfiltered = await listSharesForApi(db, creatorId, { pageSize: 10 })
+    const listed = await listSharesForApi(db, creatorId, { pageSize: 10 })
 
-    expect(filtered.items.map((item) => item.id)).toEqual([shareA.id])
-    expect(unfiltered.items.map((item) => item.id).sort()).toEqual([shareA.id, shareB.id].sort())
+    expect(listed.items.map((item) => item.id)).toEqual([shareA.id])
   })
 })
 
 // ─── listReceivedForApi ──────────────────────────────────────────────────────
 
 describe('listReceivedForApi', () => {
-  it('filters received shares to the requested org', async () => {
+  it('lists shares received by the user', async () => {
     const { db } = await createTestApp()
     const recipientId = 'recipient-list-filter'
-    const orgA = `org-${nanoid()}`
-    const orgB = `org-${nanoid()}`
-    const matterA = await seedMatter(db, { orgId: orgA })
-    const matterB = await seedMatter(db, { orgId: orgB })
+    const matterA = await seedMatter(db)
+    const matterB = await seedMatter(db)
     const shareA = await createShare(db, {
       matterId: matterA.id,
-      orgId: orgA,
       creatorId: 'creator-a',
       kind: 'landing',
       recipients: [{ recipientUserId: recipientId }],
     })
-    const shareB = await createShare(db, {
+    await createShare(db, {
       matterId: matterB.id,
-      orgId: orgB,
       creatorId: 'creator-b',
       kind: 'landing',
-      recipients: [{ recipientUserId: recipientId }],
+      recipients: [{ recipientUserId: 'someone-else' }],
     })
 
-    const filtered = await listReceivedSharesForApi(db, recipientId, null, { pageSize: 10, orgId: orgA })
-    const unfiltered = await listReceivedSharesForApi(db, recipientId, null, { pageSize: 10 })
+    const listed = await listReceivedSharesForApi(db, recipientId, null, { pageSize: 10 })
 
-    expect(filtered.items.map((item) => item.id)).toEqual([shareA.id])
-    expect(unfiltered.items.map((item) => item.id).sort()).toEqual([shareA.id, shareB.id].sort())
+    expect(listed.items.map((item) => item.id)).toEqual([shareA.id])
   })
 })
 
@@ -375,9 +335,8 @@ describe('listReceivedForApi', () => {
 describe('incrementViews', () => {
   it('atomically increments the view count without creating audit noise', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db)
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
 
     await incrementViews(db, share.id)
     await incrementViews(db, share.id)
@@ -393,11 +352,9 @@ describe('incrementViews', () => {
 describe('incrementDownloadsAtomic', () => {
   it('returns ok=true and incremented count on success', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       downloadLimit: 10,
@@ -410,11 +367,9 @@ describe('incrementDownloadsAtomic', () => {
 
   it('enforces download limit — exactly limit calls succeed with concurrent calls', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       downloadLimit: 10,
@@ -427,9 +382,8 @@ describe('incrementDownloadsAtomic', () => {
 
   it('returns ok=false when share is revoked', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db)
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
     await revokeShareByToken(db, share.token, 'u1')
 
     const result = await incrementDownloadsAtomic(db, share.id)
@@ -438,12 +392,10 @@ describe('incrementDownloadsAtomic', () => {
 
   it('returns ok=false when share is expired', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const pastDate = new Date(Date.now() - 1000)
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       expiresAt: pastDate,
@@ -455,9 +407,8 @@ describe('incrementDownloadsAtomic', () => {
 
   it('allows unlimited downloads when downloadLimit is null', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db)
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
 
     const results = await Promise.all(Array.from({ length: 5 }, () => incrementDownloadsAtomic(db, share.id)))
     expect(results.every((r) => r.ok)).toBe(true)
@@ -470,9 +421,8 @@ describe('incrementDownloadsAtomic', () => {
 describe('revokeShareByToken', () => {
   it('flips share status to revoked and returns true', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db)
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
 
     const ok = await revokeShareByToken(db, share.token, 'u1')
     expect(ok).toBe(true)
@@ -481,9 +431,8 @@ describe('revokeShareByToken', () => {
 
   it('returns false when non-creator tries to revoke', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
-    const share = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
+    const matter = await seedMatter(db)
+    const share = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
 
     const ok = await revokeShareByToken(db, share.token, 'other-user')
     expect(ok).toBe(false)
@@ -501,11 +450,9 @@ describe('revokeShareByToken', () => {
 describe('listShareRecipientUserIds', () => {
   it('returns user IDs from recipients', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       recipients: [{ recipientUserId: 'user-a' }, { recipientUserId: 'user-b' }, { recipientEmail: 'c@example.com' }],
@@ -517,11 +464,9 @@ describe('listShareRecipientUserIds', () => {
 
   it('returns empty array when no user recipients', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       recipients: [{ recipientEmail: 'email@example.com' }],
@@ -537,11 +482,9 @@ describe('listShareRecipientUserIds', () => {
 describe('revokeByMatter', () => {
   it('revokes shares and preserves their historical recipients', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
     const share = await createShare(db, {
       matterId: matter.id,
-      orgId,
       creatorId: 'u1',
       kind: 'landing',
       recipients: [{ recipientUserId: 'user-x' }],
@@ -556,18 +499,16 @@ describe('revokeByMatter', () => {
 
   it('is a no-op when matter has no shares', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
+    const matter = await seedMatter(db)
 
     await expect(revokeByMatter(db, matter.id)).resolves.toBeUndefined()
   })
 
   it('revokes multiple shares for the same matter', async () => {
     const { db } = await createTestApp()
-    const orgId = nanoid()
-    const matter = await seedMatter(db, { orgId })
-    const s1 = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u1', kind: 'landing' })
-    const s2 = await createShare(db, { matterId: matter.id, orgId, creatorId: 'u2', kind: 'landing' })
+    const matter = await seedMatter(db)
+    const s1 = await createShare(db, { matterId: matter.id, creatorId: 'u1', kind: 'landing' })
+    const s2 = await createShare(db, { matterId: matter.id, creatorId: 'u2', kind: 'landing' })
 
     await revokeByMatter(db, matter.id)
 

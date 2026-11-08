@@ -2,7 +2,6 @@ import { DirType } from '@shared/constants'
 import type { ShareObjectItem } from '@shared/schemas'
 import type { ShareView, StorageObject } from '@shared/types'
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 import { Download, File, Folder, HardDriveDownload } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -25,7 +24,6 @@ function toStorageObject(item: ShareObjectItem): StorageObject {
   const now = new Date().toISOString()
   return {
     id: item.ref,
-    orgId: '',
     alias: item.ref,
     name: item.name,
     type: item.type,
@@ -41,19 +39,10 @@ function toStorageObject(item: ShareObjectItem): StorageObject {
   }
 }
 
-function CreatorLink({ share, compact = false }: { share: ShareView; compact?: boolean }) {
-  const { t } = useTranslation()
-  if (!share.creatorUsername) return <span className="font-medium text-foreground">{share.creatorName}</span>
-
-  return (
-    <Link
-      to="/u/$username"
-      params={{ username: share.creatorUsername }}
-      className={`${compact ? '-my-3 min-h-11' : 'min-h-11'} inline-flex items-center font-medium text-foreground transition-colors hover:text-primary hover:underline hover:underline-offset-4`}
-    >
-      {compact ? t('share.creatorLink', { name: share.creatorName }) : share.creatorName}
-    </Link>
-  )
+// Public user profiles are gone in the single-admin build, so the creator is
+// displayed as plain text rather than a link to /u/$username.
+function CreatorLink({ share }: { share: ShareView; compact?: boolean }) {
+  return <span className="font-medium text-foreground">{share.creatorName}</span>
 }
 
 function expiryText(expiresAt: string | null, noExpiry: string) {

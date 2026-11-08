@@ -15,7 +15,6 @@ import {
   type ShareRepo,
   type ShareResolution,
 } from '../../usecases/ports'
-import { createQuotaRepo } from './quota'
 import { resourceChangeQuery } from './resource-change'
 
 function buildPath(parent: string, name: string): string {
@@ -29,8 +28,6 @@ function folderChildrenCondition(folderPath: string) {
 }
 
 export function createShareRepo(db: Database): ShareRepo {
-  const quota = createQuotaRepo(db)
-
   return {
     async create(input: CreateShareInput): Promise<ShareRecord> {
       if (input.kind === 'direct' && input.password) throw new CreateShareError('DIRECT_NO_PASSWORD')
@@ -39,7 +36,7 @@ export function createShareRepo(db: Database): ShareRepo {
       const matter = await db
         .select()
         .from(matters)
-        .where(and(eq(matters.id, input.matterId), eq(matters.orgId, input.orgId), isNull(matters.purgedAt)))
+        .where(and(eq(matters.id, input.matterId), isNull(matters.purgedAt)))
         .then((rows) => rows[0] ?? null)
 
       if (!matter) throw new CreateShareError('MATTER_NOT_FOUND')
@@ -52,7 +49,6 @@ export function createShareRepo(db: Database): ShareRepo {
         token,
         kind: input.kind,
         matterId: input.matterId,
-        orgId: input.orgId,
         creatorId: input.creatorId,
         passwordHash: input.password ? hashPassword(input.password) : null,
         expiresAt: input.expiresAt ?? null,
@@ -67,8 +63,8 @@ export function createShareRepo(db: Database): ShareRepo {
       const queries: AtomicQuery[] = [
         db.insert(shares).values(share),
         resourceChangeQuery(db, {
-          scopeType: 'user',
-          scopeId: share.creatorId,
+          scopeType: 'site',
+          scopeId: 'default',
           resourceType: 'share',
           resourceId: share.id,
           changeType: 'upsert',
@@ -191,8 +187,8 @@ export function createShareRepo(db: Database): ShareRepo {
           .set({ status: 'revoked' })
           .where(and(eq(shares.id, existing[0].id), eq(shares.creatorId, creatorId))),
         resourceChangeQuery(db, {
-          scopeType: 'user',
-          scopeId: creatorId,
+          scopeType: 'site',
+          scopeId: 'default',
           resourceType: 'share',
           resourceId: existing[0].id,
           changeType: 'upsert',
@@ -216,8 +212,8 @@ export function createShareRepo(db: Database): ShareRepo {
           .set({ private: isPrivate })
           .where(and(eq(shares.id, existing[0].id), eq(shares.creatorId, creatorId))),
         resourceChangeQuery(db, {
-          scopeType: 'user',
-          scopeId: creatorId,
+          scopeType: 'site',
+          scopeId: 'default',
           resourceType: 'share',
           resourceId: existing[0].id,
           changeType: 'upsert',
@@ -228,49 +224,9 @@ export function createShareRepo(db: Database): ShareRepo {
       return true
     },
 
-    async listPublicProfileShares(username: string, now: Date) {
-      const nowSecs = Math.floor(now.getTime() / 1000)
-      const rows = await db
-        .select({
-          token: shares.token,
-          name: matters.name,
-          type: matters.type,
-          size: matters.size,
-          dirtype: matters.dirtype,
-        })
-        .from(shares)
-        .innerJoin(user, eq(shares.creatorId, user.id))
-        .innerJoin(matters, eq(shares.matterId, matters.id))
-        .where(
-          and(
-            eq(user.username, username),
-            eq(shares.private, false),
-            eq(shares.kind, 'landing'),
-            eq(shares.status, 'active'),
-            or(isNull(shares.expiresAt), sql`${shares.expiresAt} > ${nowSecs}`),
-            or(isNull(shares.downloadLimit), sql`${shares.downloads} < ${shares.downloadLimit}`),
-            eq(matters.status, 'active'),
-            isNull(matters.trashedAt),
-            isNull(matters.purgedAt),
-            sql`NOT EXISTS (
-              SELECT 1
-              FROM ${shareRecipients}
-              WHERE ${shareRecipients.shareId} = ${shares.id}
-            )`,
-          ),
-        )
-        .orderBy(desc(shares.createdAt), desc(shares.id))
-
-      return rows.map(({ dirtype, ...row }) => ({ ...row, isFolder: dirtype !== DirType.FILE }))
-    },
-
-    async listForApi(
-      creatorId: string,
-      opts: { pageSize: number; status?: string; orgId?: string; after?: { createdAt: Date; id: string } },
-    ): Promise<{ items: ShareListItem[]; nextBoundary: { createdAt: Date; id: string } | null }> {
+    async listForApi(creatorId, opts) {
       const conditions = [eq(shares.creatorId, creatorId)]
       if (opts.status) conditions.push(eq(shares.status, opts.status))
-      if (opts.orgId) conditions.push(eq(shares.orgId, opts.orgId))
       if (opts.after) {
         conditions.push(
           or(
@@ -287,7 +243,6 @@ export function createShareRepo(db: Database): ShareRepo {
           token: shares.token,
           kind: shares.kind,
           matterId: shares.matterId,
-          orgId: shares.orgId,
           creatorId: shares.creatorId,
           expiresAt: shares.expiresAt,
           downloadLimit: shares.downloadLimit,
@@ -326,11 +281,7 @@ export function createShareRepo(db: Database): ShareRepo {
       }
     },
 
-    async listReceivedForApi(
-      userId: string,
-      userEmail: string | null,
-      opts: { pageSize: number; orgId?: string; after?: { createdAt: Date; id: string } },
-    ): Promise<{ items: ShareListItem[]; nextBoundary: { createdAt: Date; id: string } | null }> {
+    async listReceivedForApi(userId, userEmail, opts) {
       const recipientMatch = userEmail
         ? or(eq(shareRecipients.recipientUserId, userId), eq(shareRecipients.recipientEmail, userEmail))
         : eq(shareRecipients.recipientUserId, userId)
@@ -340,12 +291,7 @@ export function createShareRepo(db: Database): ShareRepo {
             and(eq(shares.createdAt, opts.after.createdAt), lt(shares.id, opts.after.id)),
           )
         : undefined
-      const where = and(
-        eq(shares.status, 'active'),
-        recipientMatch,
-        opts.orgId ? eq(shares.orgId, opts.orgId) : undefined,
-        cursor,
-      )
+      const where = and(eq(shares.status, 'active'), recipientMatch, cursor)
 
       const rows = await db
         .select({
@@ -353,7 +299,6 @@ export function createShareRepo(db: Database): ShareRepo {
           token: shares.token,
           kind: shares.kind,
           matterId: shares.matterId,
-          orgId: shares.orgId,
           creatorId: shares.creatorId,
           expiresAt: shares.expiresAt,
           downloadLimit: shares.downloadLimit,
@@ -391,33 +336,12 @@ export function createShareRepo(db: Database): ShareRepo {
       }
     },
 
-    async computeSourceBytes(matter: Matter): Promise<number> {
-      if (matter.dirtype === DirType.FILE) return matter.size ?? 0
-
-      const folderPath = buildPath(matter.parent, matter.name)
-      const rows = await db
-        .select({ size: matters.size })
-        .from(matters)
-        .where(
-          and(
-            eq(matters.orgId, matter.orgId),
-            eq(matters.status, 'active'),
-            isNull(matters.trashedAt),
-            isNull(matters.purgedAt),
-            eq(matters.dirtype, DirType.FILE),
-            folderChildrenCondition(folderPath),
-          ),
-        )
-      return rows.reduce((acc, r) => acc + (r.size ?? 0), 0)
-    },
-
-    async listDirectActiveChildren(orgId: string, folderPath: string): Promise<Matter[]> {
+    async listDirectActiveChildren(folderPath: string): Promise<Matter[]> {
       return db
         .select()
         .from(matters)
         .where(
           and(
-            eq(matters.orgId, orgId),
             eq(matters.parent, folderPath),
             eq(matters.status, 'active'),
             isNull(matters.trashedAt),
@@ -426,16 +350,8 @@ export function createShareRepo(db: Database): ShareRepo {
         )
     },
 
-    hasQuotaForBytes(orgId: string, bytes: number): Promise<boolean> {
-      return quota.hasQuotaForBytes(orgId, bytes)
-    },
-
     async getCreatorIdentity(creatorId: string) {
-      const rows = await db
-        .select({ name: user.name, username: user.username })
-        .from(user)
-        .where(eq(user.id, creatorId))
-        .limit(1)
+      const rows = await db.select({ name: user.name }).from(user).where(eq(user.id, creatorId)).limit(1)
       return rows[0] ?? null
     },
 
@@ -454,7 +370,7 @@ export function createShareRepo(db: Database): ShareRepo {
     },
 
     async findShareChildMatter(
-      rootMatter: { id: string; orgId: string; parent: string; name: string },
+      rootMatter: { id: string; parent: string; name: string },
       childId: string,
     ): Promise<Matter | null> {
       const root = buildPath(rootMatter.parent, rootMatter.name)
@@ -464,7 +380,6 @@ export function createShareRepo(db: Database): ShareRepo {
         .where(
           and(
             eq(matters.id, childId),
-            eq(matters.orgId, rootMatter.orgId),
             eq(matters.status, 'active'),
             isNull(matters.trashedAt),
             isNull(matters.purgedAt),

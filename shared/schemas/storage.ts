@@ -9,9 +9,6 @@ export const createStorageSchema = z.object({
   secretKey: z.string().min(1),
   capacity: z.number().int().min(0).default(0),
   forcePathStyle: z.boolean().default(true),
-  egressCreditBillingEnabled: z.boolean().default(false),
-  egressCreditUnitBytes: z.number().int().positive().default(104857600),
-  egressCreditPerUnit: z.number().int().positive().default(1),
 })
 
 export const replaceStorageSchema = z.object({
@@ -23,9 +20,6 @@ export const replaceStorageSchema = z.object({
   secretKey: z.string().min(1),
   capacity: z.number().int().min(0),
   forcePathStyle: z.boolean(),
-  egressCreditBillingEnabled: z.boolean(),
-  egressCreditUnitBytes: z.number().int().positive(),
-  egressCreditPerUnit: z.number().int().positive(),
   enabled: z.boolean(),
 })
 
@@ -39,9 +33,6 @@ export const patchStorageSchema = z
     secretKey: z.string().min(1).optional(),
     capacity: z.number().int().min(0).optional(),
     forcePathStyle: z.boolean().optional(),
-    egressCreditBillingEnabled: z.boolean().optional(),
-    egressCreditUnitBytes: z.number().int().positive().optional(),
-    egressCreditPerUnit: z.number().int().positive().optional(),
     enabled: z.boolean().optional(),
     status: z.enum(['unknown', 'healthy', 'unhealthy']).optional(),
     statusReason: z
@@ -75,13 +66,6 @@ export const patchStorageSchema = z
     }
   })
 
-export const updateStorageEgressBillingSchema = z.object({
-  enabled: z.boolean(),
-  unitBytes: z.number().int().positive(),
-  creditsPerUnit: z.number().int().positive(),
-})
-
 export type CreateStorageInput = z.input<typeof createStorageSchema>
 export type ReplaceStorageInput = z.input<typeof replaceStorageSchema>
 export type PatchStorageInput = z.input<typeof patchStorageSchema>
-export type UpdateStorageEgressBillingInput = z.input<typeof updateStorageEgressBillingSchema>

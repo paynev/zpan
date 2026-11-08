@@ -1,7 +1,7 @@
-import type { AdminOverview, AdminOverviewDownloader, AdminOverviewStorage } from '@shared/types'
+import type { AdminOverview, AdminOverviewStorage } from '@shared/types'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { Activity, CircleAlert, Database, Download, HardDrive, RefreshCw, Upload, UserPlus, Users } from 'lucide-react'
+import { Activity, CircleAlert, Database, HardDrive, RefreshCw, UserPlus, Users } from 'lucide-react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -162,9 +162,7 @@ function OverviewContent({ overview }: { overview: AdminOverview }) {
         aria-label={t('admin.overview.details.section')}
         className="grid items-stretch gap-4 lg:grid-cols-2 xl:grid-cols-3"
       >
-        <TopUsersCard overview={overview} />
         <StorageBackendsCard overview={overview} />
-        <DownloadersCard overview={overview} />
       </section>
     </div>
   )
@@ -498,43 +496,6 @@ function StorageUsageCard({ overview }: { overview: AdminOverview }) {
   )
 }
 
-function TopUsersCard({ overview }: { overview: AdminOverview }) {
-  const { t } = useTranslation()
-  const maxUsage = Math.max(...overview.users.topUsage.map((row) => row.usedBytes), 1)
-
-  return (
-    <DetailCard
-      title={t('admin.overview.topUsers.title')}
-      description={t('admin.overview.topUsers.description')}
-      action={<Badge variant="secondary">Top 10</Badge>}
-    >
-      {overview.users.topUsage.length === 0 ? (
-        <EmptyList label={t('admin.overview.topUsers.empty')} />
-      ) : (
-        <ol className="divide-y">
-          {overview.users.topUsage.map((row, index) => (
-            <li key={row.userId} className="grid grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 py-2.5">
-              <span className="text-xs tabular-nums text-muted-foreground">{index + 1}</span>
-              <div className="min-w-0">
-                <div className="flex min-w-0 items-baseline justify-between gap-3">
-                  <span className="truncate text-sm font-medium" title={`${row.name} · ${row.email}`}>
-                    {row.name}
-                  </span>
-                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                    {row.utilization === null ? '—' : `${row.utilization.toFixed(1)}%`}
-                  </span>
-                </div>
-                <Progress value={(row.usedBytes / maxUsage) * 100} className="mt-1.5 h-1" />
-              </div>
-              <span className="text-xs font-medium tabular-nums">{formatSize(row.usedBytes)}</span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </DetailCard>
-  )
-}
-
 function StorageBackendsCard({ overview }: { overview: AdminOverview }) {
   const { t } = useTranslation()
 
@@ -587,84 +548,6 @@ function StorageBackendRow({ storage }: { storage: AdminOverviewStorage }) {
         </span>
       </div>
     </article>
-  )
-}
-
-function DownloadersCard({ overview }: { overview: AdminOverview }) {
-  const { t } = useTranslation()
-
-  return (
-    <DetailCard
-      className="lg:col-span-2 xl:col-span-1"
-      title={t('admin.overview.downloaders.title')}
-      description={t('admin.overview.downloaders.description')}
-      action={
-        <Badge variant="secondary">
-          {overview.downloaders.online} / {overview.downloaders.total}
-        </Badge>
-      }
-    >
-      {overview.downloaders.items.length === 0 ? (
-        <EmptyList label={t('admin.overview.downloaders.empty')} />
-      ) : (
-        <div className="divide-y">
-          {overview.downloaders.items.map((downloader) => (
-            <DownloaderRow key={downloader.id} downloader={downloader} observedAt={overview.observedAt} />
-          ))}
-        </div>
-      )}
-    </DetailCard>
-  )
-}
-
-function DownloaderRow({ downloader, observedAt }: { downloader: AdminOverviewDownloader; observedAt: string }) {
-  const { t } = useTranslation()
-
-  return (
-    <article className="py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{downloader.name}</p>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {t('admin.overview.downloaders.heartbeat', {
-              value: formatAge(downloader.lastHeartbeatAt, observedAt, t),
-            })}
-          </p>
-        </div>
-        <StatusBadge status={downloader.status} label={t(`admin.overview.downloaders.status.${downloader.status}`)} />
-      </div>
-      <dl className="mt-2.5 grid grid-cols-3 gap-2 rounded-lg bg-muted/50 px-3 py-2.5">
-        <DownloaderFact
-          icon={<Download />}
-          label={t('admin.overview.downloaders.download')}
-          value={formatRate(downloader.downloadBps)}
-        />
-        <DownloaderFact
-          icon={<Upload />}
-          label={t('admin.overview.downloaders.upload')}
-          value={formatRate(downloader.uploadBps)}
-        />
-        <DownloaderFact
-          icon={<Activity />}
-          label={t('admin.overview.downloaders.tasks')}
-          value={`${downloader.currentTasks}/${downloader.maxConcurrentTasks}`}
-        />
-      </dl>
-    </article>
-  )
-}
-
-function DownloaderFact({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <dt className="flex items-center gap-1 text-[11px] text-muted-foreground [&>svg]:size-3">
-        {icon}
-        {label}
-      </dt>
-      <dd className="mt-1 truncate text-xs font-medium tabular-nums" title={value}>
-        {value}
-      </dd>
-    </div>
   )
 }
 
@@ -854,7 +737,7 @@ function formatPercent(value: number | null): string {
   return value === null ? '—' : `${value.toFixed(1)}%`
 }
 
-function formatRate(bytesPerSecond: number): string {
+function _formatRate(bytesPerSecond: number): string {
   return `${formatSize(bytesPerSecond)}/s`
 }
 
@@ -880,7 +763,7 @@ function formatAxisSize(value: number): string {
   return `${value < 0 ? '-' : ''}${(absolute / 1024 ** index).toFixed(index > 2 ? 1 : 0)}${units[index]}`
 }
 
-function formatAge(
+function _formatAge(
   value: string | null,
   observedAt: string,
   t: (key: string, options?: Record<string, unknown>) => string,

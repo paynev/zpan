@@ -11,15 +11,9 @@ const wrangler = join(dirname(wranglerPackage), 'bin', 'wrangler.js')
 const stateDir = mkdtempSync(join(tmpdir(), 'zpan-e2e-'))
 const shardArg = process.argv.slice(2).find((arg) => arg.startsWith('--shard='))
 const artifactSuffix = `${shardArg?.slice('--shard='.length).replace('/', '-of-') ?? 'run'}-${process.pid}`
-const [appPort, apiPort, s3Port, cloudPort] = await Promise.all([
-  reservePort(),
-  reservePort(),
-  reservePort(),
-  reservePort(),
-])
+const [appPort, apiPort, s3Port] = await Promise.all([reservePort(), reservePort(), reservePort()])
 
 const appOrigin = `http://127.0.0.1:${appPort}`
-const cloudOrigin = `http://127.0.0.1:${cloudPort}`
 const env = {
   ...process.env,
   DATABASE_URL: join(stateDir, 'zpan.db'),
@@ -28,21 +22,17 @@ const env = {
   E2E_APP_PORT: String(appPort),
   E2E_API_PORT: String(apiPort),
   E2E_S3_MOCK_PORT: String(s3Port),
-  E2E_CLOUD_FAKE_PORT: String(cloudPort),
   E2E_BASE_URL: appOrigin,
   E2E_LOCAL_BASE_URL: appOrigin,
   E2E_PUBLIC_BASE_URL: appOrigin,
   E2E_S3_MOCK: '1',
-  E2E_CLOUD_FAKE: '1',
   E2E_STORAGE_ENDPOINT: `http://127.0.0.1:${s3Port}`,
   E2E_STORAGE_BUCKET: 'e2e-test',
   E2E_STORAGE_REGION: 'auto',
   E2E_STORAGE_ACCESS_KEY: 'e2e-access-key',
   E2E_STORAGE_SECRET_KEY: 'e2e-secret-key',
-  ZPAN_CLOUD_URL: cloudOrigin,
-  VITE_ZPAN_CLOUD_URL: cloudOrigin,
-  ZPAN_LICENSE_PUBLIC_KEYS: 'k4.public.H2gYKGNtxgWbMuwgPdDuHoM_sOLzFC-khe23pz2IZfM',
-  BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? 'e2e-auth-secret-that-is-at-least-32-characters',
+  ZPAN_USERNAME: 'e2e-admin@test.local',
+  ZPAN_PASSWORD: 'password123456',
   BETTER_AUTH_URL: appOrigin,
   TRUSTED_ORIGINS: appOrigin,
 }

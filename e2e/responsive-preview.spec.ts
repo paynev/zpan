@@ -10,7 +10,6 @@ function fakeFile(name: string, type: string, size: number) {
   const id = `mock-${name.replace(/\W/g, '-')}`
   return {
     id,
-    orgId: 'org',
     alias: '',
     name,
     type,

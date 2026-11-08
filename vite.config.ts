@@ -18,11 +18,10 @@ const configuredDevHosts = (process.env.ZPAN_DEV_ALLOWED_HOSTS ?? '')
 const e2eWorkerVars =
   process.env.E2E_RUNTIME === 'cf'
     ? {
-        BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET!,
         BETTER_AUTH_URL: process.env.BETTER_AUTH_URL!,
         TRUSTED_ORIGINS: process.env.TRUSTED_ORIGINS!,
-        ZPAN_CLOUD_URL: process.env.ZPAN_CLOUD_URL!,
-        ZPAN_LICENSE_PUBLIC_KEYS: process.env.ZPAN_LICENSE_PUBLIC_KEYS!,
+        ZPAN_USERNAME: process.env.ZPAN_USERNAME!,
+        ZPAN_PASSWORD: process.env.ZPAN_PASSWORD!,
         E2E_STORAGE_ENDPOINT: process.env.E2E_STORAGE_ENDPOINT!,
         E2E_STORAGE_BUCKET: process.env.E2E_STORAGE_BUCKET!,
         E2E_STORAGE_REGION: process.env.E2E_STORAGE_REGION!,

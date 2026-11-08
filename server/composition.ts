@@ -1,62 +1,30 @@
 // The composition root. createDeps wires concrete adapters into the Deps object
 // the rest of the server consumes. This is the ONLY place adapters are
-// constructed. Keep it a cheap, request-free factory so the scheduled/queue
-// entrypoints can reuse it; request-bound capabilities are passed to usecases as
+// constructed. Keep it a cheap, request-free factory so the scheduled
+// entrypoint can reuse it; request-bound capabilities are passed to usecases as
 // function parameters, never stored here.
 
 import { type CloudflareKvNamespaceLike, createCloudflareKvBackend } from './adapters/cache/cloudflare-kv'
 import { createRuntimeCache, resolveCacheMode } from './adapters/cache/runtime-cache'
 import { createAgentInfoGateway } from './adapters/gateways/agent-info'
-import { createArchiveJobsGateway } from './adapters/gateways/archive-jobs'
-import { createEmailGateway } from './adapters/gateways/email'
-import { createImageUploadGateway } from './adapters/gateways/image-upload'
-import { createLicensingCloudGateway } from './adapters/gateways/licensing-cloud'
 import { S3Service } from './adapters/gateways/s3'
-import { createZipGateway } from './adapters/gateways/zip'
 import { createChangelogProvider } from './adapters/providers/changelog'
-import { createImageDomainProviderGateway } from './adapters/providers/image-domain-provider'
 import { createAdminStatsRepo } from './adapters/repos/admin-stats'
 import { createAnnouncementRepo } from './adapters/repos/announcement'
 import { createApiKeyGateway } from './adapters/repos/api-keys'
-import { createArchiveTargetFolderRepo } from './adapters/repos/archive-target-folder'
 import { createAuditRepo } from './adapters/repos/audit'
 import { createAuditActorDirectoryRepo } from './adapters/repos/audit-actor-directory'
-import { createBackgroundJobRepo } from './adapters/repos/background-job'
-import { createCloudStoreRepo } from './adapters/repos/cloud-store'
-import { createCloudTrafficReportRepo } from './adapters/repos/cloud-traffic-report'
-import { createDownloadTaskRepo } from './adapters/repos/download-task'
-import { createDownloadTokenGateway } from './adapters/repos/download-tokens'
-import { createDownloaderRepo } from './adapters/repos/downloader'
-import { createDownloaderBootstrapCredentialRepo } from './adapters/repos/downloader-bootstrap'
-import { createImageHostingRepo } from './adapters/repos/image-hosting'
-import { createImageHostingConfigRepo } from './adapters/repos/image-hosting-config'
 import { createInstanceRepo } from './adapters/repos/instance'
-import { createInviteRepo } from './adapters/repos/invite'
-import { createLicenseBindingRepo } from './adapters/repos/license-binding'
 import { createMatterRepo } from './adapters/repos/matter'
-import { createMemberCountRepo } from './adapters/repos/member-count'
 import { createNotificationRepo } from './adapters/repos/notification'
-import { createOAuthGateway } from './adapters/repos/oauth'
 import { createObjectUploadSessionRepo } from './adapters/repos/object-upload-session'
-import { createOrgRepo } from './adapters/repos/org'
-import { createProfileRepo } from './adapters/repos/profile'
-import { createQuotaRepo } from './adapters/repos/quota'
-import { createRemoteDownloadUsageRepo } from './adapters/repos/remote-download-usage'
 import { createResourceChangeRepo } from './adapters/repos/resource-change'
 import { createShareRepo } from './adapters/repos/share'
-import { createShareNotificationRepo } from './adapters/repos/share-notification'
-import { createSiteInvitationRepo } from './adapters/repos/site-invitations'
 import { createStorageRepo } from './adapters/repos/storage'
 import { createStorageUsageRepo } from './adapters/repos/storage-usage'
-import { createStorageUsageBreakdownRepo } from './adapters/repos/storage-usage-breakdown'
 import { createSystemOptionsRepo } from './adapters/repos/system-options'
-import { createTeamRepo } from './adapters/repos/team'
-import { createTeamInviteRepo } from './adapters/repos/team-invite'
-import { createUserAdminRepo } from './adapters/repos/user-admin'
 import { createWebDavPathRepo } from './adapters/repos/webdav-path'
 import { createWebDavStateRepo } from './adapters/repos/webdav-state'
-import { createX402CapacityPurchaseRepo } from './adapters/repos/x402-capacity-purchase'
-import { createZipPlanRepo } from './adapters/repos/zip'
 import type { Platform } from './platform/interface'
 import type { Deps } from './usecases/deps'
 import type { CacheService } from './usecases/ports'
@@ -70,8 +38,6 @@ export function createDeps(platform: Platform, options: CreateDepsOptions = {}):
   // Shared stateless instances reused by multiple ports below.
   const s3 = new S3Service()
   const systemOptions = createSystemOptionsRepo(db)
-  const licenseBinding = createLicenseBindingRepo(db)
-  const licensingCloud = createLicensingCloudGateway()
   const cacheNamespace = platform.getBinding<CloudflareKvNamespaceLike>('CACHE_KV')
   const cache =
     options.cache ??
@@ -80,59 +46,26 @@ export function createDeps(platform: Platform, options: CreateDepsOptions = {}):
       distributed: cacheNamespace ? createCloudflareKvBackend(cacheNamespace) : undefined,
     })
   const storages = createStorageRepo(db, cache)
-  const downloadTokens = createDownloadTokenGateway()
   return {
     audit: createAuditRepo(db),
     auditActorDirectory: createAuditActorDirectoryRepo(db),
     agentInfo: createAgentInfoGateway(),
     adminStats: createAdminStatsRepo(db),
-    oauth: createOAuthGateway(),
     announcements: createAnnouncementRepo(db),
     apiKeys: createApiKeyGateway(),
-    archiveJobs: createArchiveJobsGateway(platform),
-    archiveTargetFolders: createArchiveTargetFolderRepo(db),
-    backgroundJobs: createBackgroundJobRepo(db),
     cache,
-    imageDomains: createImageDomainProviderGateway(systemOptions),
     changelog: createChangelogProvider(),
-    cloudStore: createCloudStoreRepo(db),
-    cloudTrafficReports: createCloudTrafficReportRepo(db),
-    downloaders: createDownloaderRepo(db),
-    downloaderBootstrapCredentials: createDownloaderBootstrapCredentialRepo(db, downloadTokens),
-    downloadTasks: createDownloadTaskRepo(db),
-    downloadTokens,
-    email: createEmailGateway(systemOptions),
-    invites: createInviteRepo(db),
-    imageHostingConfigs: createImageHostingConfigRepo(db),
-    imageHosting: createImageHostingRepo(db),
-    imageUpload: createImageUploadGateway(licenseBinding, licensingCloud),
     instance: createInstanceRepo(db),
-    licenseBinding,
-    licensingCloud,
     matter: createMatterRepo(db),
-    memberCount: createMemberCountRepo(db),
     notifications: createNotificationRepo(db),
     objectUploadSessions: createObjectUploadSessionRepo(db),
-    org: createOrgRepo(db),
-    profiles: createProfileRepo(db),
-    quota: createQuotaRepo(db),
-    remoteDownloadUsage: createRemoteDownloadUsageRepo(db),
     resourceChanges: createResourceChangeRepo(db),
     s3,
-    shareNotifications: createShareNotificationRepo(db),
     share: createShareRepo(db),
-    siteInvitations: createSiteInvitationRepo(db),
     storages,
     storageUsage: createStorageUsageRepo(db),
-    storageUsageBreakdowns: createStorageUsageBreakdownRepo(db),
     systemOptions,
-    teams: createTeamRepo(db),
-    teamInvites: createTeamInviteRepo(db),
-    userAdmin: createUserAdminRepo(db),
     webdavPath: createWebDavPathRepo(db, cache),
     webdavState: createWebDavStateRepo(db),
-    zip: createZipGateway(),
-    zipPlan: createZipPlanRepo(db),
-    x402CapacityPurchases: createX402CapacityPurchaseRepo(db),
   }
 }

@@ -7,7 +7,7 @@ import type { DavDeadProperty, DavLock, WebDavStateRepo } from '../../usecases/p
 
 export function createWebDavStateRepo(db: Database): WebDavStateRepo {
   return {
-    async listDeadPropertiesForResources(orgId, resourcePaths) {
+    async listDeadPropertiesForResources(resourcePaths) {
       const uniquePaths = [...new Set(resourcePaths)]
       const result = new Map(uniquePaths.map((path) => [path, [] as DavDeadProperty[]]))
       if (uniquePaths.length === 0) return result
@@ -20,7 +20,7 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
           value: webdavDeadProperties.value,
         })
         .from(webdavDeadProperties)
-        .where(and(eq(webdavDeadProperties.orgId, orgId), inArray(webdavDeadProperties.resourcePath, uniquePaths)))
+        .where(inArray(webdavDeadProperties.resourcePath, uniquePaths))
 
       for (const row of rows) {
         result.get(row.resourcePath)?.push({ namespace: row.namespace, name: row.name, value: row.value })
@@ -28,7 +28,7 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
       return result
     },
 
-    async applyDeadPropertyUpdate(orgId, resourcePath, operations) {
+    async applyDeadPropertyUpdate(resourcePath, operations) {
       const now = new Date()
       const queries: AtomicQuery[] = []
       for (const operation of operations) {
@@ -38,7 +38,6 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
               .delete(webdavDeadProperties)
               .where(
                 and(
-                  eq(webdavDeadProperties.orgId, orgId),
                   eq(webdavDeadProperties.resourcePath, resourcePath),
                   eq(webdavDeadProperties.namespace, operation.property.namespace),
                   eq(webdavDeadProperties.name, operation.property.name),
@@ -54,7 +53,6 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
             .insert(webdavDeadProperties)
             .values({
               id: generateId(),
-              orgId,
               resourcePath,
               namespace: property.namespace,
               name: property.name,
@@ -62,12 +60,7 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
               updatedAt: now,
             })
             .onConflictDoUpdate({
-              target: [
-                webdavDeadProperties.orgId,
-                webdavDeadProperties.resourcePath,
-                webdavDeadProperties.namespace,
-                webdavDeadProperties.name,
-              ],
+              target: [webdavDeadProperties.resourcePath, webdavDeadProperties.namespace, webdavDeadProperties.name],
               set: { value: property.value, updatedAt: now },
             }),
         )
@@ -75,11 +68,8 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
       await executeWriteTransaction(db, queries)
     },
 
-    async copyDeadProperties(orgId, sourcePath, targetPath) {
-      const rows = await db
-        .select()
-        .from(webdavDeadProperties)
-        .where(and(eq(webdavDeadProperties.orgId, orgId), eq(webdavDeadProperties.resourcePath, sourcePath)))
+    async copyDeadProperties(sourcePath, targetPath) {
+      const rows = await db.select().from(webdavDeadProperties).where(eq(webdavDeadProperties.resourcePath, sourcePath))
       if (rows.length === 0) return
 
       const now = new Date()
@@ -90,7 +80,6 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
             .insert(webdavDeadProperties)
             .values({
               id: generateId(),
-              orgId,
               resourcePath: targetPath,
               namespace: row.namespace,
               name: row.name,
@@ -98,46 +87,35 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
               updatedAt: now,
             })
             .onConflictDoUpdate({
-              target: [
-                webdavDeadProperties.orgId,
-                webdavDeadProperties.resourcePath,
-                webdavDeadProperties.namespace,
-                webdavDeadProperties.name,
-              ],
+              target: [webdavDeadProperties.resourcePath, webdavDeadProperties.namespace, webdavDeadProperties.name],
               set: { value: row.value, updatedAt: now },
             }),
         ),
       )
     },
 
-    async deleteWebDavState(orgId, resourcePath) {
+    async deleteWebDavState(resourcePath) {
       await executeWriteTransaction(db, [
         db
           .delete(webdavDeadProperties)
           .where(
-            and(
-              eq(webdavDeadProperties.orgId, orgId),
-              or(
-                eq(webdavDeadProperties.resourcePath, resourcePath),
-                sql`${webdavDeadProperties.resourcePath} LIKE ${`${resourcePath}/%`}`,
-              ),
+            or(
+              eq(webdavDeadProperties.resourcePath, resourcePath),
+              sql`${webdavDeadProperties.resourcePath} LIKE ${`${resourcePath}/%`}`,
             ),
           ),
         db
           .delete(webdavLocks)
           .where(
-            and(
-              eq(webdavLocks.orgId, orgId),
-              or(
-                eq(webdavLocks.resourcePath, resourcePath),
-                sql`${webdavLocks.resourcePath} LIKE ${`${resourcePath}/%`}`,
-              ),
+            or(
+              eq(webdavLocks.resourcePath, resourcePath),
+              sql`${webdavLocks.resourcePath} LIKE ${`${resourcePath}/%`}`,
             ),
           ),
       ])
     },
 
-    async moveWebDavState(orgId, oldPath, newPath) {
+    async moveWebDavState(oldPath, newPath) {
       const now = new Date()
       await executeWriteTransaction(db, [
         db
@@ -147,12 +125,9 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
             updatedAt: now,
           })
           .where(
-            and(
-              eq(webdavDeadProperties.orgId, orgId),
-              or(
-                eq(webdavDeadProperties.resourcePath, oldPath),
-                sql`${webdavDeadProperties.resourcePath} LIKE ${`${oldPath}/%`}`,
-              ),
+            or(
+              eq(webdavDeadProperties.resourcePath, oldPath),
+              sql`${webdavDeadProperties.resourcePath} LIKE ${`${oldPath}/%`}`,
             ),
           ),
         db
@@ -161,34 +136,23 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
             resourcePath: sql`CASE WHEN ${webdavLocks.resourcePath} = ${oldPath} THEN ${newPath} ELSE ${newPath} || SUBSTR(${webdavLocks.resourcePath}, ${oldPath.length + 1}) END`,
             updatedAt: now,
           })
-          .where(
-            and(
-              eq(webdavLocks.orgId, orgId),
-              or(eq(webdavLocks.resourcePath, oldPath), sql`${webdavLocks.resourcePath} LIKE ${`${oldPath}/%`}`),
-            ),
-          ),
+          .where(or(eq(webdavLocks.resourcePath, oldPath), sql`${webdavLocks.resourcePath} LIKE ${`${oldPath}/%`}`)),
       ])
     },
 
-    async activeLocks(orgId, resourcePath) {
+    async activeLocks(resourcePath) {
       const now = Date.now()
-      const rows = await db
-        .select()
-        .from(webdavLocks)
-        .where(and(eq(webdavLocks.orgId, orgId), sql`${webdavLocks.expiresAt} > ${now}`))
+      const rows = await db.select().from(webdavLocks).where(sql`${webdavLocks.expiresAt} > ${now}`)
       return rows.filter((lock) => lockAppliesToResource(lock, resourcePath))
     },
 
-    async activeLocksForResources(orgId, resourcePaths) {
+    async activeLocksForResources(resourcePaths) {
       const uniquePaths = [...new Set(resourcePaths)]
       const result = new Map(uniquePaths.map((path) => [path, [] as DavLock[]]))
       if (uniquePaths.length === 0) return result
 
       const now = Date.now()
-      const rows = await db
-        .select()
-        .from(webdavLocks)
-        .where(and(eq(webdavLocks.orgId, orgId), sql`${webdavLocks.expiresAt} > ${now}`))
+      const rows = await db.select().from(webdavLocks).where(sql`${webdavLocks.expiresAt} > ${now}`)
 
       for (const path of uniquePaths) {
         result.set(
@@ -199,12 +163,9 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
       return result
     },
 
-    async conflictingLocks(orgId, resourcePath) {
+    async conflictingLocks(resourcePath) {
       const now = Date.now()
-      const rows = await db
-        .select()
-        .from(webdavLocks)
-        .where(and(eq(webdavLocks.orgId, orgId), sql`${webdavLocks.expiresAt} > ${now}`))
+      const rows = await db.select().from(webdavLocks).where(sql`${webdavLocks.expiresAt} > ${now}`)
       return rows.filter((lock) => lockConflictsWithResource(lock, resourcePath))
     },
 
@@ -220,19 +181,18 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
       const rows = await db
         .insert(webdavLocks)
         .select(
-          sql`SELECT ${lock.id}, ${lock.token}, ${lock.orgId}, ${lock.resourcePath}, ${lock.owner}, ${lock.depth}, ${lock.expiresAt.getTime()}, ${lock.createdAt.getTime()}, ${lock.updatedAt.getTime()}
+          sql`SELECT ${lock.id}, ${lock.token}, ${lock.resourcePath}, ${lock.owner}, ${lock.depth}, ${lock.expiresAt.getTime()}, ${lock.createdAt.getTime()}, ${lock.updatedAt.getTime()}
               WHERE NOT EXISTS (
                 SELECT 1
                 FROM ${webdavLocks}
-                WHERE ${webdavLocks.orgId} = ${input.orgId}
-                  AND ${conflicts}
+                WHERE ${conflicts}
               )`,
         )
         .returning()
       return rows[0] ?? null
     },
 
-    async refreshLock(orgId, resourcePath, token, timeoutSeconds) {
+    async refreshLock(resourcePath, token, timeoutSeconds) {
       const now = new Date()
       const expiresAt = new Date(now.getTime() + timeoutSeconds * 1000)
       const rows = await db
@@ -240,7 +200,6 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
         .set({ expiresAt, updatedAt: now })
         .where(
           and(
-            eq(webdavLocks.orgId, orgId),
             eq(webdavLocks.token, token),
             sql`${webdavLocks.expiresAt} > ${now.getTime()}`,
             lockAppliesSql(resourcePath),
@@ -250,12 +209,11 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
       return rows[0] ?? null
     },
 
-    async removeLock(orgId, resourcePath, token) {
+    async removeLock(resourcePath, token) {
       const rows = await db
         .delete(webdavLocks)
         .where(
           and(
-            eq(webdavLocks.orgId, orgId),
             eq(webdavLocks.token, token),
             sql`${webdavLocks.expiresAt} > ${Date.now()}`,
             lockAppliesSql(resourcePath),
@@ -271,18 +229,11 @@ export function createWebDavStateRepo(db: Database): WebDavStateRepo {
   }
 }
 
-function newLock(input: {
-  orgId: string
-  resourcePath: string
-  owner: string
-  depth: string
-  timeoutSeconds: number
-}): DavLock {
+function newLock(input: { resourcePath: string; owner: string; depth: string; timeoutSeconds: number }): DavLock {
   const now = new Date()
   return {
     id: generateId(),
     token: `opaquelocktoken:${crypto.randomUUID()}`,
-    orgId: input.orgId,
     resourcePath: input.resourcePath,
     owner: input.owner,
     depth: input.depth,

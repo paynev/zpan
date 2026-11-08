@@ -5,7 +5,6 @@ import type { ActorAttribution, ActorType } from '@shared/schemas'
 export type AuditActorType = ActorType
 
 export interface RecordAuditEventInput {
-  orgId: string
   userId?: string | null
   actorType?: AuditActorType
   actorRef?: string | null
@@ -19,7 +18,6 @@ export interface RecordAuditEventInput {
 
 export interface AuditEvent {
   id: string
-  orgId: string
   userId: string | null
   actorType: AuditActorType
   actorRef: string | null
@@ -37,14 +35,9 @@ export interface AuditEventWithUser extends AuditEvent {
   actor: AuditActorProfile
 }
 
-export interface AdminAuditEventWithOrg extends AuditEventWithUser {
-  orgName: string | null
-}
-
 export interface ListAdminAuditOpts {
   page?: number
   pageSize?: number
-  orgId?: string
   userId?: string
   action?: string
   targetType?: string
@@ -53,7 +46,6 @@ export interface ListAdminAuditOpts {
 }
 
 export interface ListAuditByTargetOpts {
-  orgId: string
   targetType: string
   targetId: string
   page?: number
@@ -63,13 +55,10 @@ export interface ListAuditByTargetOpts {
 export interface AuditRepo {
   record(event: RecordAuditEventInput): Promise<void>
   recordOnce(event: RecordAuditEventInput, idempotencyKey: string, occurredAt?: Date): Promise<void>
-  list(
-    orgId: string,
-    opts: { page?: number; pageSize?: number },
-  ): Promise<{ items: AuditEventWithUser[]; total: number }>
+  list(opts: { page?: number; pageSize?: number }): Promise<{ items: AuditEventWithUser[]; total: number }>
   listAdminAudit(
     opts: ListAdminAuditOpts,
-  ): Promise<{ items: AdminAuditEventWithOrg[]; total: number; page: number; pageSize: number }>
+  ): Promise<{ items: AuditEventWithUser[]; total: number; page: number; pageSize: number }>
   listByTarget(
     opts: ListAuditByTargetOpts,
   ): Promise<{ items: AuditEvent[]; total: number; page: number; pageSize: number }>
@@ -91,8 +80,6 @@ export interface ActorProfile {
 export interface ActorDirectory {
   findUserProfiles(userIds: readonly string[]): Promise<ReadonlyMap<string, ActorProfile>>
   findApiKeyNames(keyIds: readonly string[]): Promise<ReadonlyMap<string, string>>
-  findDeviceNames(deviceIds: readonly string[]): Promise<ReadonlyMap<string, string>>
-  listTrustedAgentIssuerOrigins(): Promise<ReadonlySet<string>>
 }
 
 export interface AgentInfoGateway {

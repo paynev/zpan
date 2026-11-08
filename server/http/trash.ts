@@ -3,7 +3,7 @@ import { AuthorizationScope } from '@shared/authorization'
 import { cursorPageQuerySchema, cursorPageSchema, opaqueIdSchema, restoreObjectSchema } from '@shared/schemas'
 import type { Env } from '../middleware/platform'
 import { deleteObject, getTrashObject, listTrashedObjects, restoreObject } from '../usecases/object'
-import { badRequest, type Matter, notFound } from '../usecases/ports'
+import { type Matter, notFound } from '../usecases/ports'
 import { authRoute, errorResponse, jsonBody, jsonContent } from './openapi'
 import { decodeOptionalPageToken, encodeNextPageToken, pageQueryFingerprint, trashCursorCodec } from './page-token'
 
@@ -12,7 +12,6 @@ import { decodeOptionalPageToken, encodeNextPageToken, pageQueryFingerprint, tra
 const matterSchema = z
   .object({
     id: opaqueIdSchema,
-    orgId: opaqueIdSchema,
     alias: z.string(),
     name: z.string(),
     type: z.string(),
@@ -33,7 +32,6 @@ type MatterDTO = z.infer<typeof matterSchema>
 function toMatterDTO(m: Matter): MatterDTO {
   return {
     id: m.id,
-    orgId: m.orgId,
     alias: m.alias,
     name: m.name,
     type: m.type,
@@ -53,7 +51,7 @@ const trashPageSchema = cursorPageSchema(matterSchema, 'TrashObjectPage')
 const idParam = z.object({ id: opaqueIdSchema })
 
 const listTrashRoute = authRoute(
-  { scopes: [AuthorizationScope.OBJECTS_READ], minTeamRole: 'viewer' },
+  { scopes: [AuthorizationScope.OBJECTS_READ] },
   {
     operationId: 'listTrashObjects',
     summary: 'List trashed objects',
@@ -63,13 +61,12 @@ const listTrashRoute = authRoute(
     request: { query: cursorPageQuerySchema },
     responses: {
       200: jsonContent(trashPageSchema, 'Trashed objects (roots only)'),
-      400: errorResponse('No active organization'),
     },
   },
 )
 
 const getTrashObjectRoute = authRoute(
-  { scopes: [AuthorizationScope.OBJECTS_READ], minTeamRole: 'viewer' },
+  { scopes: [AuthorizationScope.OBJECTS_READ] },
   {
     operationId: 'getTrashObject',
     summary: 'Get trashed object',
@@ -79,14 +76,13 @@ const getTrashObjectRoute = authRoute(
     request: { params: idParam },
     responses: {
       200: jsonContent(matterSchema, 'Trashed object'),
-      400: errorResponse('No active organization'),
       404: errorResponse('Not found'),
     },
   },
 )
 
 const restoreObjectRoute = authRoute(
-  { scopes: [AuthorizationScope.OBJECTS_UPDATE], minTeamRole: 'editor' },
+  { scopes: [AuthorizationScope.OBJECTS_UPDATE] },
   {
     operationId: 'restoreObject',
     summary: 'Restore trashed object',
@@ -96,7 +92,6 @@ const restoreObjectRoute = authRoute(
     request: { params: idParam, ...jsonBody(restoreObjectSchema) },
     responses: {
       200: jsonContent(matterSchema, 'Restored object'),
-      400: errorResponse('No active organization'),
       404: errorResponse('Not found'),
       409: errorResponse('Name conflict'),
     },
@@ -104,7 +99,7 @@ const restoreObjectRoute = authRoute(
 )
 
 const purgeObjectRoute = authRoute(
-  { scopes: [AuthorizationScope.OBJECTS_PURGE], minTeamRole: 'editor' },
+  { scopes: [AuthorizationScope.OBJECTS_PURGE] },
   {
     operationId: 'purgeTrashObject',
     summary: 'Permanently delete trashed object',
@@ -114,7 +109,6 @@ const purgeObjectRoute = authRoute(
     request: { params: idParam },
     responses: {
       204: { description: 'Permanently removed (recursive subtree purge)' },
-      400: errorResponse('No active organization'),
       404: errorResponse('Not found'),
     },
   },
@@ -124,15 +118,13 @@ const app = new OpenAPIHono<Env>()
 
 const trash = app
   .openapi(listTrashRoute, async (c) => {
-    const orgId = c.get('orgId')
-    if (!orgId) throw badRequest('No active organization')
     const query = c.req.valid('query')
-    const fingerprint = await pageQueryFingerprint({ orgId, pageSize: query.pageSize })
+    const fingerprint = await pageQueryFingerprint({ pageSize: query.pageSize })
     const after = await decodeOptionalPageToken(c.get('platform'), query.pageToken, {
       query: fingerprint,
       codec: trashCursorCodec,
     })
-    const result = await listTrashedObjects(c.get('deps'), { orgId, pageSize: query.pageSize, after })
+    const result = await listTrashedObjects(c.get('deps'), { pageSize: query.pageSize, after })
     return c.json(
       {
         items: result.result.items.map(toMatterDTO),
@@ -145,19 +137,14 @@ const trash = app
     )
   })
   .openapi(getTrashObjectRoute, async (c) => {
-    const orgId = c.get('orgId')
-    if (!orgId) throw badRequest('No active organization')
-    const result = await getTrashObject(c.get('deps'), { orgId, objectId: c.req.valid('param').id })
+    const result = await getTrashObject(c.get('deps'), { objectId: c.req.valid('param').id })
     if (!result.ok) throw result.error
     return c.json(toMatterDTO(result.matter), 200)
   })
   .openapi(restoreObjectRoute, async (c) => {
-    const orgId = c.get('orgId')
-    if (!orgId) throw badRequest('No active organization')
     // NameConflictError from the restore (a same-named item appeared while
     // trashed) propagates to onError → 409.
     const result = await restoreObject(c.get('deps'), {
-      orgId,
       objectId: c.req.valid('param').id,
       onConflict: c.req.valid('json').onConflict,
     })
@@ -165,10 +152,7 @@ const trash = app
     return c.json(toMatterDTO(result.matter), 200)
   })
   .openapi(purgeObjectRoute, async (c) => {
-    const orgId = c.get('orgId')
-    if (!orgId) throw badRequest('No active organization')
     const result = await deleteObject(c.get('deps'), {
-      orgId,
       objectId: c.req.valid('param').id,
     })
     if (!result.ok) throw notFound()

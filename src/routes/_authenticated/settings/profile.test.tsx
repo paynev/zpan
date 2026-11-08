@@ -30,11 +30,6 @@ vi.mock('@/lib/auth-client', () => ({
   useSession: () => ({ data: session.value }),
 }))
 
-vi.mock('@/lib/api', () => ({
-  deleteAvatar: vi.fn(),
-  uploadAvatar: vi.fn(),
-}))
-
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()

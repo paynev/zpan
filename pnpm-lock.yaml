@@ -28,11 +28,6 @@ overrides:
   ws: 8.21.0
   '@esbuild-kit/core-utils>esbuild': 0.25.12
 
-patchedDependencies:
-  '@better-auth/oauth-provider@1.7.0-rc.2':
-    hash: f935a3a4ac53781f80cd9d359509df6deee52343fef73bd1385ded320d22921d
-    path: patches/@better-auth__oauth-provider@1.7.0-rc.2.patch
-
 importers:
 
   .:
@@ -49,12 +44,6 @@ importers:
       '@better-auth/api-key':
         specifier: 1.7.0-rc.2
         version: 1.7.0-rc.2(@better-auth/core@1.7.0-rc.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(better-auth@1.7.0-rc.2(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-sqlite3@12.10.0)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260921.1)(@libsql/client@0.17.2)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.10.0)(kysely@0.28.17))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.11))(better-call@1.3.7(zod@4.4.3))
-      '@better-auth/oauth-provider':
-        specifier: 1.7.0-rc.2
-        version: 1.7.0-rc.2(patch_hash=f935a3a4ac53781f80cd9d359509df6deee52343fef73bd1385ded320d22921d)(@better-auth/core@1.7.0-rc.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.7.0-rc.2(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-sqlite3@12.10.0)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260921.1)(@libsql/client@0.17.2)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.10.0)(kysely@0.28.17))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.11))(better-call@1.3.7(zod@4.4.3))
-      '@better-captcha/react':
-        specifier: ^0.7.0
-        version: 0.7.0(react@19.2.5)(typescript@7.0.2)
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -64,9 +53,6 @@ importers:
       '@hono/zod-openapi':
         specifier: ^1.4.0
         version: 1.4.0(hono@4.13.5)(zod@4.4.3)
-      '@hono/zod-validator':
-        specifier: ^0.7.6
-        version: 0.7.6(hono@4.13.5)(zod@4.4.3)
       '@hookform/resolvers':
         specifier: ^5.2.2
         version: 5.2.2(react-hook-form@7.72.1(react@19.2.5))
@@ -115,9 +101,6 @@ importers:
       echarts:
         specifier: ^6.1.0
         version: 6.1.0
-      fflate:
-        specifier: ^0.8.3
-        version: 0.8.3
       hono:
         specifier: ^4.13.5
         version: 4.13.5
@@ -127,9 +110,6 @@ importers:
       i18next-browser-languagedetector:
         specifier: ^8.2.1
         version: 8.2.1
-      jose:
-        specifier: 6.2.3
-        version: 6.2.3
       lucide-react:
         specifier: ^0.577.0
         version: 0.577.0(react@19.2.5)
@@ -139,12 +119,6 @@ importers:
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-      nodemailer:
-        specifier: ^9.1.0
-        version: 9.1.1
-      paseto-ts:
-        specifier: ^2.0.6
-        version: 2.0.6
       pdfjs-dist:
         specifier: ^6.2.108
         version: 6.2.108
@@ -187,9 +161,6 @@ importers:
       shiki:
         specifier: ^4.0.2
         version: 4.0.2
-      simple-icons:
-        specifier: ^16.18.0
-        version: 16.18.0
       sonner:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -202,9 +173,6 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
-      zpan-cloud-sdk:
-        specifier: ^2.5.2
-        version: 2.5.2(hono@4.13.5)(zod@4.4.3)
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.4.10
@@ -242,9 +210,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.0
         version: 7.6.13
-      '@types/nodemailer':
-        specifier: ^8.0.0
-        version: 8.0.0
+      '@types/node':
+        specifier: ^25.9.1
+        version: 25.9.1
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.14
@@ -643,15 +611,6 @@ packages:
       mongodb:
         optional: true
 
-  '@better-auth/oauth-provider@1.7.0-rc.2':
-    resolution: {integrity: sha512-fc3jCYwS/PaQyErOPqIUplqK456zhrmNWGnJPhDEF68merXBQN1OodUTzicZ3skFDpAv6MY3m5vk4D1Gz3R/oA==}
-    peerDependencies:
-      '@better-auth/core': 1.7.0-rc.2
-      '@better-auth/utils': 0.4.2
-      '@better-fetch/fetch': 1.3.1
-      better-auth: ^1.7.0-rc.2
-      better-call: 1.3.7
-
   '@better-auth/prisma-adapter@1.7.0-rc.2':
     resolution: {integrity: sha512-OFRJbg44ha2zD5lpXIKfoGBEwPe58YBhwIgKlfRuHpsZSpknaXOTvFIH2da8q8SK5L5mjYQ9vSsnX0oOf8gNDA==}
     peerDependencies:
@@ -674,15 +633,6 @@ packages:
 
   '@better-auth/utils@0.4.2':
     resolution: {integrity: sha512-AUxrvu+HaaODsUyzDxFgwd/8RZ1yZaYo42LXKSrU2oGgR38pS1ij8nqQKNgtTWoYGpNevNXtCfgTy6loHveW9A==}
-
-  '@better-captcha/core@0.7.0':
-    resolution: {integrity: sha512-fOTHeBbhf7WzstFp67eeaKyvrnH+nvPfsy1fyz+cj8scn16pgOxuwHONdnr23dXEpfa9DngKJEq/4TNGvX8Mkw==}
-
-  '@better-captcha/react@0.7.0':
-    resolution: {integrity: sha512-gvQeRVyjIceShoXu5atL3u4gB6glOL3ZthQV/bQMt05JWf2QK3IUTy9G0zAMu+f3J8QFaWLpHNoCcNAEqwOcCA==}
-    peerDependencies:
-      react: ^18 || ^19
-      typescript: ^5.0.0
 
   '@better-fetch/fetch@1.3.1':
     resolution: {integrity: sha512-ABkD1WhyfPZprKRQI3bhATjeiFuNWC9PXhfGWqL+sg/gKrM977oFrYkdb4msM3hgUGonr7KlOsOFT5TU2rht9g==}
@@ -1314,12 +1264,6 @@ packages:
     peerDependencies:
       hono: '>=4.10.0'
       zod: ^4.0.0
-
-  '@hono/zod-validator@0.7.6':
-    resolution: {integrity: sha512-Io1B6d011Gj1KknV4rXYz4le5+5EubcWEU/speUjuw9XMMIaP3n78yXLhjd2A3PXaXaUwEAluOiAyLqhBEJgsw==}
-    peerDependencies:
-      hono: '>=3.9.0'
-      zod: ^3.25.0 || ^4.0.0
 
   '@hono/zod-validator@0.8.0':
     resolution: {integrity: sha512-5uS4S1/LKtZQYvD4BtpPUFkOv8d1wNxHHrChm26buMiEYc1FrHWvDUaKVBwkiVtvSExHSpLGDvcnpI2Copyj9w==}
@@ -3057,36 +3001,6 @@ packages:
   '@speed-highlight/core@1.2.15':
     resolution: {integrity: sha512-BMq1K3DsElxDWawkX6eLg9+CKJrTVGCBAWVuHXVUV2u0s2711qiChLSId6ikYPfxhdYocLNt3wWwSvDiTvFabw==}
 
-  '@stablelib/binary@2.0.1':
-    resolution: {integrity: sha512-U9iAO8lXgEDONsA0zPPSgcf3HUBNAqHiJmSHgZz62OvC3Hi2Bhc5kTnQ3S1/L+sthDTHtCMhcEiklmIly6uQ3w==}
-
-  '@stablelib/blake2b@2.0.1':
-    resolution: {integrity: sha512-kBN4i9FHpkTEVrHwKtb1ZjI6QwyoK8emY9TaLcHHFSZkw2FN9Td8Js9mU2U10q+EZ3Mp6z78QgdPDwJXbc3Dtw==}
-
-  '@stablelib/chacha@2.0.1':
-    resolution: {integrity: sha512-lS1FqtNqofxe2vLkRsLli2m3x/XanUyAYRphLhdHumKeIsLbjbCXdCq3Pf/eWiO7G3QlSG5ViqnoVjktzfLWMg==}
-
-  '@stablelib/ed25519@2.1.0':
-    resolution: {integrity: sha512-8GLWoJur9nJiErABKHs5MjceSiYJJ2n8QP9k8Q5x6GWU2y5oAQ6qzPh8kCgQy5aHlUxcmRA1frQ5Gu2bHoIDPw==}
-
-  '@stablelib/hash@2.0.0':
-    resolution: {integrity: sha512-u3WPSqGido8lwJuMcrBgM5K54LrPGhkWAdtsyccf7dGsLixAZUds77zOAbu7bvKPwQlmoByH0txBi5rTmEKuHg==}
-
-  '@stablelib/int@2.0.1':
-    resolution: {integrity: sha512-Ht63fQp3wz/F8U4AlXEPb7hfJOIILs8Lq55jgtD7KueWtyjhVuzcsGLSTAWtZs3XJDZYdF1WcSKn+kBtbzupww==}
-
-  '@stablelib/random@2.0.1':
-    resolution: {integrity: sha512-W6GAtXEEs7r+dSbuBsvoFmlyL3gLxle41tQkjKu17dDWtDdjhVUbtRfRCQcCUeczwkgjQxMPopgwYEvxXtHXGw==}
-
-  '@stablelib/sha512@2.0.1':
-    resolution: {integrity: sha512-DUNe5cbnoH3sSIN+MG04RvTCLXtkbyy/SnQxiNO+GgF/KSXkkUSlF6mUVvCUdZBZ2X3NgogR+tAvaRSn8wxnLw==}
-
-  '@stablelib/wipe@2.0.1':
-    resolution: {integrity: sha512-1eU2K9EgOcV4qc9jcP6G72xxZxEm5PfeI5H55l08W95b4oRJaqhmlWRc4xZAm6IVSKhVNxMi66V67hCzzuMTAg==}
-
-  '@stablelib/xchacha20@2.0.1':
-    resolution: {integrity: sha512-k55pNv7gIM4mUPU00+nJYTxKiUVNwAtsgrridC0aIU5cVbw9u6qP99x8ENu5eiwOEhZUNg+p3tTOLooCeAOJQA==}
-
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
@@ -3443,9 +3357,6 @@ packages:
 
   '@types/node@25.9.1':
     resolution: {integrity: sha512-xfrlY7UD5rMJk3ZVJP8BNzS28J36YJg+xp+LPXV1TdWxr8uMH5A860QNxYDGQe/ylDSgjxE52Q9VnO7p75tJxg==}
-
-  '@types/nodemailer@8.0.0':
-    resolution: {integrity: sha512-fyf8jWULsCo0d0BuoQ75i6IeoHs47qcqxWc7yUdUcV0pOZGjUTTOvwdG1PRXUDqN/8A64yQdQdnA2pZgcdi+cA==}
 
   '@types/prismjs@1.26.6':
     resolution: {integrity: sha512-vqlvI7qlMvcCBbVe0AKAb4f97//Hy0EBTaiW8AalRnG/xAN5zOiWWyrNqNXeq8+KAuvRewjCVY1+IPxk4RdNYw==}
@@ -4343,9 +4254,6 @@ packages:
     resolution: {integrity: sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==}
     engines: {node: ^12.20 || >= 14.13}
 
-  fflate@0.8.3:
-    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
-
   file-selector@2.1.2:
     resolution: {integrity: sha512-QgXo+mXTe8ljeqUFaX3QVHc5osSItJ/Km+xpocx0aSqWGMSCf6qYs/VnzZgS864Pjn5iceMRFigeAV7AfTlaig==}
     engines: {node: '>= 12'}
@@ -5117,10 +5025,6 @@ packages:
     resolution: {integrity: sha512-YHs7BmmcsdAI5Ozuf8JZo6PT0mv2GIWC9vMfvUC3dp65M8hn7Ux8CPL+2oBI7juNuj9d0ndhTcznq2ODBps9cQ==}
     engines: {node: '>=18'}
 
-  nodemailer@9.1.1:
-    resolution: {integrity: sha512-izw9mVKFix6YSnC9eLgV6g1opl9DUlRio9ZNcq+Wu9Ujn2UwF+8Nl0B8nz22kEC+CTZCvinkxwJ0DeFbb6NwcQ==}
-    engines: {node: '>=6.0.0'}
-
   normalize-path@3.0.0:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
     engines: {node: '>=0.10.0'}
@@ -5162,9 +5066,6 @@ packages:
 
   parse5@8.0.1:
     resolution: {integrity: sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==}
-
-  paseto-ts@2.0.6:
-    resolution: {integrity: sha512-Ul3AzoCcS4uA6jF+GW2zYUxZY78xsqCbfxdv2Khk/30hDxAzcvsWQjp4uW1XcbkrO9zNrPbdBv4HiXgJigWLVA==}
 
   path-expression-matcher@1.5.0:
     resolution: {integrity: sha512-cbrerZV+6rvdQrrD+iGMcZFEiiSrbv9Tfdkvnusy6y0x0GKBXREFg/Y65GhIfm0tnLntThhzCnfKwp1WRjeCyQ==}
@@ -5632,10 +5533,6 @@ packages:
 
   simple-get@4.0.1:
     resolution: {integrity: sha512-brv7p5WgH0jmQJr1ZDDfKDOSeWWg+OVypG99A/5vYGPqJ6pxiaHLy8nxtFjBA7oMa01ebA9gfh1uMCFqOuXxvA==}
-
-  simple-icons@16.18.0:
-    resolution: {integrity: sha512-5KbjcP456Gm1lrk+rhDuX4zFri+3lRX39IjzXAvoMAO8Ne76WlVlM+Z3kA6jdZ7+QHadgXsf++R7g2jaYVbYig==}
-    engines: {node: '>=0.12.18'}
 
   sisteransi@1.0.5:
     resolution: {integrity: sha512-bLGGlR1QxBcynn2d5YmDX4MGjlZvy2MRBDRNHLJ8VI6l6+9FUiyTFNJ0IveOSP0bcXgVDPRcfGqA0pjaqUpfVg==}
@@ -6205,12 +6102,6 @@ packages:
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
-  zpan-cloud-sdk@2.5.2:
-    resolution: {integrity: sha512-ed7grH13go/tcO17o1V2g0FAEN6a+7jQbN3WkDu5l2AabvivOymWqWGNJUZJR5DGkE4g/kGhh290V0dQMUl/hw==}
-    peerDependencies:
-      hono: ^4.7.11
-      zod: ^4.3.6
-
   zrender@6.1.0:
     resolution: {integrity: sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ==}
 
@@ -6770,16 +6661,6 @@ snapshots:
       '@better-auth/core': 1.7.0-rc.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/oauth-provider@1.7.0-rc.2(patch_hash=f935a3a4ac53781f80cd9d359509df6deee52343fef73bd1385ded320d22921d)(@better-auth/core@1.7.0-rc.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(better-auth@1.7.0-rc.2(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-sqlite3@12.10.0)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260921.1)(@libsql/client@0.17.2)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.10.0)(kysely@0.28.17))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.11))(better-call@1.3.7(zod@4.4.3))':
-    dependencies:
-      '@better-auth/core': 1.7.0-rc.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0)
-      '@better-auth/utils': 0.4.2
-      '@better-fetch/fetch': 1.3.1
-      better-auth: 1.7.0-rc.2(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-sqlite3@12.10.0)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260921.1)(@libsql/client@0.17.2)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.10.0)(kysely@0.28.17))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.11)
-      better-call: 1.3.7(zod@4.4.3)
-      jose: 6.2.3
-      zod: 4.4.3
-
   '@better-auth/prisma-adapter@1.7.0-rc.2(@better-auth/core@1.7.0-rc.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)':
     dependencies:
       '@better-auth/core': 1.7.0-rc.2(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260921.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0)
@@ -6794,14 +6675,6 @@ snapshots:
   '@better-auth/utils@0.4.2':
     dependencies:
       '@noble/hashes': 2.2.0
-
-  '@better-captcha/core@0.7.0': {}
-
-  '@better-captcha/react@0.7.0(react@19.2.5)(typescript@7.0.2)':
-    dependencies:
-      '@better-captcha/core': 0.7.0
-      react: 19.2.5
-      typescript: 7.0.2
 
   '@better-fetch/fetch@1.3.1': {}
 
@@ -7200,11 +7073,6 @@ snapshots:
       '@hono/zod-validator': 0.8.0(hono@4.13.5)(zod@4.4.3)
       hono: 4.13.5
       openapi3-ts: 4.6.0
-      zod: 4.4.3
-
-  '@hono/zod-validator@0.7.6(hono@4.13.5)(zod@4.4.3)':
-    dependencies:
-      hono: 4.13.5
       zod: 4.4.3
 
   '@hono/zod-validator@0.8.0(hono@4.13.5)(zod@4.4.3)':
@@ -8763,50 +8631,6 @@ snapshots:
 
   '@speed-highlight/core@1.2.15': {}
 
-  '@stablelib/binary@2.0.1':
-    dependencies:
-      '@stablelib/int': 2.0.1
-
-  '@stablelib/blake2b@2.0.1':
-    dependencies:
-      '@stablelib/binary': 2.0.1
-      '@stablelib/hash': 2.0.0
-      '@stablelib/wipe': 2.0.1
-
-  '@stablelib/chacha@2.0.1':
-    dependencies:
-      '@stablelib/binary': 2.0.1
-      '@stablelib/wipe': 2.0.1
-
-  '@stablelib/ed25519@2.1.0':
-    dependencies:
-      '@stablelib/random': 2.0.1
-      '@stablelib/sha512': 2.0.1
-      '@stablelib/wipe': 2.0.1
-
-  '@stablelib/hash@2.0.0': {}
-
-  '@stablelib/int@2.0.1': {}
-
-  '@stablelib/random@2.0.1':
-    dependencies:
-      '@stablelib/binary': 2.0.1
-      '@stablelib/wipe': 2.0.1
-
-  '@stablelib/sha512@2.0.1':
-    dependencies:
-      '@stablelib/binary': 2.0.1
-      '@stablelib/hash': 2.0.0
-      '@stablelib/wipe': 2.0.1
-
-  '@stablelib/wipe@2.0.1': {}
-
-  '@stablelib/xchacha20@2.0.1':
-    dependencies:
-      '@stablelib/binary': 2.0.1
-      '@stablelib/chacha': 2.0.1
-      '@stablelib/wipe': 2.0.1
-
   '@standard-schema/spec@1.1.0': {}
 
   '@standard-schema/utils@0.3.0': {}
@@ -9119,10 +8943,6 @@ snapshots:
   '@types/node@25.9.1':
     dependencies:
       undici-types: 7.24.6
-
-  '@types/nodemailer@8.0.0':
-    dependencies:
-      '@types/node': 25.9.1
 
   '@types/prismjs@1.26.6': {}
 
@@ -9860,8 +9680,6 @@ snapshots:
     dependencies:
       node-domexception: 1.0.0
       web-streams-polyfill: 3.3.3
-
-  fflate@0.8.3: {}
 
   file-selector@2.1.2:
     dependencies:
@@ -10851,8 +10669,6 @@ snapshots:
 
   node-releases@2.0.54: {}
 
-  nodemailer@9.1.1: {}
-
   normalize-path@3.0.0: {}
 
   nth-check@2.1.1:
@@ -10902,12 +10718,6 @@ snapshots:
   parse5@8.0.1:
     dependencies:
       entities: 8.0.0
-
-  paseto-ts@2.0.6:
-    dependencies:
-      '@stablelib/blake2b': 2.0.1
-      '@stablelib/ed25519': 2.1.0
-      '@stablelib/xchacha20': 2.0.1
 
   path-expression-matcher@1.5.0: {}
 
@@ -11563,8 +11373,6 @@ snapshots:
       once: 1.4.0
       simple-concat: 1.0.1
 
-  simple-icons@16.18.0: {}
-
   sisteransi@1.0.5: {}
 
   slice-ansi@7.1.2:
@@ -12155,11 +11963,6 @@ snapshots:
   zod@3.25.76: {}
 
   zod@4.4.3: {}
-
-  zpan-cloud-sdk@2.5.2(hono@4.13.5)(zod@4.4.3):
-    dependencies:
-      hono: 4.13.5
-      zod: 4.4.3
 
   zrender@6.1.0:
     dependencies:

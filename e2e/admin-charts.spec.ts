@@ -91,11 +91,6 @@ test('admin dashboard and analytics render chart geometry @desktop', async ({ pa
     }
   })
   await page.route('**/api/site/analytics', (route) => route.fulfill({ json: overview }))
-  await page.route('**/api/site/licensing/entitlements', (route) =>
-    route.fulfill({
-      json: { bound: true, active: true, edition: 'pro', features: ['analytics'] },
-    }),
-  )
   await page.route('**/api/site/analytics/growth**', (route) => route.fulfill({ json: growth }))
 
   await signInAsAdmin(page)

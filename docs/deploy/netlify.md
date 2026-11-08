@@ -128,31 +128,15 @@ Upgrade to Netlify Pro ($19/month) or Turso Scaler ($29/month) when you need mor
 
 ---
 
-## Entitlement Refresh (License Cert)
+## Background work
 
-ZPan refreshes its entitlement certificate every 6 hours. On Netlify there is no persistent process, so you need to trigger a refresh via an external scheduler.
+Serverless targets have no persistent process, so the recurring maintenance jobs
+that Node/Docker run on intervals (hourly statistics rollups, WebDAV lock expiry,
+resource-change retention, and daily trash purge) do not run automatically on
+this target. They are maintenance-only and can be left to a scheduled invocation
+if needed.
 
-### Setup
-
-1. **Generate a secret:**
-   ```sh
-   openssl rand -hex 32
-   ```
-
-2. **Add the env var** via the Netlify dashboard (**Site configuration → Environment variables**) or CLI:
-   ```sh
-   netlify env:set REFRESH_CRON_SECRET <your-secret> --context production
-   ```
-
-3. **Schedule the calls** using [Netlify Scheduled Functions](https://docs.netlify.com/functions/scheduled-functions/) or an external cron service (e.g. [cron-job.org](https://cron-job.org)):
-   ```
-   POST https://your-site.netlify.app/api/internal/licensing/refresh-runs
-   ```
-   Run this every 6 hours.
-
-   ```
-   POST https://your-site.netlify.app/api/internal/traffic-sync-runs
-   ```
-   Run this every 10 minutes.
-
-Send `Authorization: Bearer <REFRESH_CRON_SECRET>` with every scheduler request. If `REFRESH_CRON_SECRET` is not set, the endpoint returns `401` for all requests.
+Optional instance telemetry is exposed at
+`POST /api/internal/instance-telemetry/report` and is gated by
+`ZPAN_INTERNAL_API_TOKEN`. The single-admin build has no license refresh or
+metered traffic sync endpoints.

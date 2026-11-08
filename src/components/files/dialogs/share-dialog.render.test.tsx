@@ -29,7 +29,6 @@ vi.mock('@/lib/api', () => ({
 
 const item: StorageObject = {
   id: 'matter-1',
-  orgId: 'org-1',
   alias: '',
   name: 'release-notes.pdf',
   type: 'application/pdf',

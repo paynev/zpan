@@ -23,7 +23,6 @@ interface UploadDropzoneProps {
   /**
    * Custom upload function. When provided, bypasses the default object-upload
    * flow (create-draft → S3 PUT → confirm) and calls this instead.
-   * Used by Image Host to upload via /api/ihost/images.
    */
   uploadFn?: (file: File, ctx: UploadRunnerContext) => Promise<void>
   children: React.ReactNode

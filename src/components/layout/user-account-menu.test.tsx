@@ -68,14 +68,15 @@ afterEach(() => {
 })
 
 describe('UserAccountMenu', () => {
-  it('links to the public profile, personal settings, and admin access but omits teams', async () => {
+  it('links to personal settings and admin access without a public profile or teams entry', async () => {
     const view = render(<UserAccountMenu showAdminLink showFrontendLinks />)
 
     fireEvent.pointerDown(view.getByRole('button', { name: /Admin User/ }), { button: 0, ctrlKey: false })
 
-    expect((await view.findByRole('menuitem', { name: 'nav.profile' })).getAttribute('href')).toBe('/u/admin')
-    expect(await view.findByRole('menuitem', { name: 'nav.settings' })).toBeTruthy()
+    expect((await view.findByRole('menuitem', { name: 'nav.settings' })).getAttribute('href')).toBe('/settings')
     expect(view.getByRole('menuitem', { name: 'nav.adminPanel' })).toBeTruthy()
+    // The single-admin build has no public user profile pages.
+    expect(view.queryByRole('menuitem', { name: 'nav.profile' })).toBeNull()
     expect(view.queryByText('nav.teams')).toBeNull()
   })
 })

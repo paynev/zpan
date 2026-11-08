@@ -17,7 +17,6 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 
 const item: StorageObject = {
   id: 'file-1',
-  orgId: 'org-1',
   alias: 'alias-1',
   name: 'report.pdf',
   type: 'application/pdf',

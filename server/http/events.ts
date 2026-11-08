@@ -4,19 +4,14 @@ import { errorResponseSchema } from '@shared/schemas'
 import { createMiddleware } from 'hono/factory'
 import type { Env } from '../middleware/platform'
 import { type EventsMessage, streamEvents } from '../usecases/events'
-import { forbidden, unauthorized } from '../usecases/ports'
+import { unauthorized } from '../usecases/ports'
 import { authRoute } from './openapi'
 
 const encoder = new TextEncoder()
 
 const requireEventsAccess = createMiddleware<Env>(async (c, next) => {
   const principal = c.get('principal')
-  if (principal?.kind === 'user') {
-    await next()
-    return
-  }
-  if (principal?.kind === 'api-key') {
-    if (!principal.orgId) throw forbidden('Forbidden')
+  if (principal?.kind === 'user' || principal?.kind === 'api-key') {
     await next()
     return
   }
@@ -27,7 +22,7 @@ const requireEventsAccess = createMiddleware<Env>(async (c, next) => {
 // is just a string. OpenAPI 3.x has no native way to type the named events of a
 // single stream, so they're spelled out in the route description below.
 const eventStreamRoute = authRoute(
-  { scopes: [AuthorizationScope.DOWNLOAD_TASKS_READ] },
+  { scopes: [AuthorizationScope.OBJECTS_READ] },
   {
     operationId: 'streamEvents',
     tags: ['Events'],
@@ -43,7 +38,7 @@ const eventStreamRoute = authRoute(
       '- `heartbeat` → `{ at }` — keep-alive emitted when nothing changed for a while',
       '- `error` → `{ message }` — a domain query failed this tick',
       '',
-      'Workspace-scoped API keys require `download-tasks:read`. Their stream is limited to download-task changes from the key workspace plus heartbeat and error control events.',
+      'The stream multiplexes the global site feed with the authenticated user feed (when signed in).',
     ].join('\n'),
     responses: {
       200: {
@@ -78,9 +73,6 @@ export const events = new OpenAPIHono<Env>().openapi(eventStreamRoute, (c) => {
   c.req.raw.signal.addEventListener('abort', () => abort.abort())
 
   const params = {
-    platform: c.get('platform'),
-    scope: c.get('principal')?.kind === 'api-key' ? ('download-tasks-only' as const) : ('user' as const),
-    orgId: c.get('orgId'),
     userId: c.get('userId'),
     afterSequence: parseLastEventId(c.req.header('Last-Event-ID')),
   }
