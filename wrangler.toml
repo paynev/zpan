@@ -62,8 +62,7 @@ head_sampling_rate = 0.1
 # quota while waking the Worker for nothing.
 #   10 * * * *   hourly stats rollup + WebDAV lock / resource-change cleanup
 #   0 4 * * *    expired trash purge
-#   0 */12 * * * instance telemetry heartbeat
 [triggers]
-crons = ["10 * * * *", "0 4 * * *", "0 */12 * * *"]
+crons = ["10 * * * *", "0 4 * * *"]
 
 
