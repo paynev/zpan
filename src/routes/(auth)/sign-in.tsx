@@ -1,6 +1,6 @@
 import { DEFAULT_SITE_NAME } from '@shared/constants'
 import { normalizeLoginIdentifier } from '@shared/login-identifier'
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
@@ -86,12 +86,7 @@ function SignIn() {
             />
           </div>
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="password">{t('auth.password')}</Label>
-              <Link to="/forgot-password" className="text-xs text-muted-foreground underline hover:text-foreground">
-                {t('auth.forgotPassword')}
-              </Link>
-            </div>
+            <Label htmlFor="password">{t('auth.password')}</Label>
             <Input
               id="password"
               type="password"

@@ -8,7 +8,7 @@ export const authClient = createAuthClient({
   plugins: [lastLoginMethodClient()],
 })
 
-export const { signIn, useSession, requestPasswordReset, resetPassword } = authClient
+export const { signIn, useSession } = authClient
 
 // biome-ignore lint/suspicious/noExplicitAny: generic wrapping requires any
 function wrapAuthFunction<T extends (...args: any[]) => any>(fn: T): T {
