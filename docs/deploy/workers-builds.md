@@ -92,6 +92,7 @@ A failed trigger update also aborts the rest of `pnpm workers-builds:deploy`: `w
 | `NODE_VERSION` | `24` | `engines` requires Node >= 24; the Cloudflare build VM does not honour the Volta pin |
 | `CLOUDFLARE_ACCOUNT_ID` | your account ID | Needed by the remote D1 migration; the script warns if it is absent |
 | `ZPAN_D1_DATABASE_ID` / `ZPAN_KV_NAMESPACE_ID` | optional | Pin existing resources instead of auto-provisioning |
+| `ZPAN_D1_DATABASE_NAME` | optional | Force which remote D1 database `workers-builds:migrate` / `verify` target when the account has several |
 | `ZPAN_CRON_LIMIT` | optional | Cron trigger ceiling checked by `workers-builds:check`; defaults to `5` (Workers Free), raise it on Workers Paid |
 | `ZPAN_SYNC_WEBDAV` | `1` | Optional WebDAV post-processing (see below) |
 
@@ -111,9 +112,13 @@ A failed trigger update also aborts the rest of `pnpm workers-builds:deploy`: `w
 What each command does:
 
 - `pnpm workers-builds:build` → optionally pin resource IDs from `ZPAN_*_ID` variables → `pnpm build` (agent-skills + Vite, producing `dist/zpan/wrangler.json`) → verify that the generated Worker name is `zpan` and that the `DB` / `CACHE_KV` bindings are present.
-- `pnpm workers-builds:deploy` → `wrangler deploy` (**creates D1/KV on a fresh account**) → `pnpm db:migrate:d1:prod` (`wrangler d1 migrations apply DB --remote`) → optional WebDAV post-processing.
+- `pnpm workers-builds:deploy` → `wrangler deploy` (**creates D1/KV on a fresh account**) → resolve the remote D1 UUID(s) and run `wrangler d1 migrations apply <uuid> --remote` → **verify the business tables exist** → optional WebDAV post-processing.
 
-**Deploy runs before migrations on purpose.** With no IDs in the config, the remote database does not exist until `wrangler deploy` provisions it; migrating first would fail on a brand-new account. The few-second window before migrations finish is harmless as long as migrations stay additive. Migrations reference the **binding name** `DB` rather than the database name, per Cloudflare's [Deploy button best practice](https://developers.cloudflare.com/workers/platform/deploy-buttons/), so a renamed resource still resolves.
+**Deploy runs before migrations on purpose.** With no IDs in the config, the remote database does not exist until `wrangler deploy` provisions it; migrating first would fail on a brand-new account. The few-second window before migrations finish is harmless as long as migrations stay additive.
+
+**Migrations must target the UUID, not the `DB` binding.** `wrangler d1 ... DB` resolves the binding through the config: with no `database_id`, Wrangler looks up `database_name` (`zpan-dba`) in the API. An auto-provisioned database is named `<worker>-<binding>` (`zpan-db`), so that lookup can miss — or worse, hit a different empty database — and the Worker then fails with `D1_ERROR: no such table: system_options`. The deploy script instead runs `wrangler d1 list --json`, migrates every plausible `zpan*` database by UUID (migrations are idempotent via `d1_migrations`), and then queries `sqlite_master` for `d1_migrations`, `system_options`, `user`, `account`, `session`. If none of them exist, the deploy **fails loudly** instead of leaving an empty schema behind.
+
+Double-check this setting after a deploy that "succeeded" but has no business tables: if the log never shows `$ wrangler d1 list --json` / `$ wrangler d1 migrations apply`, the dashboard is still running the default `wrangler deploy` as its Deploy command.
 
 If Cloudflare does not install dependencies automatically (or the log shows `pnpm: command not found`), use this Build command instead:
 
@@ -122,6 +127,24 @@ corepack enable && pnpm install --frozen-lockfile && pnpm workers-builds:build
 ```
 
 Run `pnpm workers-builds:check` locally for a read-only self-check of the bindings, any configured overrides, and the generated deploy config.
+
+### Inspect / repair the remote D1 schema
+
+Two commands work on an already-deployed Worker, without redeploying it:
+
+| Command | Effect |
+| --- | --- |
+| `pnpm workers-builds:verify` | Read-only: lists remote D1 databases, tables in each `zpan*` database and the applied migration count. Exits non-zero if there are no business tables |
+| `pnpm workers-builds:migrate` | Applies migrations to the remote database(s) and verifies the core tables; `pnpm db:migrate:d1:prod` is an alias |
+
+Both need Cloudflare credentials in the environment (the token needs `Account → D1 → Edit`; `wrangler login` works locally too):
+
+```sh
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm workers-builds:verify
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm workers-builds:migrate
+```
+
+On Windows PowerShell, set them with `$env:CLOUDFLARE_API_TOKEN = "..."` and `$env:CLOUDFLARE_ACCOUNT_ID = "..."` first. If the account has several unrelated D1 databases, pin the target with `ZPAN_D1_DATABASE_ID=<uuid>` (or `ZPAN_D1_DATABASE_NAME=<name>`); `verify` prints the UUIDs.
 
 ## 3. Avoid double deploys
 
@@ -150,6 +173,9 @@ Prerequisites: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` available to t
 | `Workers Free limit of 5 cron triggers per account` (code 10072) at the end of deploy | The Worker was uploaded but the deploy command failed and **D1 migrations did not run**. Keep `[triggers].crons` at 3 (see [Cron triggers](#cron-triggers-and-the-free-plan-quota)), delete leftover triggers in the dashboard, then re-run the deployment |
 | 403 / authorization error while creating D1 or migrating | Add `Account → D1 → Edit` to the `Workers Builds` token |
 | `D1 database not found` on the very first deploy | Migrations must run **after** `wrangler deploy`; use `pnpm workers-builds:deploy` rather than an older `pnpm deploy` ordering |
+| Deploy succeeds but the D1 database is empty / `D1_ERROR: no such table: system_options` | The Deploy command in **Settings → Build** is probably still the default `wrangler deploy`, which never runs migrations. Set it to `pnpm workers-builds:deploy`, or run `pnpm workers-builds:migrate` once to repair, then confirm with `pnpm workers-builds:verify` |
+| `Couldn't find a D1 DB named 'zpan-dba'` in the deploy log | Old migration step resolved the `DB` binding by name. The current script migrates by UUID instead; pull the latest commit and redeploy |
+| `Could not decide which D1 database to migrate` | Several unrelated D1 databases on the account; set `ZPAN_D1_DATABASE_ID` to the UUID printed by `pnpm workers-builds:verify` |
 | Rate limit counters shared with another Worker | `WEBDAV_RATE_LIMITER` `namespace_id` is an arbitrary account-local integer; pick a unique one |
 | Worker name mismatch on build | The dashboard Worker must be named `zpan` |
 | `Invalid package manager specification` | `packageManager` must be an exact semver, not a range (this repo pins `pnpm@10.30.2`) |
