@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import type { AdminDashboardGrowthStats, AdminOverview } from '@shared/types'
+import type { AdminDashboardGrowthStats } from '@shared/types'
 import { signInAsAdmin } from './helpers'
 
 const completeCoverage = {
@@ -10,43 +10,6 @@ const completeCoverage = {
   quality: 'exact',
   dataThrough: '2026-07-21T23:00:00.000Z',
 } as const
-
-const overview: AdminOverview = {
-  observedAt: '2026-07-22T00:00:00.000Z',
-  users: {
-    total: 42,
-    active30Days: 18,
-    new7Days: 5,
-    activity: { total: 42, today: 3, last7Days: 5, last30Days: 10, inactive: 24 },
-    trend: [
-      { date: '2026-07-20', totalUsers: 40, activeUsers: 16, newUsers: 2 },
-      { date: '2026-07-21', totalUsers: 42, activeUsers: 18, newUsers: 2 },
-    ],
-    topUsage: [],
-  },
-  storages: {
-    total: 1,
-    writable: 1,
-    used: 500,
-    capacity: 1000,
-    unbounded: 0,
-    trend: [
-      { date: '2026-07-20', usedBytes: 400, writtenBytes: 120, releasedBytes: 20 },
-      { date: '2026-07-21', usedBytes: 500, writtenBytes: 150, releasedBytes: 50 },
-    ],
-    items: [],
-  },
-  downloaders: {
-    total: 0,
-    online: 0,
-    activeTasks: 0,
-    totalSlots: 0,
-    availableSlots: 0,
-    downloadBps: 0,
-    uploadBps: 0,
-    items: [],
-  },
-}
 
 const growth: AdminDashboardGrowthStats = {
   generatedAt: '2026-07-22T00:00:00.000Z',
@@ -83,23 +46,16 @@ const growth: AdminDashboardGrowthStats = {
   ],
 }
 
-test('admin dashboard and analytics render chart geometry @desktop', async ({ page }) => {
+test('admin analytics renders chart geometry @desktop', async ({ page }) => {
   const invalidChartDimensions: string[] = []
   page.on('console', (message) => {
     if (message.type() === 'warning' && message.text().includes('width(-1) and height(-1)')) {
       invalidChartDimensions.push(message.text())
     }
   })
-  await page.route('**/api/site/analytics', (route) => route.fulfill({ json: overview }))
   await page.route('**/api/site/analytics/growth**', (route) => route.fulfill({ json: growth }))
 
   await signInAsAdmin(page)
-  await page.goto('/admin/dashboard')
-
-  await expect(page.locator('.recharts-line-curve')).toHaveCount(3)
-  await expect(page.locator('.recharts-area-area')).toHaveCount(1)
-  await expect(page.locator('.recharts-sector')).toHaveCount(6)
-
   await page.goto('/admin/analytics')
   await expect(page.getByText('用户规模趋势')).toBeVisible()
 

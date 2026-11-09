@@ -26,7 +26,6 @@ import { Route as AuthenticatedSettingsWebdavRouteImport } from './routes/_authe
 import { Route as AuthenticatedSettingsProfileRouteImport } from './routes/_authenticated/settings/profile'
 import { Route as AuthenticatedSettingsPasswordRouteImport } from './routes/_authenticated/settings/password'
 import { Route as AuthenticatedSettingsApiKeysRouteImport } from './routes/_authenticated/settings/api-keys'
-import { Route as AuthenticatedAdminDashboardRouteImport } from './routes/_authenticated/admin/dashboard'
 import { Route as AuthenticatedAdminAuditRouteImport } from './routes/_authenticated/admin/audit'
 import { Route as AuthenticatedAdminAnnouncementRouteImport } from './routes/_authenticated/admin/announcement'
 import { Route as AuthenticatedAdminAnalyticsRouteImport } from './routes/_authenticated/admin/analytics'
@@ -126,12 +125,6 @@ const AuthenticatedSettingsApiKeysRoute =
     path: '/api-keys',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
-const AuthenticatedAdminDashboardRoute =
-  AuthenticatedAdminDashboardRouteImport.update({
-    id: '/dashboard',
-    path: '/dashboard',
-    getParentRoute: () => AuthenticatedAdminRouteRoute,
-  } as any)
 const AuthenticatedAdminAuditRoute = AuthenticatedAdminAuditRouteImport.update({
   id: '/audit',
   path: '/audit',
@@ -178,7 +171,6 @@ export interface FileRoutesByFullPath {
   '/admin/analytics': typeof AuthenticatedAdminAnalyticsRoute
   '/admin/announcement': typeof AuthenticatedAdminAnnouncementRoute
   '/admin/audit': typeof AuthenticatedAdminAuditRoute
-  '/admin/dashboard': typeof AuthenticatedAdminDashboardRoute
   '/settings/api-keys': typeof AuthenticatedSettingsApiKeysRoute
   '/settings/password': typeof AuthenticatedSettingsPasswordRoute
   '/settings/profile': typeof AuthenticatedSettingsProfileRoute
@@ -201,7 +193,6 @@ export interface FileRoutesByTo {
   '/admin/analytics': typeof AuthenticatedAdminAnalyticsRoute
   '/admin/announcement': typeof AuthenticatedAdminAnnouncementRoute
   '/admin/audit': typeof AuthenticatedAdminAuditRoute
-  '/admin/dashboard': typeof AuthenticatedAdminDashboardRoute
   '/settings/api-keys': typeof AuthenticatedSettingsApiKeysRoute
   '/settings/password': typeof AuthenticatedSettingsPasswordRoute
   '/settings/profile': typeof AuthenticatedSettingsProfileRoute
@@ -228,7 +219,6 @@ export interface FileRoutesById {
   '/_authenticated/admin/analytics': typeof AuthenticatedAdminAnalyticsRoute
   '/_authenticated/admin/announcement': typeof AuthenticatedAdminAnnouncementRoute
   '/_authenticated/admin/audit': typeof AuthenticatedAdminAuditRoute
-  '/_authenticated/admin/dashboard': typeof AuthenticatedAdminDashboardRoute
   '/_authenticated/settings/api-keys': typeof AuthenticatedSettingsApiKeysRoute
   '/_authenticated/settings/password': typeof AuthenticatedSettingsPasswordRoute
   '/_authenticated/settings/profile': typeof AuthenticatedSettingsProfileRoute
@@ -255,7 +245,6 @@ export interface FileRouteTypes {
     | '/admin/analytics'
     | '/admin/announcement'
     | '/admin/audit'
-    | '/admin/dashboard'
     | '/settings/api-keys'
     | '/settings/password'
     | '/settings/profile'
@@ -278,7 +267,6 @@ export interface FileRouteTypes {
     | '/admin/analytics'
     | '/admin/announcement'
     | '/admin/audit'
-    | '/admin/dashboard'
     | '/settings/api-keys'
     | '/settings/password'
     | '/settings/profile'
@@ -304,7 +292,6 @@ export interface FileRouteTypes {
     | '/_authenticated/admin/analytics'
     | '/_authenticated/admin/announcement'
     | '/_authenticated/admin/audit'
-    | '/_authenticated/admin/dashboard'
     | '/_authenticated/settings/api-keys'
     | '/_authenticated/settings/password'
     | '/_authenticated/settings/profile'
@@ -446,13 +433,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsApiKeysRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
-    '/_authenticated/admin/dashboard': {
-      id: '/_authenticated/admin/dashboard'
-      path: '/dashboard'
-      fullPath: '/admin/dashboard'
-      preLoaderRoute: typeof AuthenticatedAdminDashboardRouteImport
-      parentRoute: typeof AuthenticatedAdminRouteRoute
-    }
     '/_authenticated/admin/audit': {
       id: '/_authenticated/admin/audit'
       path: '/audit'
@@ -503,7 +483,6 @@ interface AuthenticatedAdminRouteRouteChildren {
   AuthenticatedAdminAnalyticsRoute: typeof AuthenticatedAdminAnalyticsRoute
   AuthenticatedAdminAnnouncementRoute: typeof AuthenticatedAdminAnnouncementRoute
   AuthenticatedAdminAuditRoute: typeof AuthenticatedAdminAuditRoute
-  AuthenticatedAdminDashboardRoute: typeof AuthenticatedAdminDashboardRoute
   AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
   AuthenticatedAdminSettingsIndexRoute: typeof AuthenticatedAdminSettingsIndexRoute
   AuthenticatedAdminStoragesIndexRoute: typeof AuthenticatedAdminStoragesIndexRoute
@@ -515,7 +494,6 @@ const AuthenticatedAdminRouteRouteChildren: AuthenticatedAdminRouteRouteChildren
     AuthenticatedAdminAnalyticsRoute: AuthenticatedAdminAnalyticsRoute,
     AuthenticatedAdminAnnouncementRoute: AuthenticatedAdminAnnouncementRoute,
     AuthenticatedAdminAuditRoute: AuthenticatedAdminAuditRoute,
-    AuthenticatedAdminDashboardRoute: AuthenticatedAdminDashboardRoute,
     AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,
     AuthenticatedAdminSettingsIndexRoute: AuthenticatedAdminSettingsIndexRoute,
     AuthenticatedAdminStoragesIndexRoute: AuthenticatedAdminStoragesIndexRoute,

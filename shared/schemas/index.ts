@@ -11,7 +11,6 @@ export {
   adminAnalyticsSharingSchema,
   adminAnalyticsStorageSchema,
   adminAnalyticsTrafficSchema,
-  adminOverviewSchema,
 } from './admin-analytics'
 export type {
   AnnouncementInput,

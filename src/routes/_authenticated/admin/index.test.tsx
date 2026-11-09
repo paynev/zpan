@@ -7,11 +7,11 @@ vi.mock('@tanstack/react-router', () => ({
   redirect,
 }))
 
-import { redirectToAdminDashboard } from './index'
+import { redirectToAdminSettings } from './index'
 
 describe('admin index route', () => {
-  it('redirects to the dashboard route', () => {
-    expect(() => redirectToAdminDashboard()).toThrow()
-    expect(redirect).toHaveBeenCalledWith({ to: '/admin/dashboard' })
+  it('redirects to the settings route', () => {
+    expect(() => redirectToAdminSettings()).toThrow()
+    expect(redirect).toHaveBeenCalledWith({ to: '/admin/settings' })
   })
 })

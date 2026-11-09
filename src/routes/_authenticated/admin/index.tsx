@@ -1,9 +1,9 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 export const Route = createFileRoute('/_authenticated/admin/')({
-  beforeLoad: redirectToAdminDashboard,
+  beforeLoad: redirectToAdminSettings,
 })
 
-export function redirectToAdminDashboard() {
-  throw redirect({ to: '/admin/dashboard' })
+export function redirectToAdminSettings() {
+  throw redirect({ to: '/admin/settings' })
 }

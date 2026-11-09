@@ -8,7 +8,6 @@ import {
   HardDriveDownload,
   Info,
   KeyRound,
-  LayoutDashboard,
   Megaphone,
   Settings,
   ShieldCheck,
@@ -31,7 +30,6 @@ import {
 } from '@/components/ui/sidebar'
 
 const adminNavItems = [
-  { titleKey: 'admin.nav.overview', url: '/admin/dashboard', icon: LayoutDashboard },
   { titleKey: 'admin.nav.users', url: '/admin/users', icon: Users },
   { titleKey: 'admin.nav.teams', url: '/admin/teams', icon: Building2 },
   { titleKey: 'admin.nav.storages', url: '/admin/storages', icon: Database },

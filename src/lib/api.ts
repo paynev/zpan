@@ -23,7 +23,6 @@ import type {
   AdminDashboardOverviewStats,
   AdminDashboardSharingStats,
   AdminDashboardStorageStats,
-  AdminOverview,
   Announcement,
   AuditEvent,
   BrandingConfig,
@@ -45,7 +44,6 @@ import type {
 } from '@shared/types'
 import {
   adminAuditApi,
-  adminOverviewApi,
   announcementsApi,
   authedSharesApi,
   brandingAdminApi,
@@ -69,10 +67,6 @@ export function getSiteConfig() {
 
 export function getSiteSettings() {
   return unwrap<SiteSettings>(siteSettingsApi.index.$get())
-}
-
-export function getAdminOverview() {
-  return unwrap<AdminOverview>(adminOverviewApi.index.$get())
 }
 
 export function updateSiteIdentity(input: UpdateSiteIdentityInput) {

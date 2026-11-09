@@ -34,39 +34,6 @@ const transferQuality = z.object({
 })
 const nameValuePercent = z.object({ name: z.string(), value: n, percent: n })
 
-export const adminOverviewSchema = z
-  .object({
-    observedAt: z.string(),
-    users: z.object({
-      total: nn,
-      active30Days: nn,
-      new7Days: nn,
-      activity: z.object({ total: nn, today: nn, last7Days: nn, last30Days: nn, inactive: nn }),
-      trend: z.array(dated.extend({ totalUsers: nn, activeUsers: nn, newUsers: nn })),
-    }),
-    storages: z.object({
-      total: ni,
-      writable: ni,
-      used: n,
-      capacity: n,
-      unbounded: ni,
-      trend: z.array(dated.extend({ usedBytes: nn, writtenBytes: nn, releasedBytes: nn })),
-      items: z.array(
-        z.object({
-          id: opaqueIdSchema,
-          provider: z.string(),
-          bucket: z.string(),
-          enabled: z.boolean(),
-          status: z.string(),
-          used: n,
-          capacity: n,
-          writable: z.boolean(),
-        }),
-      ),
-    }),
-  })
-  .openapi('AdminDashboard')
-
 export const adminAnalyticsOverviewSchema = z
   .object({
     ...range,

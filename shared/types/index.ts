@@ -55,11 +55,6 @@ export type PaginatedResponse<T> = {
 }
 
 export type {
-  AdminOverview,
-  AdminOverviewStatistics,
-  AdminOverviewStorage,
-} from './admin-overview'
-export type {
   AdminDashboardGrowthStats,
   AdminDashboardOperationsStats,
   AdminDashboardOverviewStats,

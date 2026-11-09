@@ -5,7 +5,6 @@ import type {
   AdminDashboardSharingStats,
   AdminDashboardStorageStats,
   AdminDashboardTrafficStats,
-  AdminOverviewStatistics,
   AdminSharingDataQuality,
   AdminStatsDelta,
   AdminTopShare,
@@ -13,7 +12,7 @@ import type {
 } from '@shared/types'
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm'
 import { user } from '../../db/auth-schema'
-import { auditEvents, matters, shares, statsRollupsHourly } from '../../db/schema'
+import { matters, shares, statsRollupsHourly } from '../../db/schema'
 import {
   ADMIN_STATS_METRICS,
   type AdminStatsDimension,
@@ -42,97 +41,7 @@ export function createAdminStatsRepo(db: Database): AdminStatsRepo {
     getDashboardStorageStats: (now, range) => getDashboardStorageStats(db, now, range),
     getDashboardTrafficStats: (now, range) => getDashboardTrafficStats(db, now, range),
     getDashboardSharingStats: (now, range) => getDashboardSharingStats(db, now, range),
-    getOverviewStatistics: (now, range) => getOverviewStatistics(db, now, range),
   }
-}
-
-async function getOverviewStatistics(
-  db: Database,
-  now: Date,
-  range: AdminStatsDateRange,
-): Promise<AdminOverviewStatistics> {
-  const effective = effectiveRange(range, now)
-  const reader = new AdminStatsHourlyReader(db, range, now)
-  const [
-    inventory,
-    active,
-    liveUsers,
-    newUsersByDay,
-    totalUsersByDay,
-    activeByDay,
-    storageUsedByDay,
-    _counterDays,
-    signupDays,
-  ] = await Promise.all([
-    getUserInventory(reader),
-    getActiveUserSnapshot(reader),
-    getLiveUserSummary(db, now),
-    getSignupsByDay(reader),
-    getUserTotalsByDay(reader),
-    getRollingActiveUserTrend(reader, effective),
-    getStorageUsedByDay(reader),
-    reader.completeDayKeys('counters'),
-    reader.completeDayKeys('counters', ADMIN_STATS_METRICS.userSignup),
-  ])
-  const dates = createDateBuckets(effective)
-  const activeByDate = new Map(activeByDay.map((row) => [row.date, row]))
-  const dau = active?.dau ?? null
-  const wau = active?.wau ?? null
-  const mau = active?.mau ?? null
-
-  return {
-    users: {
-      total: liveUsers.total,
-      active30Days: mau,
-      new7Days: liveUsers.new7Days,
-      activity: {
-        total: inventory?.total ?? null,
-        today: dau,
-        last7Days: dau === null || wau === null ? null : Math.max(0, wau - dau),
-        last30Days: wau === null || mau === null ? null : Math.max(0, mau - wau),
-        inactive: inventory === null || mau === null ? null : Math.max(0, inventory.total - mau),
-      },
-      trend: dates.map((date) => ({
-        date,
-        totalUsers: totalUsersByDay.get(date) ?? null,
-        activeUsers: activeByDate.get(date)?.mau ?? null,
-        newUsers: signupDays.has(date) ? (newUsersByDay.get(date) ?? 0) : null,
-      })),
-    },
-    storageTrend: dates.map((date) => ({
-      date,
-      usedBytes: storageUsedByDay.get(date) ?? null,
-      // The storage usage ledger was removed with the quota system; daily
-      // written/released deltas are no longer reconstructable, so they stay null.
-      writtenBytes: null,
-      releasedBytes: null,
-    })),
-  }
-}
-
-async function getLiveUserSummary(db: Database, now: Date): Promise<{ total: number; new7Days: number }> {
-  const fromMs = utcDateStart(addCalendarDays(dayKey(now), -6)).getTime()
-  const nowMs = now.getTime()
-  const [totalRows, signupRows] = await Promise.all([
-    db.select({ total: sql<number>`COUNT(*)` }).from(user),
-    db
-      .select({ new7Days: sql<number>`COUNT(*)` })
-      .from(auditEvents)
-      .where(
-        and(
-          eq(auditEvents.action, 'user_register'),
-          sql`${auditEvents.targetId} IS NOT NULL`,
-          sql`${auditEvents.userId} = ${auditEvents.targetId}`,
-          sql`${auditEvents.eventKey} = 'event:user_register:' || ${auditEvents.targetId}`,
-          gte(auditEvents.createdAt, new Date(fromMs)),
-          lte(auditEvents.createdAt, new Date(nowMs)),
-          sql`json_valid(${auditEvents.metadata}) = 1`,
-          sql`json_type(${auditEvents.metadata}, '$.provider') = 'text'`,
-          sql`length(json_extract(${auditEvents.metadata}, '$.provider')) > 0`,
-        ),
-      ),
-  ])
-  return { total: Number(totalRows[0]?.total ?? 0), new7Days: Number(signupRows[0]?.new7Days ?? 0) }
 }
 
 async function refreshHourlyRollups(db: Database, now: Date) {
