@@ -8,6 +8,8 @@ export const AuthorizationScope = {
   SHARES_CREATE: 'shares:create',
   SHARES_DELETE: 'shares:delete',
   STORAGE_USAGE_READ: 'storage-usage:read',
+  // Kept as a valid scope for backward compatibility with API keys issued before
+  // the admin analytics page was removed; no route consumes it anymore.
   SITE_ANALYTICS_READ: 'site-analytics:read',
   NOTIFICATIONS_READ: 'notifications:read',
   NOTIFICATIONS_UPDATE: 'notifications:update',

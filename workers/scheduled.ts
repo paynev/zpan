@@ -7,7 +7,7 @@
 // registering one cron per job.
 //
 // Schedule (all times UTC, the cron fires at minute 10):
-//   every hour     stats rollup + WebDAV lock / resource-change cleanup
+//   every hour     WebDAV lock / resource-change cleanup
 //   hour === 4     expired trash purge (daily)
 //   hour % 12 === 0 instance telemetry heartbeat (every 12 hours)
 
@@ -48,11 +48,7 @@ export async function handleScheduled(event: ScheduledTrigger, env: ScheduledEnv
   const now = new Date()
   const hour = now.getUTCHours()
 
-  await Promise.all([
-    deps.adminStats.refreshHourlyRollups(now),
-    deps.webdavState.purgeExpiredLocks(),
-    purgeExpiredResourceChanges(deps, now),
-  ])
+  await Promise.all([deps.webdavState.purgeExpiredLocks(), purgeExpiredResourceChanges(deps, now)])
 
   if (hour === TRASH_PURGE_UTC_HOUR) {
     await purgeExpiredTrash(deps, resolveTrashRetentionDays(env.ZPAN_TRASH_RETENTION_DAYS))

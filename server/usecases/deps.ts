@@ -3,7 +3,6 @@
 // context (`c.get('deps')`). It is assembled in composition.ts.
 
 import type {
-  AdminStatsRepo,
   AgentInfoGateway,
   AnnouncementRepo,
   ApiKeyGateway,
@@ -29,7 +28,6 @@ export interface Deps {
   audit: AuditRepo
   auditActorDirectory: AuditActorDirectory
   agentInfo: AgentInfoGateway
-  adminStats: AdminStatsRepo
   announcements: AnnouncementRepo
   apiKeys: ApiKeyGateway
   cache: CacheService

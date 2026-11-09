@@ -183,15 +183,15 @@ export function AuditPagination({
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span>{t('admin.users.pageSize')}</span>
+        <span>{t('admin.audit.pageSize')}</span>
         <Select value={String(pageSize)} onValueChange={(value) => onPageSizeChange(Number(value))} disabled={disabled}>
-          <SelectTrigger className="h-8 w-32" aria-label={t('admin.users.pageSize')}>
+          <SelectTrigger className="h-8 w-32" aria-label={t('admin.audit.pageSize')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {AUDIT_PAGE_SIZE_OPTIONS.map((option) => (
               <SelectItem key={option} value={String(option)}>
-                {t('admin.users.pageSizeOption', { count: option })}
+                {t('admin.audit.pageSizeOption', { count: option })}
               </SelectItem>
             ))}
           </SelectContent>
@@ -200,16 +200,16 @@ export function AuditPagination({
 
       <div className="flex items-center justify-end gap-2">
         <Button variant="outline" size="sm" disabled={disabled || page <= 1} onClick={() => onPageChange(page - 1)}>
-          {t('admin.users.prevPage')}
+          {t('admin.audit.prevPage')}
         </Button>
-        <span className="text-sm text-muted-foreground">{t('admin.users.pageInfo', { page, total: totalPages })}</span>
+        <span className="text-sm text-muted-foreground">{t('admin.audit.pageInfo', { page, total: totalPages })}</span>
         <Button
           variant="outline"
           size="sm"
           disabled={disabled || page >= totalPages}
           onClick={() => onPageChange(page + 1)}
         >
-          {t('admin.users.nextPage')}
+          {t('admin.audit.nextPage')}
         </Button>
       </div>
     </div>

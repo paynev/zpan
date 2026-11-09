@@ -120,7 +120,7 @@ const ADMIN_STORAGES_KEYS = [
   'admin.storages.billingSaveSuccess',
 ]
 
-const ADMIN_NAV_KEYS = ['admin.nav.management', 'admin.nav.storages', 'admin.nav.users']
+const ADMIN_NAV_KEYS = ['admin.nav.management', 'admin.nav.storages']
 
 const SHARED_KEYS = ['nav.adminPanel', 'admin.title', 'admin.backToFiles', 'common.edit']
 
@@ -260,10 +260,6 @@ describe('admin.storages locale keys — English values contract', () => {
 
   it('admin.nav.storages is "Storages"', () => {
     expect(enLocale['admin.nav.storages']).toBe('Storages')
-  })
-
-  it('admin.nav.users is "Users"', () => {
-    expect(enLocale['admin.nav.users']).toBe('Users')
   })
 
   it('admin.storages.fieldCapacity is "Capacity"', () => {

@@ -1,18 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import {
-  ArrowLeft,
-  BadgeCheck,
-  BarChart3,
-  Building2,
-  Database,
-  HardDriveDownload,
-  Info,
-  KeyRound,
-  Megaphone,
-  Settings,
-  ShieldCheck,
-  Users,
-} from 'lucide-react'
+import { ArrowLeft, Database, Info, Megaphone, Settings, ShieldCheck } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { UserAccountMenu } from '@/components/layout/user-account-menu'
 import { Button } from '@/components/ui/button'
@@ -30,16 +17,10 @@ import {
 } from '@/components/ui/sidebar'
 
 const adminNavItems = [
-  { titleKey: 'admin.nav.users', url: '/admin/users', icon: Users },
-  { titleKey: 'admin.nav.teams', url: '/admin/teams', icon: Building2 },
   { titleKey: 'admin.nav.storages', url: '/admin/storages', icon: Database },
-  { titleKey: 'admin.nav.downloaders', url: '/admin/downloaders', icon: HardDriveDownload },
-  { titleKey: 'admin.nav.auth', url: '/admin/settings/oauth', icon: KeyRound },
   { titleKey: 'admin.nav.settings', url: '/admin/settings', icon: Settings },
   { titleKey: 'admin.nav.announcement', url: '/admin/announcement', icon: Megaphone },
   { titleKey: 'admin.nav.audit', url: '/admin/audit', icon: ShieldCheck },
-  { titleKey: 'admin.nav.analytics', url: '/admin/analytics', icon: BarChart3 },
-  { titleKey: 'admin.nav.licensing', url: '/admin/licensing', icon: BadgeCheck },
   { titleKey: 'admin.nav.about', url: '/admin/about', icon: Info },
 ]
 

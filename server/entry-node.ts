@@ -15,7 +15,7 @@ import { INSTANCE_TELEMETRY_CRON, reportInstanceTelemetry } from './usecases/sit
 
 const INSTANCE_TELEMETRY_INTERVAL_MS = 12 * 60 * 60 * 1000 // 12 hours
 const TRASH_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000 // daily; purges trash past the retention window
-const STATS_ROLLUP_INTERVAL_MS = 60 * 60 * 1000
+const WEBDAV_STATE_PURGE_INTERVAL_MS = 60 * 60 * 1000
 const appVersionGlobalKey = '__ZPAN_APP_VERSION__'
 const appCommitGlobalKey = '__ZPAN_APP_COMMIT__'
 
@@ -113,30 +113,16 @@ function purgeExpiredTrashJob(): void {
 purgeExpiredTrashJob()
 setInterval(purgeExpiredTrashJob, TRASH_PURGE_INTERVAL_MS)
 
-console.log('stats.rollup.scheduler.started interval=1h')
-function writeStatsRollup(): void {
+console.log('webdav.state.purge.scheduler.started interval=1h')
+function purgeWebDavState(): void {
   void (async () => {
     try {
       const now = new Date()
-      const [results] = await Promise.all([
-        deps.adminStats.refreshHourlyRollups(now),
-        deps.webdavState.purgeExpiredLocks(),
-        purgeExpiredResourceChanges(deps, now),
-      ])
-      console.log(
-        JSON.stringify({
-          message: 'stats.rollup.done',
-          buckets: results.map((result) => ({
-            start: result.bucketStart.toISOString(),
-            rows: result.rows,
-            lowerBoundRows: result.lowerBoundRows,
-          })),
-        }),
-      )
+      await Promise.all([deps.webdavState.purgeExpiredLocks(), purgeExpiredResourceChanges(deps, now)])
     } catch (err) {
-      console.error(`stats.rollup.error code=${err instanceof Error ? err.message : String(err)}`)
+      console.error(`webdav.state.purge.error code=${err instanceof Error ? err.message : String(err)}`)
     }
   })()
 }
-writeStatsRollup()
-setInterval(writeStatsRollup, STATS_ROLLUP_INTERVAL_MS)
+purgeWebDavState()
+setInterval(purgeWebDavState, WEBDAV_STATE_PURGE_INTERVAL_MS)

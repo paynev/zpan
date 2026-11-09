@@ -7,7 +7,6 @@ import type { Auth } from './auth'
 import { cacheServerTiming, runWithCacheEvents } from './cache/context'
 import { createDeps } from './composition'
 import { isPotentialWebDavPublicRequest, isWebDavPublicRequest } from './domain/webdav-public-url'
-import { adminStats } from './http/admin-stats'
 import { ARAZZO_DOCUMENT_PATH, ARAZZO_MEDIA_TYPE, createArazzoDocument } from './http/arazzo'
 import { configz } from './http/configz'
 import { events } from './http/events'
@@ -232,7 +231,6 @@ export function createApp(platform: Platform, auth: Auth, deps: Deps = createDep
   app.route('/api/events', events)
   app.route('/api/site/settings/branding', brandingAdmin)
   app.route('/api/site/audit-events', adminAudit)
-  app.route('/api/site/analytics', adminStats)
 
   app.get('/api/health', (c) => c.json({ status: 'ok' }))
 
@@ -321,4 +319,3 @@ export type EventsRoute = typeof events
 export type AnnouncementsRoute = typeof announcements
 export type BrandingAdminRoute = typeof brandingAdmin
 export type AdminAuditRoute = typeof adminAudit
-export type AdminStatsRoute = typeof adminStats

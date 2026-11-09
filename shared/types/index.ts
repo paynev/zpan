@@ -54,22 +54,6 @@ export type PaginatedResponse<T> = {
   pageSize: number
 }
 
-export type {
-  AdminDashboardGrowthStats,
-  AdminDashboardOperationsStats,
-  AdminDashboardOverviewStats,
-  AdminDashboardSharingStats,
-  AdminDashboardStorageStats,
-  AdminDashboardTrafficStats,
-  AdminSharingDataQuality,
-  AdminStatsCoverage,
-  AdminStatsDelta,
-  AdminStatsRange,
-  AdminStorageDataQuality,
-  AdminTopShare,
-  AdminTransferDataQuality,
-} from './admin-stats'
-
 export interface ObjectUploadSession {
   id: string
   objectId: string

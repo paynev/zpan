@@ -4,14 +4,6 @@ import { opaqueIdSchema } from './id'
 export type { ActorAttribution, ActorIdentity, ActorProfile, ActorType } from './actors'
 export { actorAttributionSchema, actorIdentitySchema, actorProfileSchema, actorTypeSchema } from './actors'
 
-export {
-  adminAnalyticsGrowthSchema,
-  adminAnalyticsOperationsSchema,
-  adminAnalyticsOverviewSchema,
-  adminAnalyticsSharingSchema,
-  adminAnalyticsStorageSchema,
-  adminAnalyticsTrafficSchema,
-} from './admin-analytics'
 export type {
   AnnouncementInput,
   AnnouncementStatus,

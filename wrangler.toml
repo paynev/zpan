@@ -61,7 +61,7 @@ head_sampling_rate = 0.1
 # consume quota, so register exactly ONE hourly cron; the daily trash purge
 # (04:xx UTC) and the 12-hourly telemetry heartbeat are branched on the UTC
 # hour inside workers/scheduled.ts instead of separate cron entries.
-#   10 * * * *   hourly stats rollup + WebDAV lock / resource-change cleanup;
+#   10 * * * *   hourly WebDAV lock / resource-change cleanup;
 #                + trash purge at hour 4, + telemetry when hour % 12 == 0
 [triggers]
 crons = ["10 * * * *"]

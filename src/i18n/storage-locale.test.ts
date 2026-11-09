@@ -65,11 +65,6 @@ const STORAGE_METERING_KEYS = [
   'storage.managePlan',
   'storage.upgradeToPlan',
   'storage.changePlan',
-  'admin.cloudStore.planName',
-  'admin.cloudStore.noPlans',
-  'admin.cloudStore.orders.planQuota',
-  'admin.cloudStore.orders.storageQuota',
-  'admin.cloudStore.orders.trafficQuota',
 ]
 
 describe('storage metering locale keys', () => {
@@ -82,11 +77,9 @@ describe('storage metering locale keys', () => {
 
   it('uses storage plan language in English', () => {
     expect(enLocale['storage.plansTitle']).toBe('Storage plans')
-    expect(enLocale['admin.cloudStore.tabs.packages']).toBe('Plans')
   })
 
   it('uses storage plan language in Chinese', () => {
     expect(zhLocale['storage.plansTitle']).toBe('存储计划')
-    expect(zhLocale['admin.cloudStore.tabs.packages']).toBe('计划')
   })
 })

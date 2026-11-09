@@ -1,6 +1,5 @@
 import type {
   AdminAuditRoute,
-  AdminStatsRoute,
   AnnouncementsRoute,
   AuthedSharesRoute,
   BrandingAdminRoute,
@@ -40,4 +39,3 @@ export const authedSharesApi = hc<AuthedSharesRoute>('/api/shares', opts)
 
 export const brandingAdminApi = hc<BrandingAdminRoute>('/api/site/settings/branding', opts)
 export const adminAuditApi = hc<AdminAuditRoute>('/api/site/audit-events', opts)
-export const siteStatsApi = hc<AdminStatsRoute>('/api/site/analytics', opts)

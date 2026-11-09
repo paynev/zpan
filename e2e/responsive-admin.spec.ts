@@ -12,7 +12,9 @@ test.describe('Admin sidebar responsive', () => {
     await expect(sidebar).toBeVisible()
 
     const navLinks = await sidebar.locator('a').evaluateAll((links) => links.map((link) => link.getAttribute('href')))
-    expect(navLinks.indexOf('/admin/analytics')).toBe(navLinks.indexOf('/admin/audit') + 1)
+    expect(navLinks).toContain('/admin/storages')
+    expect(navLinks).not.toContain('/admin/analytics')
+    expect(navLinks).not.toContain('/admin/users')
   })
 
   test('mobile: admin sidebar opens via trigger @mobile', async ({ page }) => {
@@ -29,34 +31,6 @@ test.describe('Admin sidebar responsive', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Admin overview dashboard
-// ---------------------------------------------------------------------------
-test.describe('Admin overview dashboard responsive', () => {
-  test('dashboard widgets stay inside the viewport @all', async ({ page }) => {
-    await signInAsAdmin(page)
-    await page.goto('/admin')
-    await page.waitForURL(/\/admin\/dashboard\/?$/, { timeout: 10000 })
-
-    const cards = page.locator('[data-slot="card"]')
-    await expect(cards).toHaveCount(12)
-
-    const hasHScroll = await page.evaluate(
-      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-    )
-    expect(hasHScroll).toBe(false)
-
-    const viewport = page.viewportSize()
-    expect(viewport).not.toBeNull()
-    for (const card of await cards.all()) {
-      const box = await card.boundingBox()
-      expect(box).not.toBeNull()
-      expect(box?.x).toBeGreaterThanOrEqual(0)
-      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual((viewport?.width ?? 0) + 1)
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
 // Admin storages page
 // ---------------------------------------------------------------------------
 test.describe('Admin storages page responsive', () => {
@@ -67,32 +41,5 @@ test.describe('Admin storages page responsive', () => {
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
     )
     expect(hasHScroll).toBe(false)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Admin users page
-// ---------------------------------------------------------------------------
-test.describe('Admin users page responsive', () => {
-  test('mobile: users page has no horizontal overflow @mobile', async ({ page }) => {
-    await signInAsAdmin(page)
-    await page.goto('/admin/users')
-    await page.waitForURL(/admin\/users/, { timeout: 10000 })
-
-    const hasHScroll = await page.evaluate(
-      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-    )
-    expect(hasHScroll).toBe(false)
-  })
-
-  test('mobile: secondary user columns are hidden @mobile', async ({ page }) => {
-    await signInAsAdmin(page)
-    await page.goto('/admin/users')
-    await page.waitForURL(/admin\/users/, { timeout: 10000 })
-
-    const table = page.locator('table')
-    await expect(table.locator('th', { hasText: /email/i })).not.toBeVisible()
-    await expect(table.locator('th', { hasText: /quota/i })).not.toBeVisible()
-    await expect(table.locator('th', { hasText: /created/i })).not.toBeVisible()
   })
 })

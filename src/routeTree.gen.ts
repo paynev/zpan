@@ -28,7 +28,6 @@ import { Route as AuthenticatedSettingsPasswordRouteImport } from './routes/_aut
 import { Route as AuthenticatedSettingsApiKeysRouteImport } from './routes/_authenticated/settings/api-keys'
 import { Route as AuthenticatedAdminAuditRouteImport } from './routes/_authenticated/admin/audit'
 import { Route as AuthenticatedAdminAnnouncementRouteImport } from './routes/_authenticated/admin/announcement'
-import { Route as AuthenticatedAdminAnalyticsRouteImport } from './routes/_authenticated/admin/analytics'
 import { Route as AuthenticatedAdminAboutRouteImport } from './routes/_authenticated/admin/about'
 import { Route as AuthenticatedAdminStoragesIndexRouteImport } from './routes/_authenticated/admin/storages/index'
 import { Route as AuthenticatedAdminSettingsIndexRouteImport } from './routes/_authenticated/admin/settings/index'
@@ -136,12 +135,6 @@ const AuthenticatedAdminAnnouncementRoute =
     path: '/announcement',
     getParentRoute: () => AuthenticatedAdminRouteRoute,
   } as any)
-const AuthenticatedAdminAnalyticsRoute =
-  AuthenticatedAdminAnalyticsRouteImport.update({
-    id: '/analytics',
-    path: '/analytics',
-    getParentRoute: () => AuthenticatedAdminRouteRoute,
-  } as any)
 const AuthenticatedAdminAboutRoute = AuthenticatedAdminAboutRouteImport.update({
   id: '/about',
   path: '/about',
@@ -168,7 +161,6 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof authSignInRoute
   '/s/$token': typeof STokenRoute
   '/admin/about': typeof AuthenticatedAdminAboutRoute
-  '/admin/analytics': typeof AuthenticatedAdminAnalyticsRoute
   '/admin/announcement': typeof AuthenticatedAdminAnnouncementRoute
   '/admin/audit': typeof AuthenticatedAdminAuditRoute
   '/settings/api-keys': typeof AuthenticatedSettingsApiKeysRoute
@@ -190,7 +182,6 @@ export interface FileRoutesByTo {
   '/s/$token': typeof STokenRoute
   '/': typeof AuthenticatedIndexRoute
   '/admin/about': typeof AuthenticatedAdminAboutRoute
-  '/admin/analytics': typeof AuthenticatedAdminAnalyticsRoute
   '/admin/announcement': typeof AuthenticatedAdminAnnouncementRoute
   '/admin/audit': typeof AuthenticatedAdminAuditRoute
   '/settings/api-keys': typeof AuthenticatedSettingsApiKeysRoute
@@ -216,7 +207,6 @@ export interface FileRoutesById {
   '/s/$token': typeof STokenRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/_authenticated/admin/about': typeof AuthenticatedAdminAboutRoute
-  '/_authenticated/admin/analytics': typeof AuthenticatedAdminAnalyticsRoute
   '/_authenticated/admin/announcement': typeof AuthenticatedAdminAnnouncementRoute
   '/_authenticated/admin/audit': typeof AuthenticatedAdminAuditRoute
   '/_authenticated/settings/api-keys': typeof AuthenticatedSettingsApiKeysRoute
@@ -242,7 +232,6 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/s/$token'
     | '/admin/about'
-    | '/admin/analytics'
     | '/admin/announcement'
     | '/admin/audit'
     | '/settings/api-keys'
@@ -264,7 +253,6 @@ export interface FileRouteTypes {
     | '/s/$token'
     | '/'
     | '/admin/about'
-    | '/admin/analytics'
     | '/admin/announcement'
     | '/admin/audit'
     | '/settings/api-keys'
@@ -289,7 +277,6 @@ export interface FileRouteTypes {
     | '/s/$token'
     | '/_authenticated/'
     | '/_authenticated/admin/about'
-    | '/_authenticated/admin/analytics'
     | '/_authenticated/admin/announcement'
     | '/_authenticated/admin/audit'
     | '/_authenticated/settings/api-keys'
@@ -447,13 +434,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminAnnouncementRouteImport
       parentRoute: typeof AuthenticatedAdminRouteRoute
     }
-    '/_authenticated/admin/analytics': {
-      id: '/_authenticated/admin/analytics'
-      path: '/analytics'
-      fullPath: '/admin/analytics'
-      preLoaderRoute: typeof AuthenticatedAdminAnalyticsRouteImport
-      parentRoute: typeof AuthenticatedAdminRouteRoute
-    }
     '/_authenticated/admin/about': {
       id: '/_authenticated/admin/about'
       path: '/about'
@@ -480,7 +460,6 @@ declare module '@tanstack/react-router' {
 
 interface AuthenticatedAdminRouteRouteChildren {
   AuthenticatedAdminAboutRoute: typeof AuthenticatedAdminAboutRoute
-  AuthenticatedAdminAnalyticsRoute: typeof AuthenticatedAdminAnalyticsRoute
   AuthenticatedAdminAnnouncementRoute: typeof AuthenticatedAdminAnnouncementRoute
   AuthenticatedAdminAuditRoute: typeof AuthenticatedAdminAuditRoute
   AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
@@ -491,7 +470,6 @@ interface AuthenticatedAdminRouteRouteChildren {
 const AuthenticatedAdminRouteRouteChildren: AuthenticatedAdminRouteRouteChildren =
   {
     AuthenticatedAdminAboutRoute: AuthenticatedAdminAboutRoute,
-    AuthenticatedAdminAnalyticsRoute: AuthenticatedAdminAnalyticsRoute,
     AuthenticatedAdminAnnouncementRoute: AuthenticatedAdminAnnouncementRoute,
     AuthenticatedAdminAuditRoute: AuthenticatedAdminAuditRoute,
     AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,

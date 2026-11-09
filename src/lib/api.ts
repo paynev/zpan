@@ -18,11 +18,6 @@ import type {
   UpdateSiteWebDavInput,
 } from '@shared/schemas'
 import type {
-  AdminDashboardGrowthStats,
-  AdminDashboardOperationsStats,
-  AdminDashboardOverviewStats,
-  AdminDashboardSharingStats,
-  AdminDashboardStorageStats,
   Announcement,
   AuditEvent,
   BrandingConfig,
@@ -53,7 +48,6 @@ import {
   objects,
   publicSharesApi,
   siteSettingsApi,
-  siteStatsApi,
   storages,
   system,
   trash,
@@ -291,42 +285,6 @@ export function purgeTrashObject(id: string) {
 // Unified server-sent events stream consumed by the authenticated application shell.
 export function serverEventsUrl() {
   return eventsUrlApi.index.$url()
-}
-
-// Admin dashboard stats
-
-export interface AdminStatsRangeFilter {
-  from?: string
-  to?: string
-  timeZone?: 'UTC'
-}
-
-function statsRangeQuery(filter: AdminStatsRangeFilter = {}): Record<string, string> {
-  const query: Record<string, string> = {}
-  if (filter.from) query.from = filter.from
-  if (filter.to) query.to = filter.to
-  if (filter.timeZone) query.timeZone = filter.timeZone
-  return query
-}
-
-export function getAdminDashboardOverviewStats(filter: AdminStatsRangeFilter = {}) {
-  return unwrap<AdminDashboardOverviewStats>(siteStatsApi.overview.$get({ query: statsRangeQuery(filter) }))
-}
-
-export function getAdminDashboardOperationsStats(filter: AdminStatsRangeFilter = {}) {
-  return unwrap<AdminDashboardOperationsStats>(siteStatsApi.operations.$get({ query: statsRangeQuery(filter) }))
-}
-
-export function getAdminDashboardGrowthStats(filter: AdminStatsRangeFilter = {}) {
-  return unwrap<AdminDashboardGrowthStats>(siteStatsApi.growth.$get({ query: statsRangeQuery(filter) }))
-}
-
-export function getAdminDashboardStorageStats(filter: AdminStatsRangeFilter = {}) {
-  return unwrap<AdminDashboardStorageStats>(siteStatsApi.storage.$get({ query: statsRangeQuery(filter) }))
-}
-
-export function getAdminDashboardSharingStats(filter: AdminStatsRangeFilter = {}) {
-  return unwrap<AdminDashboardSharingStats>(siteStatsApi.sharing.$get({ query: statsRangeQuery(filter) }))
 }
 
 // Admin Storages API
