@@ -12,17 +12,27 @@ const fakeAssets = {
 } as unknown as Fetcher
 
 describe('[CF] Worker fetch handler', () => {
-  it('throws when neither an explicit secret nor admin credentials are configured', async () => {
-    const request = new Request('http://localhost/api/health')
+  it('answers with setup guidance when neither an explicit secret nor admin credentials are configured', async () => {
     const envWithoutCredentials = {
       ...env,
       BETTER_AUTH_SECRET: '',
       ZPAN_USERNAME: '',
       ZPAN_PASSWORD: '',
     }
-    await expect(worker.fetch(request, envWithoutCredentials)).rejects.toThrow(
-      'ZPAN_USERNAME and ZPAN_PASSWORD are required to derive BETTER_AUTH_SECRET',
-    )
+    const res = await worker.fetch(new Request('http://localhost/api/health'), envWithoutCredentials)
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
+    const body = (await res.json()) as { error: string; message: string; hint: string }
+    expect(body.error).toBe('instance_not_configured')
+    expect(body.message).toContain('ZPAN_USERNAME and ZPAN_PASSWORD are required to derive BETTER_AUTH_SECRET')
+    expect(body.hint).toContain('ZPAN_PASSWORD')
+
+    const page = await worker.fetch(new Request('http://localhost/'), envWithoutCredentials)
+    expect(page.status).toBe(503)
+    expect(page.headers.get('Content-Type')).toContain('text/html')
+    const html = await page.text()
+    expect(html).toContain('ZPan needs initial configuration')
+    expect(html).toContain('ZPAN_PASSWORD')
   })
 
   it('derives the signing secret from ZPAN_USERNAME / ZPAN_PASSWORD', async () => {

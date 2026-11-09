@@ -177,7 +177,13 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // Fail fast when neither an explicit secret nor the credential pair is set.
     // The same resolver (and its memoized derivation) feeds auth initialization.
-    await resolveAuthSecret(envReader(env))
+    // Instead of letting the error bubble up as an opaque Cloudflare 1101 page,
+    // answer with HTTP 503 and concrete setup guidance.
+    try {
+      await resolveAuthSecret(envReader(env))
+    } catch (error) {
+      return instanceNotConfiguredResponse(request, error)
+    }
     const runtime = runtimeFor(env)
     // Single-user bootstrap: create the admin account from ZPAN_USERNAME/ZPAN_PASSWORD
     // when the instance is empty. Fire-and-forget; runs at most once per isolate.
@@ -206,6 +212,82 @@ export default {
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     await handleScheduled(event, env)
   },
+}
+
+// Rendered when neither BETTER_AUTH_SECRET nor the ZPAN_USERNAME/ZPAN_PASSWORD
+// pair is configured: the resolver would otherwise throw on every request and
+// surface as Cloudflare error 1101 with no actionable detail.
+const SETUP_GUIDE_EN =
+  'Add a secret named ZPAN_PASSWORD (your admin password) under Workers & Pages -> zpan -> ' +
+  'Settings -> Variables and Secrets, or run `wrangler secret put ZPAN_PASSWORD`. ' +
+  'ZPAN_USERNAME defaults to the plaintext var "admin" from wrangler.toml. ' +
+  'Alternatively set BETTER_AUTH_SECRET directly (64-char hex). Saving a secret ' +
+  'redeploys the Worker immediately.'
+const SETUP_GUIDE_ZH =
+  '请在 Cloudflare 控制台 Workers & Pages → zpan → Settings → Variables and Secrets 中添加一个名为 ' +
+  'ZPAN_PASSWORD 的 Secret（值为管理员密码），保存后 Worker 会自动重新部署，然后刷新本页即可。'
+
+function escapeHtml(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+}
+
+function instanceNotConfiguredResponse(request: Request, error: unknown): Response {
+  const detail = escapeHtml(error instanceof Error ? error.message : String(error))
+  const url = new URL(request.url)
+  const isApi = url.pathname === '/api' || url.pathname.startsWith('/api/')
+
+  if (isApi) {
+    return Response.json(
+      {
+        error: 'instance_not_configured',
+        message: error instanceof Error ? error.message : String(error),
+        hint: SETUP_GUIDE_EN,
+      },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } },
+    )
+  }
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZPan — configuration required</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 34rem; margin: 2rem 1rem; padding: 2rem; border: 1px solid #8886;
+         border-radius: 12px; }
+  code { background: #8883; padding: .1em .35em; border-radius: 4px; }
+  h1 { font-size: 1.4rem; margin-top: 0; }
+  p.detail { opacity: .8; font-size: .9rem; }
+  ol { padding-inline-start: 1.2rem; }
+  li { margin: .5rem 0; }
+  p.zh { opacity: .9; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ZPan needs initial configuration</h1>
+  <p class="detail"><code>${detail}</code></p>
+  <ol>
+    <li>Open <strong>Workers &amp; Pages → zpan → Settings → Variables and Secrets</strong>.</li>
+    <li>Add a <strong>secret</strong> named <code>ZPAN_PASSWORD</code> with your admin password
+        (<code>ZPAN_USERNAME</code> defaults to <code>admin</code>).</li>
+    <li>Save — the Worker redeploys immediately — then reload this page.</li>
+  </ol>
+  <p class="zh">${SETUP_GUIDE_ZH}</p>
+  <p>CLI equivalent: <code>wrangler secret put ZPAN_PASSWORD</code>. Or set
+     <code>BETTER_AUTH_SECRET</code> directly (64-char hex).</p>
+</main>
+</body>
+</html>`
+
+  return new Response(html, {
+    status: 503,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+  })
 }
 
 function configzCacheKey(request: Request, includeValidators = false): Request | null {
