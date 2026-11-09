@@ -1197,6 +1197,8 @@
   "auth.session.loading": "Checking your session...",
   "auth.session.errorTitle": "Unable to load your session",
   "auth.session.errorDescription": "The server did not respond. Check your connection and try again.",
+  "auth.session.setupRequiredTitle": "Instance not configured",
+  "auth.session.setupRequiredDescription": "Admin credentials are missing. Follow the steps below to set ZPAN_PASSWORD, then reload this page:",
   "auth.session.retry": "Try again",
   "teams.title": "Teams",
   "teams.tabMembers": "Members",

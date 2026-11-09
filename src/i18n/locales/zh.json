@@ -1197,6 +1197,8 @@
   "auth.session.loading": "正在检查登录状态...",
   "auth.session.errorTitle": "无法加载登录状态",
   "auth.session.errorDescription": "服务器没有响应，请检查网络连接后重试。",
+  "auth.session.setupRequiredTitle": "实例尚未配置",
+  "auth.session.setupRequiredDescription": "缺少管理员凭据。请按下方步骤设置 ZPAN_PASSWORD 后刷新本页：",
   "auth.session.retry": "重试",
   "teams.title": "团队",
   "teams.tabMembers": "成员",

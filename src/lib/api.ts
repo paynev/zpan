@@ -122,17 +122,27 @@ export class ApiError extends Error {
 // Normalizes any error payload into the AIP-193 `google.rpc.Status` body the
 // server now returns. Real server errors pass through; network failures,
 // non-JSON responses, and external (S3) fallbacks are wrapped synthetically.
+// Flat payloads shaped `{ error: <code>, message?, hint? }` (e.g. the Worker's
+// `instance_not_configured` 503) keep their human message and setup hint.
 function toErrorBody(status: number, raw: unknown): ApiErrorBody {
   if (raw && typeof raw === 'object' && 'error' in raw) {
     const error = (raw as { error: unknown }).error
     if (error && typeof error === 'object') return raw as ApiErrorBody
+    if (typeof error === 'string') {
+      const flat = raw as { message?: unknown; hint?: unknown }
+      const message = typeof flat.message === 'string' && flat.message ? flat.message : error
+      const hint = typeof flat.hint === 'string' && flat.hint ? flat.hint : undefined
+      return {
+        error: {
+          code: status,
+          message,
+          status: '',
+          details: hint ? [{ reason: error, domain: 'instance', metadata: { hint } }] : [],
+        },
+      }
+    }
     return {
-      error: {
-        code: status,
-        message: typeof error === 'string' ? error : `HTTP ${status}`,
-        status: '',
-        details: [],
-      },
+      error: { code: status, message: `HTTP ${status}`, status: '', details: [] },
     }
   }
   return {
