@@ -57,12 +57,13 @@ enabled = true
 head_sampling_rate = 0.1
 
 # Workers Free allows 5 cron triggers per ACCOUNT (shared by every Worker on
-# the account), Workers Paid allows 250. Keep this list minimal: each entry is
-# matched by a branch in workers/scheduled.ts, and an unmatched cron only burns
-# quota while waking the Worker for nothing.
-#   10 * * * *   hourly stats rollup + WebDAV lock / resource-change cleanup
-#   0 4 * * *    expired trash purge
+# the account), Workers Paid allows 250. Other Workers on this account already
+# consume quota, so register exactly ONE hourly cron; the daily trash purge
+# (04:xx UTC) and the 12-hourly telemetry heartbeat are branched on the UTC
+# hour inside workers/scheduled.ts instead of separate cron entries.
+#   10 * * * *   hourly stats rollup + WebDAV lock / resource-change cleanup;
+#                + trash purge at hour 4, + telemetry when hour % 12 == 0
 [triggers]
-crons = ["10 * * * *", "0 4 * * *"]
+crons = ["10 * * * *"]
 
 

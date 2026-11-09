@@ -14,11 +14,15 @@
 // database exists before migrations are applied.
 //
 // Remote migrations are applied against the resolved database UUID, NOT the
-// `DB` binding name: with auto-provisioning the config has no database_id, and
-// `wrangler d1 ... DB` looks the database up by `database_name` in the API.
-// If the auto-provisioned database has a different name, that lookup misses and
-// no business tables are ever created (the Worker then fails on system_options).
-// Resolving the UUID from `wrangler d1 list --json` removes the ambiguity.
+// `DB` binding of the repo config: with auto-provisioning there is no
+// database_id, and `wrangler d1 ... DB` resolves `database_name` (`zpan-dba`)
+// in the API, which can miss the auto-provisioned database (`zpan-db`) — so no
+// business tables are ever created (the Worker then fails on system_options).
+//
+// Wrangler rejects a raw UUID as the positional too ("Couldn't find a D1 DB
+// ... in your wrangler.toml file"), so we resolve the UUID from
+// `wrangler d1 list --json`, generate a throwaway config that pins it, and
+// address the database by its `DB` binding through that config.
 //
 // Commands:
 //   build    - pin optional IDs, build, verify generated config
@@ -28,7 +32,7 @@
 //   check    - read-only local config self-check
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { syncCloudflareWebDav } from './cloudflare-webdav.mjs'
@@ -142,8 +146,8 @@ function listRemoteDatabases() {
 // no portable way to read back which UUID the deployed Worker is actually bound
 // to, so migrate EVERY plausible zpan database. Applying migrations is
 // idempotent (d1_migrations), and the bound database gets its tables whichever
-// name Wrangler picked. Pass UUIDs, never the `DB` binding: with no database_id
-// in the config, a binding lookup resolves by name and can hit the wrong DB.
+// name Wrangler picked. The UUIDs resolved here are pinned into throwaway
+// configs, so a name mismatch can no longer target the wrong database.
 function resolveRemoteDatabases() {
   if (!process.env.CLOUDFLARE_API_TOKEN) {
     console.warn(
@@ -205,8 +209,40 @@ const REQUIRED_TABLES = ['d1_migrations', 'system_options', 'user', 'account', '
 const REQUIRED_TABLE_SQL = `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${REQUIRED_TABLES.map((name) => `'${name}'`).join(', ')}) ORDER BY name`
 const ALL_TABLE_SQL = "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
 
-function remoteTableNames(database, sql) {
-  return queryRows(wrangler(['d1', 'execute', database.uuid, '--remote', '--json', '--command', sql], { capture: true }))
+// `wrangler d1 migrations apply <db> --remote` requires the positional to
+// resolve from the loaded config (binding or database_name); a raw UUID is
+// rejected outright. The repo config has no database_id under
+// auto-provisioning, so generate a throwaway config that pins the resolved
+// UUID and address the database through its `DB` binding instead.
+function writeMigrateConfig(database) {
+  const dir = path.join(ROOT, '.wrangler')
+  const configPath = path.join(dir, `workers-builds-migrate-${database.uuid}.json`)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        name: 'zpan',
+        d1_databases: [
+          {
+            binding: 'DB',
+            database_name: database.name,
+            database_id: database.uuid,
+            migrations_dir: '../migrations',
+          },
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+  )
+  return configPath
+}
+
+function remoteTableNames(configPath, sql) {
+  return queryRows(
+    wrangler(['d1', 'execute', 'DB', '--remote', '--json', '--command', sql, '--config', configPath], { capture: true }),
+  )
     .map((row) => row.name)
     .filter(Boolean)
 }
@@ -217,11 +253,10 @@ function applyMigrations() {
   const failures = []
   for (const database of databases) {
     console.log(`\n[workers-builds] === Migrating ${database.name} (${database.uuid}) ===`)
+    const configPath = writeMigrateConfig(database)
     try {
-      // No binding match means Wrangler falls back to ./migrations relative to
-      // cwd (ROOT), which is this repo's migrations/ directory.
-      wrangler(['d1', 'migrations', 'apply', database.uuid, '--remote'])
-      const present = remoteTableNames(database, REQUIRED_TABLE_SQL)
+      wrangler(['d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath])
+      const present = remoteTableNames(configPath, REQUIRED_TABLE_SQL)
       const missing = REQUIRED_TABLES.filter((name) => !present.includes(name))
       console.log(`[workers-builds] Core tables: ${present.join(', ') || '(none)'}`)
       if (missing.length > 0) {
@@ -232,6 +267,8 @@ function applyMigrations() {
       const message = error instanceof Error ? error.message : String(error)
       console.error(`[workers-builds] ${database.name} failed: ${message}`)
       failures.push(`${database.name}: ${message}`)
+    } finally {
+      rmSync(configPath, { force: true })
     }
   }
   if (healthy.length === 0) {
@@ -249,23 +286,28 @@ function verify() {
   let withBusinessTables = 0
   for (const database of databases) {
     console.log(`\n[workers-builds] === ${database.name} (${database.uuid}) ===`)
-    const tables = remoteTableNames(database, ALL_TABLE_SQL).filter((name) => !name.startsWith('sqlite_'))
-    const business = tables.filter((name) => name !== 'd1_migrations')
-    console.log(`[workers-builds] Tables (${tables.length}): ${tables.join(', ') || '(none)'}`)
-    if (tables.includes('d1_migrations')) {
-      const rows = queryRows(
-        wrangler(
-          ['d1', 'execute', database.uuid, '--remote', '--json', '--command', 'SELECT count(*) AS applied FROM d1_migrations'],
-          { capture: true },
-        ),
-      )
-      console.log(`[workers-builds] Applied migrations: ${rows[0]?.applied ?? '?'}`)
-    }
-    if (business.length > 0) {
-      withBusinessTables += 1
-      console.log(`[workers-builds] Business tables present (${business.length}).`)
-    } else {
-      console.log('[workers-builds] NO BUSINESS TABLES in this database.')
+    const configPath = writeMigrateConfig(database)
+    try {
+      const tables = remoteTableNames(configPath, ALL_TABLE_SQL).filter((name) => !name.startsWith('sqlite_'))
+      const business = tables.filter((name) => name !== 'd1_migrations')
+      console.log(`[workers-builds] Tables (${tables.length}): ${tables.join(', ') || '(none)'}`)
+      if (tables.includes('d1_migrations')) {
+        const rows = queryRows(
+          wrangler(
+            ['d1', 'execute', 'DB', '--remote', '--json', '--command', 'SELECT count(*) AS applied FROM d1_migrations', '--config', configPath],
+            { capture: true },
+          ),
+        )
+        console.log(`[workers-builds] Applied migrations: ${rows[0]?.applied ?? '?'}`)
+      }
+      if (business.length > 0) {
+        withBusinessTables += 1
+        console.log(`[workers-builds] Business tables present (${business.length}).`)
+      } else {
+        console.log('[workers-builds] NO BUSINESS TABLES in this database.')
+      }
+    } finally {
+      rmSync(configPath, { force: true })
     }
   }
   if (withBusinessTables === 0) {
@@ -360,27 +402,32 @@ function build() {
   verifyGeneratedConfig()
 }
 
-async function syncWebDav(databaseUuid) {
+async function syncWebDav(database) {
   const token = process.env.CLOUDFLARE_API_TOKEN
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID
   if (!token || !accountId) {
     throw new Error('ZPAN_SYNC_WEBDAV requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID as Build variables/secrets')
   }
-  wrangler(['d1', 'execute', databaseUuid, '--remote', '--command', READINESS_SQL])
-  const result = await syncCloudflareWebDav({ token, accountId })
-  console.log(`[workers-builds] WebDAV sync: removedRules=${result.removedRules} removedDomains=${result.removedDomains}`)
-  const origin = webDavOrigin(result)
-  if (!origin) {
-    console.log('[workers-builds] No primary Worker Custom Domain found; keeping /dav/')
-    return
+  const configPath = writeMigrateConfig(database)
+  try {
+    wrangler(['d1', 'execute', 'DB', '--remote', '--command', READINESS_SQL, '--config', configPath])
+    const result = await syncCloudflareWebDav({ token, accountId })
+    console.log(`[workers-builds] WebDAV sync: removedRules=${result.removedRules} removedDomains=${result.removedDomains}`)
+    const origin = webDavOrigin(result)
+    if (!origin) {
+      console.log('[workers-builds] No primary Worker Custom Domain found; keeping /dav/')
+      return
+    }
+    if (!/^https:\/\/[A-Za-z0-9.-]+$/.test(origin)) {
+      throw new Error(`Refusing to persist an invalid WebDAV origin: ${origin}`)
+    }
+    const verifiedAt = new Date().toISOString()
+    const sql = `INSERT INTO system_options (key, value) VALUES ('webdav_verified_origin', '${origin}'), ('webdav_verified_at', '${verifiedAt}'), ('webdav_verification_error', '') ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    wrangler(['d1', 'execute', 'DB', '--remote', '--command', sql, '--config', configPath])
+    console.log(`[workers-builds] WebDAV custom domain ready: ${origin}/`)
+  } finally {
+    rmSync(configPath, { force: true })
   }
-  if (!/^https:\/\/[A-Za-z0-9.-]+$/.test(origin)) {
-    throw new Error(`Refusing to persist an invalid WebDAV origin: ${origin}`)
-  }
-  const verifiedAt = new Date().toISOString()
-  const sql = `INSERT INTO system_options (key, value) VALUES ('webdav_verified_origin', '${origin}'), ('webdav_verified_at', '${verifiedAt}'), ('webdav_verification_error', '') ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-  wrangler(['d1', 'execute', databaseUuid, '--remote', '--command', sql])
-  console.log(`[workers-builds] WebDAV custom domain ready: ${origin}/`)
 }
 
 async function deploy() {
@@ -397,7 +444,7 @@ async function deploy() {
   //    business tables were created. This FAILS LOUDLY instead of leaving an
   //    empty schema behind (which shows up as `no such table: system_options`).
   const database = applyMigrations()
-  if (process.env.ZPAN_SYNC_WEBDAV === '1') await syncWebDav(database.uuid)
+  if (process.env.ZPAN_SYNC_WEBDAV === '1') await syncWebDav(database)
 }
 
 function check() {

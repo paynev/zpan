@@ -71,19 +71,19 @@ Successful trigger changes were not rolled back.
 Failed: error occurred while running deploy command
 ```
 
-This repo registers exactly three crons, each with a matching branch in `workers/scheduled.ts`:
+This repo registers exactly **one** cron; the other jobs are branched on the UTC hour inside `workers/scheduled.ts` instead of being separate cron entries:
 
-| Cron | Job |
+| Job | When it runs |
 | --- | --- |
-| `10 * * * *` | Hourly stats rollup, expired WebDAV lock and resource-change cleanup |
-| `0 4 * * *` | Purge expired trash |
-| `0 */12 * * *` | Instance telemetry heartbeat |
+| Hourly stats rollup, expired WebDAV lock / resource-change cleanup | every hour (`10 * * * *`) |
+| Purge expired trash | UTC hour 4 (inside the hourly run) |
+| Instance telemetry heartbeat | UTC hours 0 and 12 (inside the hourly run) |
 
-Older releases registered six (including `*/10 * * * *`, `0 */6 * * *`, `0 0 1 * *`); those three had no handler branch after the background-jobs / quota features were removed, so they were dropped. Never add a cron without a matching branch — it consumes quota and wakes the Worker for nothing.
+History: older releases registered six crons (three of them dead after the background-jobs removal), then three, then two. Each entry consumed the shared account quota and repeatedly hit the Free-plan limit when other Workers on the same account also register triggers, so everything was folded into the single hourly cron. Never register a cron without a matching branch in `workers/scheduled.ts` — it consumes quota and wakes the Worker for nothing.
 
-`pnpm workers-builds:check` prints the cron count and fails if it exceeds 5; set the build variable `ZPAN_CRON_LIMIT` on Workers Paid. If other Workers on the account already use cron triggers, budget accordingly or remove their unused ones in **Workers & Pages → &lt;Worker&gt; → Settings → Triggers**. A failed partial update leaves triggers registered and is not rolled back, so check that page after a failed deploy. If three is still too many, all three jobs can be folded into one hourly cron by branching on the UTC hour inside `workers/scheduled.ts`.
+`pnpm workers-builds:check` prints the cron count and fails if it exceeds 5; set the build variable `ZPAN_CRON_LIMIT` on Workers Paid. Even a 1-cron deploy fails if the account is already at the 5-trigger cap: remove unused triggers of the **other** Workers in **Workers & Pages → &lt;Worker&gt; → Settings → Triggers**. A failed partial update leaves triggers registered and is not rolled back, so check that page after a failed deploy.
 
-A failed trigger update also aborts the rest of `pnpm workers-builds:deploy`: `wrangler deploy` exits non-zero, so the remote D1 migration step is skipped. Re-run the deployment (push again) after fixing the config — the new cron list replaces the partial one, and migrations will then run.
+A failed trigger update also aborts the rest of `pnpm workers-builds:deploy`: `wrangler deploy` exits non-zero, so the remote D1 migration step is skipped. Re-run the deployment (push again) after fixing the quota — the new cron list replaces the partial one, and migrations will then run.
 
 ### Build variables
 
@@ -112,11 +112,11 @@ A failed trigger update also aborts the rest of `pnpm workers-builds:deploy`: `w
 What each command does:
 
 - `pnpm workers-builds:build` → optionally pin resource IDs from `ZPAN_*_ID` variables → `pnpm build` (agent-skills + Vite, producing `dist/zpan/wrangler.json`) → verify that the generated Worker name is `zpan` and that the `DB` / `CACHE_KV` bindings are present.
-- `pnpm workers-builds:deploy` → `wrangler deploy` (**creates D1/KV on a fresh account**) → resolve the remote D1 UUID(s) and run `wrangler d1 migrations apply <uuid> --remote` → **verify the business tables exist** → optional WebDAV post-processing.
+- `pnpm workers-builds:deploy` → `wrangler deploy` (**creates D1/KV on a fresh account**) → resolve the remote D1 database(s), apply migrations through a generated config that pins the UUID → **verify the business tables exist** → optional WebDAV post-processing.
 
 **Deploy runs before migrations on purpose.** With no IDs in the config, the remote database does not exist until `wrangler deploy` provisions it; migrating first would fail on a brand-new account. The few-second window before migrations finish is harmless as long as migrations stay additive.
 
-**Migrations must target the UUID, not the `DB` binding.** `wrangler d1 ... DB` resolves the binding through the config: with no `database_id`, Wrangler looks up `database_name` (`zpan-dba`) in the API. An auto-provisioned database is named `<worker>-<binding>` (`zpan-db`), so that lookup can miss — or worse, hit a different empty database — and the Worker then fails with `D1_ERROR: no such table: system_options`. The deploy script instead runs `wrangler d1 list --json`, migrates every plausible `zpan*` database by UUID (migrations are idempotent via `d1_migrations`), and then queries `sqlite_master` for `d1_migrations`, `system_options`, `user`, `account`, `session`. If none of them exist, the deploy **fails loudly** instead of leaving an empty schema behind.
+**Migrations cannot use the `DB` binding or a raw UUID.** With no `database_id`, `wrangler d1 ... DB` resolves `database_name` (`zpan-dba`) in the API, and an auto-provisioned database is named `<worker>-<binding>` (`zpan-db`) — the lookup can miss or hit a different empty database, leaving the Worker with `D1_ERROR: no such table: system_options`. A raw UUID is rejected too ("Couldn't find a D1 DB ... in your wrangler.toml file"). The deploy script therefore runs `wrangler d1 list --json`, writes a throwaway `.wrangler/workers-builds-migrate-*.json` config that pins the resolved `database_id` and points `migrations_dir` at the repo, and applies migrations through that config for every plausible `zpan*` database (idempotent via `d1_migrations`). It then queries `sqlite_master` for `d1_migrations`, `system_options`, `user`, `account`, `session`; if none exist, the deploy **fails loudly** instead of leaving an empty schema behind.
 
 Double-check this setting after a deploy that "succeeded" but has no business tables: if the log never shows `$ wrangler d1 list --json` / `$ wrangler d1 migrations apply`, the dashboard is still running the default `wrangler deploy` as its Deploy command.
 
@@ -174,7 +174,7 @@ Prerequisites: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` available to t
 | 403 / authorization error while creating D1 or migrating | Add `Account → D1 → Edit` to the `Workers Builds` token |
 | `D1 database not found` on the very first deploy | Migrations must run **after** `wrangler deploy`; use `pnpm workers-builds:deploy` rather than an older `pnpm deploy` ordering |
 | Deploy succeeds but the D1 database is empty / `D1_ERROR: no such table: system_options` | The Deploy command in **Settings → Build** is probably still the default `wrangler deploy`, which never runs migrations. Set it to `pnpm workers-builds:deploy`, or run `pnpm workers-builds:migrate` once to repair, then confirm with `pnpm workers-builds:verify` |
-| `Couldn't find a D1 DB named 'zpan-dba'` in the deploy log | Old migration step resolved the `DB` binding by name. The current script migrates by UUID instead; pull the latest commit and redeploy |
+| `Couldn't find a D1 DB ... in your wrangler.toml file` in the deploy log | Old migration step passed a raw UUID, which Wrangler rejects. The current script pins the UUID into a generated config and applies via the `DB` binding; pull the latest commit and redeploy |
 | `Could not decide which D1 database to migrate` | Several unrelated D1 databases on the account; set `ZPAN_D1_DATABASE_ID` to the UUID printed by `pnpm workers-builds:verify` |
 | Rate limit counters shared with another Worker | `WEBDAV_RATE_LIMITER` `namespace_id` is an arbitrary account-local integer; pick a unique one |
 | Worker name mismatch on build | The dashboard Worker must be named `zpan` |

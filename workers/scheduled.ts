@@ -1,4 +1,15 @@
 // CF Workers scheduled() handler.
+//
+// Workers Free allows only 5 cron triggers per ACCOUNT, shared by every Worker
+// on the account (other Workers on the same account already consume quota, and
+// a failed trigger update is not rolled back). This project therefore registers
+// a SINGLE hourly cron and fans out inside the handler by UTC time, instead of
+// registering one cron per job.
+//
+// Schedule (all times UTC, the cron fires at minute 10):
+//   every hour     stats rollup + WebDAV lock / resource-change cleanup
+//   hour === 4     expired trash purge (daily)
+//   hour % 12 === 0 instance telemetry heartbeat (every 12 hours)
 
 import { createDeps } from '../server/composition'
 import { createCloudflarePlatform } from '../server/platform/cloudflare'
@@ -15,14 +26,13 @@ export interface ScheduledEnv {
   [key: string]: unknown
 }
 
-// These three expressions must stay in sync with [triggers].crons in
-// wrangler.toml. Any cron registered there without a matching branch below is
-// a no-op invocation that still consumes the account's cron trigger quota
-// (5 on Workers Free, shared across all Workers on the account).
-const STATS_ROLLUP_CRON = '10 * * * *'
-const TRASH_PURGE_CRON = '0 4 * * *'
-// INSTANCE_TELEMETRY_CRON ('0 */12 * * *') is imported from
-// server/usecases/site/instance-telemetry.ts.
+// Must stay in sync with [triggers].crons in wrangler.toml (exactly one entry).
+const HOURLY_CRON = '10 * * * *'
+// Daily trash purge runs in the hour after 04:00 (was `0 4 * * *`).
+const TRASH_PURGE_UTC_HOUR = 4
+// Telemetry heartbeat every 12 hours (was `0 */12 * * *`); the cron expression
+// is still reported as the schedule for parity with the Node runtime entry.
+const TELEMETRY_UTC_HOUR_INTERVAL = 12
 type ScheduledTrigger = Pick<ScheduledEvent, 'cron'>
 
 function envAllowsIp(value: string | undefined): boolean {
@@ -30,36 +40,35 @@ function envAllowsIp(value: string | undefined): boolean {
 }
 
 export async function handleScheduled(event: ScheduledTrigger, env: ScheduledEnv): Promise<void> {
+  if (event.cron !== HOURLY_CRON) {
+    return
+  }
   const platform = createCloudflarePlatform(env)
   const deps = createDeps(platform)
+  const now = new Date()
+  const hour = now.getUTCHours()
 
-  if (event.cron === STATS_ROLLUP_CRON) {
-    const now = new Date()
-    await Promise.all([
-      deps.adminStats.refreshHourlyRollups(now),
-      deps.webdavState.purgeExpiredLocks(),
-      purgeExpiredResourceChanges(deps, now),
-    ])
-    return
-  }
+  await Promise.all([
+    deps.adminStats.refreshHourlyRollups(now),
+    deps.webdavState.purgeExpiredLocks(),
+    purgeExpiredResourceChanges(deps, now),
+  ])
 
-  if (event.cron === TRASH_PURGE_CRON) {
+  if (hour === TRASH_PURGE_UTC_HOUR) {
     await purgeExpiredTrash(deps, resolveTrashRetentionDays(env.ZPAN_TRASH_RETENTION_DAYS))
-    return
   }
 
-  if (event.cron === INSTANCE_TELEMETRY_CRON) {
+  if (hour % TELEMETRY_UTC_HOUR_INTERVAL === 0) {
     await reportInstanceTelemetry(deps, {
       config: {
         allowIp: envAllowsIp(env.ZPAN_TELEMETRY_ALLOW_IP),
       },
-      cron: event.cron,
+      cron: INSTANCE_TELEMETRY_CRON,
       trigger: 'scheduled',
       runtime: {
         runtime: 'workerd',
         platform: 'cloudflare-workers',
       },
     })
-    return
   }
 }
