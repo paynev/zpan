@@ -1,5 +1,4 @@
 import type { ActorAttribution, ActorIdentity as ActorIdentityData, ActorProfile } from '@shared/schemas'
-import type { AuditEvent } from '@shared/types'
 import { Bot, CircleHelp, ExternalLink, KeyRound, Monitor, UserRound } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -17,15 +16,6 @@ interface ActorIdentityProps {
 interface ActorAvatarHoverCardProps extends Pick<ActorIdentityProps, 'actor' | 'className'> {
   onOpenChange?: (open: boolean) => void
   size?: 'sm' | 'default' | 'lg'
-}
-
-export function auditEventActor(event: AuditEvent): ActorAttribution {
-  return {
-    type: event.actorType,
-    ref: event.actorRef,
-    issuer: event.actorIssuer,
-    ...event.actor,
-  }
 }
 
 type DisplayActor = ActorAttribution | ActorProfile | ActorIdentityData

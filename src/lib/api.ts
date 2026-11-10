@@ -1,7 +1,6 @@
 import type { ApiKeyMetadata } from '@shared/api-key-templates'
 import type {
   ActorProfile,
-  AnnouncementInput,
   CompleteObjectUploadInput,
   ConflictStrategy,
   CreateShareRequest,
@@ -18,8 +17,6 @@ import type {
   UpdateSiteWebDavInput,
 } from '@shared/schemas'
 import type {
-  Announcement,
-  AuditEvent,
   BrandingConfig,
   BrandingField,
   BrandingThemeMode,
@@ -31,15 +28,12 @@ import type {
   Notification,
   ObjectListItem,
   ObjectUploadInstructions,
-  PaginatedResponse,
   ShareListItem,
   ShareView,
   Storage,
   StorageObject,
 } from '@shared/types'
 import {
-  adminAuditApi,
-  announcementsApi,
   authedSharesApi,
   brandingAdminApi,
   configzApi,
@@ -344,55 +338,6 @@ export function markNotificationRead(id: string) {
 
 export function markAllNotificationsRead() {
   return unwrap<{ count: number }>(notificationsApi.index.$patch())
-}
-
-// Announcements API
-
-export type { Announcement, AnnouncementInput }
-
-export type AnnouncementListResult = {
-  items: Announcement[]
-  total: number
-  page: number
-  pageSize: number
-}
-
-export function listAnnouncements(page = 1, pageSize = 20) {
-  return unwrap<AnnouncementListResult>(
-    announcementsApi.index.$get({ query: { page: String(page), pageSize: String(pageSize) } }),
-  )
-}
-
-export function listActiveAnnouncements() {
-  return unwrap<AnnouncementListResult>(
-    announcementsApi.index.$get({ query: { scope: 'active', page: '1', pageSize: '20' } }),
-  )
-}
-
-export function listAdminAnnouncements(page = 1, pageSize = 20, status?: Announcement['status']) {
-  const query: { scope: 'all'; page: string; pageSize: string; status?: Announcement['status'] } = {
-    scope: 'all',
-    page: String(page),
-    pageSize: String(pageSize),
-  }
-  if (status) query.status = status
-  return unwrap<AnnouncementListResult>(announcementsApi.index.$get({ query }))
-}
-
-export function createAnnouncement(data: AnnouncementInput) {
-  return unwrap<Announcement>(announcementsApi.index.$post({ json: data }))
-}
-
-export function getAnnouncement(id: string) {
-  return unwrap<Announcement>(announcementsApi[':id'].$get({ param: { id } }))
-}
-
-export function updateAnnouncement(id: string, data: AnnouncementInput) {
-  return unwrap<Announcement>(announcementsApi[':id'].$put({ param: { id }, json: data }))
-}
-
-export function deleteAnnouncement(id: string) {
-  return discard(announcementsApi[':id'].$delete({ param: { id } }))
 }
 
 // Shares API
@@ -760,27 +705,4 @@ export async function resetBrandingField(field: BrandingField): Promise<void> {
     const parsed = await res.json().catch(() => ({}))
     throw new ApiError(res.status, toErrorBody(res.status, parsed))
   }
-}
-
-// Admin Audit Logs API
-
-export interface AdminAuditFilter {
-  userId?: string
-  action?: string
-  targetType?: string
-  createdFrom?: string
-  createdTo?: string
-}
-
-export function listAdminAuditLogs(page = 1, pageSize = 20, filter: AdminAuditFilter = {}) {
-  const query: Record<string, string> = {
-    page: String(page),
-    pageSize: String(pageSize),
-  }
-  if (filter.userId) query.userId = filter.userId
-  if (filter.action) query.action = filter.action
-  if (filter.targetType) query.targetType = filter.targetType
-  if (filter.createdFrom) query.createdFrom = filter.createdFrom
-  if (filter.createdTo) query.createdTo = filter.createdTo
-  return unwrap<PaginatedResponse<AuditEvent>>(adminAuditApi.index.$get({ query }))
 }

@@ -4,7 +4,7 @@ import { createTestApp } from '../../test/setup'
 import { createAuditActorDirectoryRepo } from './audit-actor-directory'
 
 describe('audit actor directory repository', () => {
-  it('resolves user display profiles in one local lookup [spec: audit/actor-info]', async () => {
+  it('resolves user display profiles in one local lookup', async () => {
     const { db } = await createTestApp()
     await db.insert(user).values({
       id: 'user-profile-1',

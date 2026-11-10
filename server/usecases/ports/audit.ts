@@ -1,4 +1,8 @@
 // Plain, framework-free DTOs and the repository port for audit events.
+//
+// Only the write side is kept: audit events are still recorded by the global
+// middleware (uploads, shares, WebDAV, auth), but the admin audit-log reader
+// was removed from the single-admin build, so no query methods live here.
 
 import type { ActorAttribution, ActorType } from '@shared/schemas'
 
@@ -16,52 +20,9 @@ export interface RecordAuditEventInput {
   metadata?: Record<string, unknown>
 }
 
-export interface AuditEvent {
-  id: string
-  userId: string | null
-  actorType: AuditActorType
-  actorRef: string | null
-  actorIssuer: string | null
-  action: string
-  targetType: string
-  targetId: string | null
-  targetName: string
-  metadata: string | null
-  createdAt: Date
-}
-
-export interface AuditEventWithUser extends AuditEvent {
-  user: { id: string | null; name: string; image: string | null }
-  actor: AuditActorProfile
-}
-
-export interface ListAdminAuditOpts {
-  page?: number
-  pageSize?: number
-  userId?: string
-  action?: string
-  targetType?: string
-  createdFrom?: Date
-  createdTo?: Date
-}
-
-export interface ListAuditByTargetOpts {
-  targetType: string
-  targetId: string
-  page?: number
-  pageSize?: number
-}
-
 export interface AuditRepo {
   record(event: RecordAuditEventInput): Promise<void>
   recordOnce(event: RecordAuditEventInput, idempotencyKey: string, occurredAt?: Date): Promise<void>
-  list(opts: { page?: number; pageSize?: number }): Promise<{ items: AuditEventWithUser[]; total: number }>
-  listAdminAudit(
-    opts: ListAdminAuditOpts,
-  ): Promise<{ items: AuditEventWithUser[]; total: number; page: number; pageSize: number }>
-  listByTarget(
-    opts: ListAuditByTargetOpts,
-  ): Promise<{ items: AuditEvent[]; total: number; page: number; pageSize: number }>
 }
 
 export interface ActorIdentity {

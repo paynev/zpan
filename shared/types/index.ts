@@ -208,20 +208,6 @@ export interface Notification {
   createdAt: string
 }
 
-export type AnnouncementStatus = 'draft' | 'published' | 'archived'
-
-export interface Announcement {
-  id: string
-  title: string
-  body: string
-  status: AnnouncementStatus
-  priority: number
-  publishedAt: string | null
-  createdBy: string
-  createdAt: string
-  updatedAt: string
-}
-
 export type AuditActorType = 'user' | 'api_key' | 'agent' | 'anonymous' | 'system'
 
 export interface AuditEvent {

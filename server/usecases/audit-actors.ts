@@ -4,27 +4,9 @@ import {
   type ActorIdentity,
   type AgentInfoGateway,
   type AuditActorDirectory,
-  type AuditActorIdentity,
   type AuditActorProfile,
-  type AuditEventWithUser,
   auditActorIdentityKey,
 } from './ports'
-
-export async function resolveAuditActorProfiles<T extends AuditEventWithUser>(
-  deps: { auditActorDirectory: AuditActorDirectory; agentInfo: AgentInfoGateway },
-  events: T[],
-): Promise<T[]> {
-  const identities = uniqueResolvableIdentities(events)
-  if (identities.length === 0) return events
-
-  const profiles = await resolveActorProfiles(deps, identities)
-  return events.map((event) => {
-    const profile = profiles.get(
-      auditActorIdentityKey({ type: event.actorType, ref: event.actorRef, issuer: event.actorIssuer }),
-    )
-    return profile ? { ...event, actor: profile } : event
-  })
-}
 
 export async function resolveActorProfiles(
   deps: { auditActorDirectory: AuditActorDirectory; agentInfo: AgentInfoGateway },
@@ -83,21 +65,4 @@ export async function resolveActorAttributions(
       return [key, { ...identity, ...profile }] as const
     }),
   )
-}
-
-function uniqueResolvableIdentities(events: readonly AuditEventWithUser[]): AuditActorIdentity[] {
-  const identities = new Map<string, AuditActorIdentity>()
-  for (const event of events) {
-    if (
-      event.actorType !== 'api_key' &&
-      event.actorType !== 'device' &&
-      event.actorType !== 'oauth' &&
-      event.actorType !== 'agent'
-    )
-      continue
-    if (!event.actorRef) continue
-    const identity = { type: event.actorType, ref: event.actorRef, issuer: event.actorIssuer }
-    identities.set(auditActorIdentityKey(identity), identity)
-  }
-  return [...identities.values()]
 }

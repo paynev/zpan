@@ -16,8 +16,6 @@ import objects from './http/objects'
 import { addRequestIdOpenApi } from './http/openapi'
 import redirect from './http/redirect'
 import { authedShares, publicShares } from './http/shares'
-import { announcements } from './http/site/announcements'
-import { adminAudit } from './http/site/audit'
 import { brandingAdmin } from './http/site/branding'
 import { siteSettings } from './http/site/settings'
 import storages from './http/site/storages'
@@ -215,8 +213,6 @@ export function createApp(platform: Platform, auth: Auth, deps: Deps = createDep
   app.route('/r', redirect)
   app.route('/api/internal', internal)
 
-  app.route('/api/site/announcements', announcements)
-
   // Mount routes separately to avoid deep type chain accumulation.
   // Each .route() call is independent — TypeScript doesn't stack types.
   // Authorization comes from each authRoute declaration, so a single resource
@@ -230,7 +226,6 @@ export function createApp(platform: Platform, auth: Auth, deps: Deps = createDep
   app.route('/api/notifications', notifications)
   app.route('/api/events', events)
   app.route('/api/site/settings/branding', brandingAdmin)
-  app.route('/api/site/audit-events', adminAudit)
 
   app.get('/api/health', (c) => c.json({ status: 'ok' }))
 
@@ -316,6 +311,4 @@ export type ConfigzRoute = typeof configz
 export type SiteSettingsRoute = typeof siteSettings
 export type NotificationsRoute = typeof notifications
 export type EventsRoute = typeof events
-export type AnnouncementsRoute = typeof announcements
 export type BrandingAdminRoute = typeof brandingAdmin
-export type AdminAuditRoute = typeof adminAudit

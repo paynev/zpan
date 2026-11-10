@@ -4,7 +4,6 @@
 
 import type {
   AgentInfoGateway,
-  AnnouncementRepo,
   ApiKeyGateway,
   AuditActorDirectory,
   AuditRepo,
@@ -28,7 +27,6 @@ export interface Deps {
   audit: AuditRepo
   auditActorDirectory: AuditActorDirectory
   agentInfo: AgentInfoGateway
-  announcements: AnnouncementRepo
   apiKeys: ApiKeyGateway
   cache: CacheService
   changelog: ChangelogProvider

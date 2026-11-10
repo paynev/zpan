@@ -1,5 +1,4 @@
 import { createFileRoute, Outlet, redirect, useMatchRoute } from '@tanstack/react-router'
-import { SiteAnnouncements } from '@/components/announcements/site-announcements'
 import { SessionGateError, SessionGatePending } from '@/components/auth/session-gate'
 import { AppSidebar } from '@/components/layout/app-sidebar'
 import { GlobalSearchBar } from '@/components/layout/global-search-bar'
@@ -45,7 +44,6 @@ function AuthenticatedLayout() {
           </div>
         </header>
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-canvas p-4">
-          <SiteAnnouncements />
           <Outlet />
         </div>
       </SidebarInset>

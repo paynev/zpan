@@ -1,6 +1,4 @@
 import type {
-  AdminAuditRoute,
-  AnnouncementsRoute,
   AuthedSharesRoute,
   BrandingAdminRoute,
   ConfigzRoute,
@@ -28,8 +26,6 @@ export const system = hc<SystemRoute>('/api/site', opts)
 export const configzApi = hc<ConfigzRoute>('/api/configz', opts)
 export const siteSettingsApi = hc<SiteSettingsRoute>('/api/site/settings', opts)
 export const notificationsApi = hc<NotificationsRoute>('/api/notifications', opts)
-// One announcements resource (user feed + admin management, gated per-route).
-export const announcementsApi = hc<AnnouncementsRoute>('/api/site/announcements', opts)
 export const eventsUrlApi = hc<EventsRoute>(absoluteUrlBase('/api/events'), opts)
 
 // Shares are a single resource; separate clients only because Hono RPC types
@@ -38,4 +34,3 @@ export const publicSharesApi = hc<PublicSharesRoute>('/api/shares', opts)
 export const authedSharesApi = hc<AuthedSharesRoute>('/api/shares', opts)
 
 export const brandingAdminApi = hc<BrandingAdminRoute>('/api/site/settings/branding', opts)
-export const adminAuditApi = hc<AdminAuditRoute>('/api/site/audit-events', opts)

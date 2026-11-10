@@ -9,7 +9,6 @@ import { createRuntimeCache, resolveCacheMode } from './adapters/cache/runtime-c
 import { createAgentInfoGateway } from './adapters/gateways/agent-info'
 import { S3Service } from './adapters/gateways/s3'
 import { createChangelogProvider } from './adapters/providers/changelog'
-import { createAnnouncementRepo } from './adapters/repos/announcement'
 import { createApiKeyGateway } from './adapters/repos/api-keys'
 import { createAuditRepo } from './adapters/repos/audit'
 import { createAuditActorDirectoryRepo } from './adapters/repos/audit-actor-directory'
@@ -49,7 +48,6 @@ export function createDeps(platform: Platform, options: CreateDepsOptions = {}):
     audit: createAuditRepo(db),
     auditActorDirectory: createAuditActorDirectoryRepo(db),
     agentInfo: createAgentInfoGateway(),
-    announcements: createAnnouncementRepo(db),
     apiKeys: createApiKeyGateway(),
     cache,
     changelog: createChangelogProvider(),

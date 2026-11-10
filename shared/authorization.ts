@@ -17,6 +17,8 @@ export const AuthorizationScope = {
   ANNOUNCEMENTS_CREATE: 'announcements:create',
   ANNOUNCEMENTS_UPDATE: 'announcements:update',
   ANNOUNCEMENTS_DELETE: 'announcements:delete',
+  // Kept as a valid scope for backward compatibility with API keys issued before
+  // the admin audit-log page was removed; no route consumes it anymore.
   AUDIT_EVENTS_READ: 'audit-events:read',
   BRANDING_UPDATE: 'branding:update',
   SITE_SETTINGS_READ: 'site-settings:read',

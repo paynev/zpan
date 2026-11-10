@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { ArrowLeft, Database, Info, Megaphone, Settings, ShieldCheck } from 'lucide-react'
+import { ArrowLeft, Database, Info, Settings } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { UserAccountMenu } from '@/components/layout/user-account-menu'
 import { Button } from '@/components/ui/button'
@@ -19,8 +19,6 @@ import {
 const adminNavItems = [
   { titleKey: 'admin.nav.storages', url: '/admin/storages', icon: Database },
   { titleKey: 'admin.nav.settings', url: '/admin/settings', icon: Settings },
-  { titleKey: 'admin.nav.announcement', url: '/admin/announcement', icon: Megaphone },
-  { titleKey: 'admin.nav.audit', url: '/admin/audit', icon: ShieldCheck },
   { titleKey: 'admin.nav.about', url: '/admin/about', icon: Info },
 ]
 

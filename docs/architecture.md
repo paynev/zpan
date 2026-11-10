@@ -175,7 +175,7 @@ Usecases own business workflows and coordination:
 
 - file object create/upload/complete/trash/restore/purge
 - sharing and save-to-drive behavior
-- site settings, announcements, branding, audit, and statistics
+- site settings and branding
 - WebDAV operations
 
 Usecases receive `deps` as their first argument and reach the outside world only

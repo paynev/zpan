@@ -4,20 +4,6 @@ import { opaqueIdSchema } from './id'
 export type { ActorAttribution, ActorIdentity, ActorProfile, ActorType } from './actors'
 export { actorAttributionSchema, actorIdentitySchema, actorProfileSchema, actorTypeSchema } from './actors'
 
-export type {
-  AnnouncementInput,
-  AnnouncementStatus,
-  ListAdminAnnouncementsQuery,
-  ListAnnouncementsQuery,
-} from './announcement'
-export {
-  announcementInputSchema,
-  announcementStatusSchema,
-  listAdminAnnouncementsQuerySchema,
-  listAnnouncementsQuerySchema,
-} from './announcement'
-export type { ListAdminAuditQuery } from './audit'
-export { listAdminAuditQuerySchema } from './audit'
 export type { CanonicalStatus, ErrorInfo, ErrorResponse } from './errors'
 export {
   canonicalStatuses,
