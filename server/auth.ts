@@ -49,11 +49,13 @@ function generateApiKey({ length, prefix }: { length: number; prefix: string | u
   return `${prefix ?? ''}${generateToken(length)}`
 }
 
+export type TrustedOriginsOption = NonNullable<BetterAuthOptions['trustedOrigins']>
+
 export async function createAuth(
   initialSource: Database | Platform,
   secret: string,
   baseURL?: string,
-  _trustedOrigins?: string[],
+  trustedOrigins?: TrustedOriginsOption,
   backgroundTaskHandler?: (promise: Promise<unknown>) => void,
   passwordProvider: AuthPasswordProvider = productionPasswordProvider,
 ) {
@@ -74,6 +76,10 @@ export async function createAuth(
     database: drizzleAdapter(db, { provider: 'sqlite', schema: authSchema }),
     secret,
     baseURL,
+    // Better Auth validates the Origin header and callbackURL against this
+    // list. A resolver keeps proxied/CDN hostnames usable without pinning one
+    // canonical BETTER_AUTH_URL (see server/lib/request-origin.ts).
+    trustedOrigins,
     basePath: '/api/auth',
     advanced: {
       cookiePrefix: 'zp',

@@ -3,6 +3,7 @@ import { ensureAdminSeed } from './adapters/repos/admin-seed'
 import { createApp } from './app'
 import { createAuth } from './auth'
 import { createDeps } from './composition'
+import { createDynamicTrustedOrigins } from './lib/request-origin'
 import type { Platform } from './platform/interface'
 import type { Deps } from './usecases/deps'
 
@@ -18,11 +19,12 @@ export async function createBootstrap(platform: Platform, deps: Deps = createDep
   })
 
   const baseURL = platform.getEnv('BETTER_AUTH_URL') || 'http://localhost:5185'
-  const trustedOrigins = platform
-    .getEnv('TRUSTED_ORIGINS')
-    ?.split(',')
-    .map((o) => o.trim())
-    .filter(Boolean) || ['http://localhost:5185']
+  // Same dynamic resolver as the Worker entry: a reverse proxy may rewrite
+  // Host, so trust the public origin of each request as well as configured URLs.
+  const trustedOrigins = createDynamicTrustedOrigins([
+    baseURL,
+    ...(platform.getEnv('TRUSTED_ORIGINS')?.split(',') ?? []),
+  ])
 
   const auth = await createAuth(platform, secret, baseURL, trustedOrigins)
   return createApp(platform, auth, deps)

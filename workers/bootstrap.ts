@@ -4,10 +4,11 @@ import { createRuntimeCache, resolveCacheMode } from '../server/adapters/cache/r
 import { ensureAdminSeed } from '../server/adapters/repos/admin-seed'
 import { createShareRepo } from '../server/adapters/repos/share'
 import { createApp } from '../server/app'
-import type { Auth } from '../server/auth'
+import type { Auth, TrustedOriginsOption } from '../server/auth'
 import { createAuth } from '../server/auth'
 import { createDeps } from '../server/composition'
 import { isPotentialWebDavPublicRequest } from '../server/domain/webdav-public-url'
+import { createDynamicTrustedOrigins, publicRequestOrigin } from '../server/lib/request-origin'
 import { createCloudflarePlatform } from '../server/platform/cloudflare'
 import { platformContext } from '../server/platform/context'
 import type { Deps } from '../server/usecases/deps'
@@ -25,6 +26,7 @@ interface Env {
   ZPAN_PREVIEW?: string
   BETTER_AUTH_URL?: string
   TRUSTED_ORIGINS?: string
+  ZPAN_TRUST_REQUEST_ORIGIN?: string
   ASSETS: Fetcher
   CACHE_KV?: KVNamespace
   [key: string]: unknown
@@ -61,7 +63,7 @@ type InitializeApp = (
   runtime: WorkerRuntime,
   env: Env,
   baseURL: string,
-  trustedOrigins: string[],
+  trustedOrigins: TrustedOriginsOption,
 ) => Promise<{ auth: Auth; app: ReturnType<typeof createApp> }>
 type KeepAlive = (promise: Promise<unknown>) => void
 
@@ -110,13 +112,16 @@ export async function appForRequest(
   keepAlive: KeepAlive = waitUntil,
 ): Promise<ReturnType<typeof createApp>> {
   const origin = new URL(request.url).origin
+  const publicOrigin = publicRequestOrigin(request)
   const webDavRequest = isPotentialWebDavPublicRequest(request.url)
-  const inferredOrigin = origin
   const isPreview = env.ZPAN_PREVIEW === 'true'
-  const baseURL = isPreview ? inferredOrigin : env.BETTER_AUTH_URL || inferredOrigin
-  const trustedOrigins = env.TRUSTED_ORIGINS?.split(',')
-    .map((value) => value.trim())
-    .filter(Boolean) || [inferredOrigin]
+  const baseURL = isPreview ? publicOrigin : env.BETTER_AUTH_URL || origin
+  // staticOrigins covers configured URLs; the resolver adds the hostname each
+  // request actually arrived on, so any CDN/reverse-proxy domain can sign in.
+  const trustedOrigins = createDynamicTrustedOrigins(
+    [baseURL, publicOrigin, origin, env.BETTER_AUTH_URL, ...(env.TRUSTED_ORIGINS?.split(',') ?? [])],
+    { trustRequestOrigin: env.ZPAN_TRUST_REQUEST_ORIGIN !== 'false' },
+  )
   const slot: AuthSlot = isPreview
     ? `preview:${origin}`
     : env.BETTER_AUTH_URL

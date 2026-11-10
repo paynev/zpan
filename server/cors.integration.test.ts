@@ -19,6 +19,22 @@ describe('API CORS', () => {
     expect(trustedOriginRes.headers.get('Access-Control-Allow-Origin')).toBe('https://app.example.com')
   })
 
+  it('allows the public origin when a CDN rewrites Host on the way back', async () => {
+    const { app } = await createTestApp({
+      BETTER_AUTH_URL: 'https://zpan.space',
+      TRUSTED_ORIGINS: 'https://app.example.com',
+    })
+
+    const res = await app.request('/api/auth/get-session', {
+      headers: {
+        Origin: 'https://zpan.digpat.com',
+        'X-Forwarded-Host': 'zpan.digpat.com',
+        'X-Forwarded-Proto': 'https',
+      },
+    })
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://zpan.digpat.com')
+  })
+
   it('does not reflect untrusted origins', async () => {
     const { app } = await createTestApp({
       BETTER_AUTH_URL: 'https://zpan.space',

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { generateId } from '../../shared/ids'
 import { createApp } from '../app'
-import { createAuth } from '../auth'
+import { createAuth, type TrustedOriginsOption } from '../auth'
 import { createDeps } from '../composition'
 import * as authSchema from '../db/auth-schema'
 import * as schema from '../db/schema'
@@ -313,6 +313,7 @@ export async function createTestApp(
   envOverrides: Record<string, string> = {},
   bindingOverrides: Record<string, unknown> = {},
   backgroundTaskHandler?: (promise: Promise<unknown>) => void,
+  trustedOrigins?: TrustedOriginsOption,
 ) {
   // Each test app is a brand-new site; drop origin state cached by a previous
   // app in the same test file.
@@ -335,7 +336,7 @@ export async function createTestApp(
     platform,
     'test-secret',
     'http://localhost:3000',
-    undefined,
+    trustedOrigins,
     backgroundTaskHandler,
     testPasswordProvider,
   )

@@ -6,7 +6,11 @@ import type { Deps } from './usecases/deps'
 const app = { fetch: vi.fn() }
 const auth = { api: {} }
 const createAppMock = vi.hoisted(() => vi.fn(() => app))
-const createAuthMock = vi.hoisted(() => vi.fn(async () => auth))
+// Keep the mock's parameter tuple long enough for assertions on the 4th
+// argument (trustedOrigins); a zero-arg vi.fn() types calls as `[]`.
+const createAuthMock = vi.hoisted(() =>
+  vi.fn(async (_source: unknown, _secret: unknown, _baseURL?: unknown, _trustedOrigins?: unknown) => auth),
+)
 
 vi.mock('./app', () => ({ createApp: createAppMock }))
 vi.mock('./auth', () => ({ createAuth: createAuthMock }))
@@ -47,9 +51,21 @@ describe('Node bootstrap', () => {
     const deps = {} as Deps
 
     await expect(createBootstrap(p, deps)).resolves.toBe(app)
-    expect(createAuthMock).toHaveBeenCalledWith(p, await deriveAuthSecret(username, password), 'https://zpan.test', [
-      'http://localhost:5185',
-    ])
+    expect(createAuthMock).toHaveBeenCalledWith(
+      p,
+      await deriveAuthSecret(username, password),
+      'https://zpan.test',
+      expect.any(Function),
+    )
+    const trustedOrigins = createAuthMock.mock.calls[0][3] as (request?: Request) => string[]
+    expect(trustedOrigins()).toEqual(['https://zpan.test'])
+    expect(
+      trustedOrigins(
+        new Request('http://localhost:8222/api', {
+          headers: { 'X-Forwarded-Host': 'pan.example.com', 'X-Forwarded-Proto': 'https' },
+        }),
+      ),
+    ).toContain('https://pan.example.com')
     expect(createAppMock).toHaveBeenCalledWith(p, auth, deps)
     expect(db.all).not.toHaveBeenCalled()
     expect(db.run).not.toHaveBeenCalled()
@@ -63,9 +79,7 @@ describe('Node bootstrap', () => {
     })
 
     await expect(createBootstrap(p, {} as Deps)).resolves.toBe(app)
-    expect(createAuthMock).toHaveBeenCalledWith(p, 'explicit-secret', 'http://localhost:5185', [
-      'http://localhost:5185',
-    ])
+    expect(createAuthMock).toHaveBeenCalledWith(p, 'explicit-secret', 'http://localhost:5185', expect.any(Function))
   })
 
   it('fails fast when no credentials and no explicit secret are configured', async () => {

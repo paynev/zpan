@@ -23,6 +23,7 @@ import system from './http/site/system'
 import trash from './http/trash'
 import webdav from './http/webdav'
 import { formatError } from './lib/errors'
+import { publicRequestOrigin } from './lib/request-origin'
 import { auditMiddleware } from './middleware/audit'
 import { authMiddleware } from './middleware/auth'
 import { isHandledError, jsonError } from './middleware/error-handler'
@@ -62,7 +63,7 @@ export function createApp(platform: Platform, auth: Auth, deps: Deps = createDep
   app.use('/*', async (c, next) => {
     if (platform.getEnv('ZPAN_PREVIEW') === 'true') {
       const routing = await getSiteRoutingConfig(deps)
-      c.set('sitePublicOrigin', new URL(c.req.url).origin)
+      c.set('sitePublicOrigin', publicRequestOrigin(c.req.raw))
       c.set('webDavEnabled', routing.webDavEnabled)
       c.set('webDavDomain', '')
       await next()
@@ -80,7 +81,7 @@ export function createApp(platform: Platform, auth: Auth, deps: Deps = createDep
         return
       }
     }
-    const result = await ensureSitePublicOrigin(deps, c.req.url).catch((err) => {
+    const result = await ensureSitePublicOrigin(deps, publicRequestOrigin(c.req.raw)).catch((err) => {
       console.error(`site.public_origin.detect.error code=${formatError(err)}`)
       return { origin: null, created: false }
     })
@@ -110,7 +111,13 @@ export function createApp(platform: Platform, auth: Auth, deps: Deps = createDep
   app.use(
     '/api/*',
     cors({
-      origin: (origin) => (origin && corsOrigins.has(origin) ? origin : null),
+      origin: (origin, c) => {
+        if (!origin) return null
+        if (corsOrigins.has(origin)) return origin
+        // A CDN may rewrite Host on the way back to the Worker; the browser's
+        // Origin still matches the public hostname the request arrived on.
+        return origin === publicRequestOrigin(c.req.raw) ? origin : null
+      },
       allowHeaders: ['Content-Type', 'Authorization'],
       exposeHeaders: ['Request-Id'],
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

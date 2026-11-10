@@ -30,6 +30,32 @@ describe('[CF] Worker auth initialization recovery', () => {
     expect(initialize).toHaveBeenCalledTimes(2)
   })
 
+  it('resolves trusted origins for whichever CDN hostname serves the request', async () => {
+    const initialize = vi.fn().mockImplementation(async (_runtime, _env, baseURL) => ({ auth: {}, app: { baseURL } }))
+    const runtime = { authBySlot: new Map(), appBySlot: new Map(), appInitBySlot: new Map() } as Parameters<
+      typeof appForRequest
+    >[0]
+    const env = {} as Parameters<typeof appForRequest>[2]
+
+    await appForRequest(
+      runtime,
+      new Request('https://zpan-origin.workers.dev/api', {
+        headers: { 'X-Forwarded-Host': 'zpan.digpat.com', 'X-Forwarded-Proto': 'https' },
+      }),
+      env,
+      initialize,
+      vi.fn(),
+    )
+
+    const trustedOrigins = initialize.mock.calls[0][3] as (request?: Request) => string[]
+    expect(trustedOrigins()).toContain('https://zpan.digpat.com')
+    expect(
+      trustedOrigins(
+        new Request('https://another-cdn.example/api', { headers: { Origin: 'https://another-cdn.example' } }),
+      ),
+    ).toContain('https://another-cdn.example')
+  })
+
   it('starts a fresh initialization after an earlier request reaches its deadline', async () => {
     vi.useFakeTimers()
     try {
