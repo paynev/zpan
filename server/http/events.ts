@@ -84,6 +84,10 @@ export const events = new OpenAPIHono<Env>().openapi(eventStreamRoute, (c) => {
   let streamClosed = false
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      // A comment frame flushes proxy buffers immediately and lets EventSource
+      // fire `onopen` without waiting for the first domain event. Comment lines
+      // are ignored by the browser and do not affect Last-Event-ID resumption.
+      controller.enqueue(encoder.encode(': connected\n\n'))
       const emit = (message: EventsMessage) => {
         const id = message.id === undefined ? '' : `id: ${message.id}\n`
         controller.enqueue(encoder.encode(`${id}event: ${message.event}\ndata: ${JSON.stringify(message.data)}\n\n`))
@@ -111,8 +115,13 @@ export const events = new OpenAPIHono<Env>().openapi(eventStreamRoute, (c) => {
   return c.newResponse(stream, {
     headers: {
       'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
+      // `Connection` is a hop-by-hop header and is forbidden in HTTP/2. If a
+      // CDN forwards it unchanged, Chrome rejects the whole response with
+      // ERR_HTTP2_PROTOCOL_ERROR. HTTP/2 keeps streams alive on its own, and
+      // the heartbeat frames in streamEvents handle idle-timeout prevention.
+      'Cache-Control': 'no-cache, no-transform',
+      // Disable response buffering on nginx-based CDNs so frames arrive live.
+      'X-Accel-Buffering': 'no',
     },
   })
 })

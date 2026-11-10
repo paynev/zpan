@@ -2,7 +2,10 @@ import type { Deps } from './deps'
 import type { ResourceChange, ResourceChangeScopeType } from './ports'
 
 const POLL_INTERVAL_MS = 2000
-const HEARTBEAT_INTERVAL_MS = 25_000
+// Keep this well below common CDN/proxy idle timeouts (often 15-30s). If no
+// frame is written for that long, the proxy sends RST_STREAM and Chrome reports
+// ERR_HTTP2_PROTOCOL_ERROR on the otherwise healthy SSE stream.
+const HEARTBEAT_INTERVAL_MS = 10_000
 const CHANGE_BATCH_SIZE = 100
 // EventSource resumes with Last-Event-ID, so rotating connections keeps Worker
 // invocations and trace trees bounded without creating an event-delivery gap.
