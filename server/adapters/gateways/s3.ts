@@ -190,11 +190,13 @@ export class S3Service implements S3Gateway {
         etag: (result.ETag ?? '').replace(/"/g, ''),
       }
     } catch (headError) {
-      // A proxy in front of the storage endpoint may reject or cache a signed
-      // HEAD (Authorization header), while the browser's query-signed PUT to
-      // the very same key succeeds. Probe with a presigned GET instead: same
-      // signing scheme, a method every proxy forwards, and a fresh signature
-      // per call so a cached 404 can never be reused.
+      const headMessage = headError instanceof Error ? headError.message : String(headError)
+      // A signed HEAD can fail for reasons unrelated to object existence: a
+      // missing HeadObject permission, a path-style/region signature mismatch,
+      // or a gateway in front of the storage endpoint that rejects or caches
+      // HEAD. Probe with a presigned GET instead: same endpoint, query-signed
+      // like the browser's PUT, and a fresh signature per call so a cached 404
+      // can never be reused.
       try {
         const url = await getSignedUrl(client, new GetObjectCommand({ Bucket: storage.bucket, Key: key }), {
           expiresIn: 60,
@@ -211,9 +213,13 @@ export class S3Service implements S3Gateway {
         // Headers are all we need; stop the body before the object streams.
         await response.body?.cancel()
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        // The probe proves the object exists, so the upload succeeds — but keep
+        // the original HEAD error visible instead of silently swallowing it.
+        console.warn(
+          `s3.head.fallback bucket=${storage.bucket} key=${key} head_error=${headMessage.slice(0, 300)} probe_size=${probe.size}`,
+        )
         return probe
       } catch (probeError) {
-        const headMessage = headError instanceof Error ? headError.message : String(headError)
         const probeMessage = probeError instanceof Error ? probeError.message : String(probeError)
         throw new Error(`HEAD failed (${headMessage}); presigned GET probe failed (${probeMessage})`)
       }

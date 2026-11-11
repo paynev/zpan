@@ -1,6 +1,6 @@
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { Storage } from '@shared/types'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { S3StorageCredentials } from '../../usecases/ports'
 import { S3Service } from './s3.js'
 
@@ -387,6 +387,8 @@ describe('S3Service', () => {
 
     it('falls back to a presigned GET probe when a proxy rejects HEAD', async () => {
       mockSend.mockRejectedValueOnce(new Error('HEAD blocked by proxy'))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      onTestFinished(() => warn.mockRestore())
       const fetchMock = vi.fn().mockResolvedValueOnce(
         new Response(null, {
           status: 200,
@@ -415,15 +417,21 @@ describe('S3Service', () => {
         expect.objectContaining({ input: { Bucket: 'my-bucket', Key: 'sheet.xlsx' } }),
         { expiresIn: 60 },
       )
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('s3.head.fallback bucket=my-bucket key=sheet.xlsx'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('HEAD blocked by proxy'))
     })
 
     it('reports both failures when the object really is missing', async () => {
       mockSend.mockRejectedValueOnce(new Error('404 Not Found'))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      onTestFinished(() => warn.mockRestore())
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 404 })))
 
       await expect(service.headObject(storage, 'missing.bin')).rejects.toThrow(
         'HEAD failed (404 Not Found); presigned GET probe failed (HTTP 404)',
       )
+      // The thrown error already carries the diagnosis; no duplicate warning.
+      expect(warn).not.toHaveBeenCalled()
     })
   })
 
