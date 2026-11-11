@@ -170,13 +170,16 @@ export const presignObjectUploadPartsSchema = z.object({
 
 // POST /api/objects/:id/uploads/:sid/completions — finalize the upload.
 // Uniform for every file: one entry for a ≤5 GiB single PutObject, N entries for
-// a >5 GiB multipart. Each etag comes from the S3 PUT response header.
+// a >5 GiB multipart. Each etag comes from the S3 PUT response header. An empty
+// etag is accepted for a single PutObject only: some proxies strip that header,
+// and the server verifies the stored bytes with HEAD instead. Multipart still
+// requires real part ETags for CompleteMultipartUpload.
 export const completeObjectUploadSchema = z.object({
   parts: z
     .array(
       z.object({
         partNumber: z.number().int().min(1).max(10_000),
-        etag: z.string().min(1),
+        etag: z.string(),
       }),
     )
     .min(1),

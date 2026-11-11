@@ -100,6 +100,37 @@ describe('uploadObjectSlices', () => {
     expect(parts).toEqual([{ partNumber: 1, etag: 'etag-1' }])
   })
 
+  it('does not require an ETag for a single PutObject (a CDN may strip it)', async () => {
+    const file = new File(['0123'], 'small.bin')
+
+    await uploadObjectSlices(makeUpload(['https://s3/part-1'], file.size), file, makeCtx())
+
+    expect(api.uploadPartToS3).toHaveBeenCalledWith(
+      'https://s3/part-1',
+      expect.any(Blob),
+      expect.objectContaining({ requireETag: false }),
+    )
+  })
+
+  it('passes through an empty ETag when the PUT response exposes none', async () => {
+    api.uploadPartToS3.mockResolvedValue('')
+    const file = new File(['0123'], 'small.bin')
+
+    const parts = await uploadObjectSlices(makeUpload(['https://s3/part-1'], file.size), file, makeCtx())
+
+    expect(parts).toEqual([{ partNumber: 1, etag: '' }])
+  })
+
+  it('still requires part ETags for a multipart upload', async () => {
+    const file = new File(['0123456789'], 'big.bin')
+
+    await uploadObjectSlices(makeUpload(['https://s3/part-1', 'https://s3/part-2'], 5), file, makeCtx())
+
+    for (const [, , options] of api.uploadPartToS3.mock.calls) {
+      expect(options).toEqual(expect.objectContaining({ requireETag: true }))
+    }
+  })
+
   it('does not send Content-Type when the file has none', async () => {
     const file = new File(['0123'], 'unknown.bin')
 

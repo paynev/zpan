@@ -321,11 +321,17 @@ function normalizeETag(etag: string): string {
 function validateCompletionParts(
   parts: CompleteObjectUploadInput['parts'],
   requiredPartCount: number,
+  allowMissingETag = false,
 ): Array<{ partNumber: number; etag: string }> {
   const normalized = parts.map((part) => ({ partNumber: part.partNumber, etag: normalizeETag(part.etag) }))
   const seen = new Set<number>()
   for (const part of normalized) {
-    if (part.partNumber < 1 || part.partNumber > requiredPartCount || seen.has(part.partNumber) || !part.etag) {
+    if (
+      part.partNumber < 1 ||
+      part.partNumber > requiredPartCount ||
+      seen.has(part.partNumber) ||
+      (!allowMissingETag && !part.etag)
+    ) {
       throw new ObjectUploadSessionError('invalid_state', 'Upload completion parts do not match the session')
     }
     seen.add(part.partNumber)
@@ -447,7 +453,8 @@ export type CompleteUploadOutcome =
 
 // Finalizes a draft upload (draft → live). Multipart uploads are completed first,
 // then every upload is HEADed so the persisted type matches the object's final
-// metadata. Single PutObject uploads additionally verify the reported ETag.
+// metadata. A single PutObject trusts that HEAD (plus its size) instead of the
+// client-reported ETag, which proxies can rewrite or strip.
 export async function completeUpload(
   deps: Pick<Deps, 'matter' | 'storages' | 's3' | 'objectUploadSessions' | 'storageUsage' | 'share'>,
   params: {
@@ -473,9 +480,13 @@ export async function completeUpload(
     throw new ObjectUploadSessionError('invalid_state')
   }
 
+  const requiredPartCount = uploadPartCount(sessionMatter.size ?? 0, record.partSize)
   const completedParts = validateCompletionParts(
     params.parts,
-    uploadPartCount(sessionMatter.size ?? 0, record.partSize),
+    requiredPartCount,
+    // A single PutObject is finalized by the HEAD below, not by an ETag. Let a
+    // CDN that strips the PUT response header still complete the upload.
+    record.uploadId == null && requiredPartCount === 1,
   )
 
   if (record.uploadId != null && !retryingCompletedMultipartActivation) {
@@ -500,10 +511,28 @@ export async function completeUpload(
       'object_not_found',
     )
   }
+  // A CDN in front of the storage endpoint can rewrite the PUT response ETag,
+  // and some S3-compatible stores omit ETag on HEAD. The server-side HEAD is
+  // authoritative: it proves the bytes landed at the storage key. Guard
+  // integrity with the object size instead of the client-reported ETag.
+  const expectedSize = sessionMatter.size
+  // A proxy in front of the storage endpoint can omit Content-Length on HEAD,
+  // which the S3 client reports as size 0. That is "unknown", not "corrupt":
+  // only a conflicting non-zero size should reject an otherwise valid upload.
+  if (expectedSize != null && expectedSize > 0 && head.size === 0) {
+    console.warn(`upload.head.size_unknown expected=${expectedSize} key=${record.storageKey}`)
+  }
+  if (expectedSize != null && expectedSize > 0 && head.size > 0 && head.size !== expectedSize) {
+    throw new ObjectUploadSessionError(
+      'invalid_state',
+      `Uploaded object size does not match (expected ${expectedSize}, storage ${head.size})`,
+      'size_mismatch',
+    )
+  }
   if (record.uploadId == null) {
     const reported = completedParts[0]?.etag
-    if (!reported || reported !== head.etag) {
-      throw new ObjectUploadSessionError('invalid_state', 'Uploaded object ETag does not match', 'etag_mismatch')
+    if (reported && head.etag && reported !== head.etag) {
+      console.warn(`upload.etag.mismatch client=${reported} storage=${head.etag} key=${record.storageKey}`)
     }
   }
   // Draft → live: apply the stored conflict strategy, activate.

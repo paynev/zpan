@@ -604,12 +604,21 @@ export interface UploadPartOptions {
   onProgress?: (progress: UploadProgress) => void
   signal?: AbortSignal
   contentType?: string
+  /**
+   * Multipart completion must hand S3 the real part ETags. A single PutObject
+   * is finalized by a server-side HEAD instead, so set this to false to let a
+   * CDN that strips the ETag response header still complete the upload.
+   * Defaults to true.
+   */
+  requireETag?: boolean
 }
 
 /**
  * PUTs a single multipart part (external presigned URL) and resolves with its
  * ETag, which the multipart-complete call needs. The S3 bucket's CORS config
  * must expose the ETag response header for this to be readable from the browser.
+ * With `requireETag: false` (single PutObject) a missing header resolves to an
+ * empty string; the server verifies those bytes with HEAD instead.
  */
 export function uploadPartToS3(url: string, blob: Blob, options: UploadPartOptions = {}): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -632,11 +641,17 @@ export function uploadPartToS3(url: string, blob: Blob, options: UploadPartOptio
       options.signal?.removeEventListener('abort', abort)
       if (xhr.status >= 200 && xhr.status < 300) {
         const etag = xhr.getResponseHeader('ETag')
+        options.onProgress?.({ loaded: blob.size, total: blob.size })
         if (!etag) {
+          // A successful PUT already landed the bytes. Only multipart needs the
+          // header, so a proxy stripping ETag must not fail a single PutObject.
+          if (options.requireETag === false) {
+            resolve('')
+            return
+          }
           reject(new Error('Missing ETag — the storage bucket must expose the ETag header via CORS'))
           return
         }
-        options.onProgress?.({ loaded: blob.size, total: blob.size })
         resolve(etag.replace(/"/g, ''))
         return
       }

@@ -14,7 +14,7 @@ function isAbortError(err: unknown): boolean {
 async function uploadPartWithRetry(
   url: string,
   blob: Blob,
-  options: { signal: AbortSignal; onProgress: (loaded: number) => void; contentType?: string },
+  options: { signal: AbortSignal; onProgress: (loaded: number) => void; contentType?: string; requireETag: boolean },
 ): Promise<string> {
   let lastError: unknown
   for (let attempt = 0; attempt < PART_ATTEMPTS; attempt++) {
@@ -23,6 +23,7 @@ async function uploadPartWithRetry(
         signal: options.signal,
         onProgress: (p) => options.onProgress(p.loaded),
         contentType: options.contentType,
+        requireETag: options.requireETag,
       })
     } catch (error) {
       if (isAbortError(error)) throw error
@@ -56,6 +57,9 @@ export async function uploadObjectSlices(
   ctx: UploadRunnerContext,
 ): Promise<Array<{ partNumber: number; etag: string }>> {
   const { partSize, parts: uploadParts } = upload
+  // Only S3 multipart completion consumes part ETags. A single PutObject is
+  // verified by the server's HEAD, so proxies may strip the PUT response ETag.
+  const requireETag = upload.mode !== 'single'
   const completed: Array<{ partNumber: number; etag: string }> = []
   const loadedByPart = new Map<number, number>()
 
@@ -72,6 +76,7 @@ export async function uploadObjectSlices(
     const etag = await uploadPartWithRetry(url, slice, {
       signal: ctx.signal,
       contentType: headers['content-type'] ?? (file.type || undefined),
+      requireETag,
       onProgress: (loaded) => {
         loadedByPart.set(partNumber, loaded)
         reportProgress()

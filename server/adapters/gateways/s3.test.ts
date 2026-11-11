@@ -384,6 +384,47 @@ describe('S3Service', () => {
       const result = await service.headObject(storage, 'test.bin')
       expect(result).toEqual({ size: 0, contentType: undefined, etag: '' })
     })
+
+    it('falls back to a presigned GET probe when a proxy rejects HEAD', async () => {
+      mockSend.mockRejectedValueOnce(new Error('HEAD blocked by proxy'))
+      const fetchMock = vi.fn().mockResolvedValueOnce(
+        new Response(null, {
+          status: 200,
+          headers: {
+            'content-length': '9333',
+            'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            etag: '"probe-etag"',
+          },
+        }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+
+      const result = await service.headObject(storage, 'sheet.xlsx')
+
+      expect(result).toEqual({
+        size: 9333,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        etag: 'probe-etag',
+      })
+      expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', {
+        method: 'GET',
+        headers: { 'Cache-Control': 'no-cache' },
+      })
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ input: { Bucket: 'my-bucket', Key: 'sheet.xlsx' } }),
+        { expiresIn: 60 },
+      )
+    })
+
+    it('reports both failures when the object really is missing', async () => {
+      mockSend.mockRejectedValueOnce(new Error('404 Not Found'))
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 404 })))
+
+      await expect(service.headObject(storage, 'missing.bin')).rejects.toThrow(
+        'HEAD failed (404 Not Found); presigned GET probe failed (HTTP 404)',
+      )
+    })
   })
 
   describe('getObjectBytes', () => {

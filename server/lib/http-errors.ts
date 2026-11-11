@@ -79,7 +79,12 @@ export function mapDomainError(error: unknown): DomainErrorMapping | null {
     if (error.code === 'not_found') {
       return mapping(404, 'Not found', { reason: error.reason.toUpperCase() })
     }
-    return mapping(409, 'Invalid upload session state', { reason: error.reason.toUpperCase() })
+    // The upload queue renders the message verbatim. A flat "Invalid upload
+    // session state" hid whether HEAD failed, a CDN rewrote the ETag, or the
+    // session was already consumed, so keep the underlying cause visible.
+    const reason = error.reason.toUpperCase()
+    const detail = error.message && error.message !== error.code ? error.message : 'Invalid upload session state'
+    return mapping(409, `${detail} (${reason})`, { reason })
   }
   if (error instanceof WebDavPathError) {
     return mapping(error.status as ContentfulStatusCode, error.message)

@@ -189,7 +189,7 @@ export function createArazzoDocument(origin: string) {
         workflowId: 'completeDirectFileUpload',
         summary: 'Complete a direct file upload',
         description:
-          'Finalizes a prepared upload after every part has been PUT to storage. Supply one partNumber and captured ETag for every advertised part.',
+          'Finalizes a prepared upload after every part has been PUT to storage. Supply one partNumber and captured ETag for every advertised part. A single PutObject may supply an empty ETag when a proxy strips the header; multipart parts always require the real ETag.',
         inputs: {
           type: 'object',
           properties: {
@@ -202,7 +202,7 @@ export function createArazzoDocument(origin: string) {
                 type: 'object',
                 properties: {
                   partNumber: { type: 'integer', minimum: 1 },
-                  etag: { type: 'string', minLength: 1 },
+                  etag: { type: 'string' },
                 },
                 required: ['partNumber', 'etag'],
               },

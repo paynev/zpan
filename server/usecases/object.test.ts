@@ -493,7 +493,7 @@ describe('object usecase', () => {
   }
 
   describe('completeUpload', () => {
-    it('finalizes a single-PUT draft after HEAD confirms the reported ETag', async () => {
+    it('finalizes a single-PUT draft after HEAD confirms the stored object', async () => {
       const draft = file('d1', { status: 'draft', size: 100 })
       const setStatus = vi.fn(async () => {})
       const headObject = vi.fn(async () => ({ size: 100, contentType: 'text/plain', etag: 'abc' }))
@@ -537,7 +537,7 @@ describe('object usecase', () => {
       expect(activateDraft).toHaveBeenCalledWith('d1', 'd1.txt', '', expect.any(Date))
     })
 
-    it('tolerates quoted ETags from the client (strips quotes before comparing)', async () => {
+    it('accepts quoted ETags from the client', async () => {
       const draft = file('d1', { status: 'draft', size: 100 })
       const { deps } = makeDeps({
         matter: { get: async () => draft, activateDraft: async () => true },
@@ -553,21 +553,87 @@ describe('object usecase', () => {
       expect(out.ok).toBe(true)
     })
 
-    it('rejects a single-PUT completion whose ETag does not match the HEAD', async () => {
+    it('completes when a CDN rewrites the client ETag, trusting the server-side HEAD', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft: async () => true },
+        s3: { headObject: async () => ({ size: 100, contentType: 'text/plain', etag: 'real' }) } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
+      })
+      const out = await completeUpload(deps, {
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'cdn-rewritten' }],
+        actorId: 'u1',
+      })
+      expect(out.ok).toBe(true)
+    })
+
+    it('completes a single PUT when a CDN strips the ETag header entirely', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft: async () => true },
+        s3: { headObject: async () => ({ size: 100, contentType: 'text/plain', etag: 'real' }) } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
+      })
+      const out = await completeUpload(deps, {
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: '' }],
+        actorId: 'u1',
+      })
+      expect(out.ok).toBe(true)
+    })
+
+    it('treats a HEAD without Content-Length as unknown size, not a mismatch', async () => {
+      const draft = file('d1', { status: 'draft', size: 100 })
+      const { deps } = makeDeps({
+        matter: { get: async () => draft, activateDraft: async () => true },
+        s3: { headObject: async () => ({ size: 0, contentType: 'text/plain', etag: 'real' }) } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
+      })
+      const out = await completeUpload(deps, {
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        parts: [{ partNumber: 1, etag: 'real' }],
+        actorId: 'u1',
+      })
+      expect(out.ok).toBe(true)
+    })
+
+    it('still rejects an empty ETag for a multipart part', async () => {
+      const completeMultipartUpload = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 100 }) },
+        s3: { completeMultipartUpload } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session({ uploadId: 'mp-1' }) },
+      })
+      await expect(
+        completeUpload(deps, {
+          objectId: 'd1',
+          sessionId: 'sess-1',
+          parts: [{ partNumber: 1, etag: '' }],
+          actorId: 'u1',
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' })
+      expect(completeMultipartUpload).not.toHaveBeenCalled()
+    })
+
+    it('rejects a single-PUT completion whose stored size differs from the draft', async () => {
       const draft = file('d1', { status: 'draft', size: 100 })
       const { deps } = makeDeps({
         matter: { get: async () => draft },
-        s3: { headObject: async () => ({ size: 100, contentType: 'text/plain', etag: 'real' }) } as Partial<S3Gateway>,
+        s3: { headObject: async () => ({ size: 50, contentType: 'text/plain', etag: 'real' }) } as Partial<S3Gateway>,
         objectUploadSessions: { get: async () => session(), setStatus: async () => {} },
       })
       await expect(
         completeUpload(deps, {
           objectId: 'd1',
           sessionId: 'sess-1',
-          parts: [{ partNumber: 1, etag: 'wrong' }],
+          parts: [{ partNumber: 1, etag: 'real' }],
           actorId: 'u1',
         }),
-      ).rejects.toMatchObject({ code: 'invalid_state' })
+      ).rejects.toMatchObject({ code: 'invalid_state', reason: 'size_mismatch' })
     })
 
     it('completes a multipart draft via CompleteMultipartUpload', async () => {

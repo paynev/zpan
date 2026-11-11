@@ -46,13 +46,17 @@ the workspace, object, session, storage key, or multipart upload identity.
 ## Completion And Abort
 
 `completeObjectUpload` accepts exactly the required `partCount` records. Each
-record includes an explicit `partNumber` and the normalized S3 ETag returned by
-that part PUT. Missing, duplicate, out-of-range, expired-session, or mismatched
-single-PUT ETags are rejected before activation. Repeating completion after a
-successful activation returns the active object. If S3 accepts multipart
-completion but quota/conflict/database activation fails afterward, the upload
-session records storage completion and a retry skips S3 completion while
-retrying HEAD and draft activation.
+record includes an explicit `partNumber` and, for multipart parts, the normalized
+S3 ETag returned by that part PUT. Missing, duplicate, out-of-range,
+expired-session, or empty multipart ETags are rejected before activation. A
+single PutObject may supply an empty ETag when a proxy strips the PUT response
+header: the server HEADs the object instead and accepts a rewritten or missing
+ETag, rejecting only a conflicting non-zero object size (a missing
+`Content-Length` is treated as unknown). Repeating completion after a successful
+activation returns the active object. If S3 accepts multipart completion but
+quota/conflict/database activation fails afterward, the upload session records
+storage completion and a retry skips S3 completion while retrying HEAD and draft
+activation.
 
 `abortObjectUpload` is idempotent for already-aborted sessions. Multipart aborts
 call S3 `AbortMultipartUpload`; single PUT aborts delete the storage object on a

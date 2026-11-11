@@ -182,11 +182,41 @@ export class S3Service implements S3Gateway {
     key: string,
   ): Promise<{ size: number; contentType?: string; etag: string }> {
     const client = this.createClient(storage)
-    const result = await client.send(new HeadObjectCommand({ Bucket: storage.bucket, Key: key }))
-    return {
-      size: result.ContentLength ?? 0,
-      contentType: result.ContentType,
-      etag: (result.ETag ?? '').replace(/"/g, ''),
+    try {
+      const result = await client.send(new HeadObjectCommand({ Bucket: storage.bucket, Key: key }))
+      return {
+        size: result.ContentLength ?? 0,
+        contentType: result.ContentType,
+        etag: (result.ETag ?? '').replace(/"/g, ''),
+      }
+    } catch (headError) {
+      // A proxy in front of the storage endpoint may reject or cache a signed
+      // HEAD (Authorization header), while the browser's query-signed PUT to
+      // the very same key succeeds. Probe with a presigned GET instead: same
+      // signing scheme, a method every proxy forwards, and a fresh signature
+      // per call so a cached 404 can never be reused.
+      try {
+        const url = await getSignedUrl(client, new GetObjectCommand({ Bucket: storage.bucket, Key: key }), {
+          expiresIn: 60,
+        })
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: { 'Cache-Control': 'no-cache' },
+        })
+        const probe = {
+          size: Number(response.headers.get('content-length') ?? 0) || 0,
+          contentType: response.headers.get('content-type') ?? undefined,
+          etag: (response.headers.get('etag') ?? '').replace(/"/g, ''),
+        }
+        // Headers are all we need; stop the body before the object streams.
+        await response.body?.cancel()
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return probe
+      } catch (probeError) {
+        const headMessage = headError instanceof Error ? headError.message : String(headError)
+        const probeMessage = probeError instanceof Error ? probeError.message : String(probeError)
+        throw new Error(`HEAD failed (${headMessage}); presigned GET probe failed (${probeMessage})`)
+      }
     }
   }
 
