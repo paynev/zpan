@@ -365,7 +365,7 @@ describe('S3Service', () => {
   })
 
   describe('headObject', () => {
-    it('returns size, contentType, and the quote-stripped etag', async () => {
+    it('uses the SDK header-signed HEAD and returns size, contentType, and the quote-stripped etag', async () => {
       mockSend.mockResolvedValueOnce({
         ContentLength: 1024,
         ContentType: 'image/png',
@@ -373,33 +373,40 @@ describe('S3Service', () => {
         $metadata: {},
       })
       const result = await service.headObject(storage, 'test.png')
+
       expect(result).toEqual({ size: 1024, contentType: 'image/png', etag: 'abc123' })
       expect(mockSend).toHaveBeenCalledWith(
         expect.objectContaining({ input: { Bucket: 'my-bucket', Key: 'test.png' } }),
       )
+      expect(getSignedUrl).not.toHaveBeenCalled()
     })
 
-    it('does not invent a content type when S3 omits it', async () => {
+    it('does not invent a content type or size when S3 omits them', async () => {
       mockSend.mockResolvedValueOnce({ $metadata: {} })
-      const result = await service.headObject(storage, 'test.bin')
-      expect(result).toEqual({ size: 0, contentType: undefined, etag: '' })
+      expect(await service.headObject(storage, 'test.bin')).toEqual({
+        size: 0,
+        contentType: undefined,
+        etag: '',
+      })
     })
 
-    it('falls back to a presigned GET probe when a proxy rejects HEAD', async () => {
-      mockSend.mockRejectedValueOnce(new Error('HEAD blocked by proxy'))
+    it('falls back to a presigned GET probe when the SDK HEAD fails', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       onTestFinished(() => warn.mockRestore())
-      const fetchMock = vi.fn().mockResolvedValueOnce(
-        new Response(null, {
-          status: 200,
-          headers: {
-            'content-length': '9333',
-            'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            etag: '"probe-etag"',
-          },
-        }),
+      mockSend.mockRejectedValueOnce(new Error('UnknownError')).mockRejectedValueOnce(new Error('GET denied'))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(
+          new Response(null, {
+            status: 200,
+            headers: {
+              'content-length': '9333',
+              'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              etag: '"probe-etag"',
+            },
+          }),
+        ),
       )
-      vi.stubGlobal('fetch', fetchMock)
 
       const result = await service.headObject(storage, 'sheet.xlsx')
 
@@ -408,27 +415,66 @@ describe('S3Service', () => {
         contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         etag: 'probe-etag',
       })
-      expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', {
+      expect(fetch).toHaveBeenCalledWith('https://signed-url.example.com', {
         method: 'GET',
         headers: { 'Cache-Control': 'no-cache' },
       })
-      expect(getSignedUrl).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ input: { Bucket: 'my-bucket', Key: 'sheet.xlsx' } }),
-        { expiresIn: 60 },
-      )
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('s3.head.fallback bucket=my-bucket key=sheet.xlsx'))
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('HEAD blocked by proxy'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('head_error=UnknownError'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('header_signed_get=FAIL'))
     })
 
-    it('reports both failures when the object really is missing', async () => {
-      mockSend.mockRejectedValueOnce(new Error('404 Not Found'))
+    it('records the real SDK status, COS headers and a header-signed GET comparison', async () => {
+      const sdkError = Object.assign(new Error('UnknownError'), {
+        name: 'Unknown',
+        $metadata: { httpStatusCode: 403, requestId: 'req-1' },
+        $response: {
+          statusCode: 403,
+          headers: {
+            server: 'tencent-cos',
+            'x-cos-error-code': 'SignatureDoesNotMatch',
+            'x-cos-request-id': 'cos-1',
+            location: 'https://other.example.com',
+          },
+        },
+      })
+      const getError = Object.assign(new Error('SignatureDoesNotMatch'), {
+        name: 'SignatureDoesNotMatch',
+        $metadata: { httpStatusCode: 403 },
+      })
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       onTestFinished(() => warn.mockRestore())
+      mockSend.mockRejectedValueOnce(sdkError).mockRejectedValueOnce(getError)
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValueOnce(
+            new Response(null, { status: 200, headers: { 'content-length': '2608524', etag: '"probe-etag"' } }),
+          ),
+      )
+
+      await service.headObject(storage, 'sheet.xlsx')
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('head_status=403'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('head_request_id=req-1'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('x-cos-error-code=SignatureDoesNotMatch'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('location=https://other.example.com'))
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('header_signed_get=FAIL(status=403 name=SignatureDoesNotMatch'),
+      )
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('endpoint=s3.example.com region=us-east-1'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('force_path_style=true'))
+    })
+
+    it('reports the diagnosis when HEAD and every probe fail', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      onTestFinished(() => warn.mockRestore())
+      mockSend.mockRejectedValueOnce(new Error('404 Not Found')).mockRejectedValueOnce(new Error('404 Not Found'))
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 404 })))
 
       await expect(service.headObject(storage, 'missing.bin')).rejects.toThrow(
-        'HEAD failed (404 Not Found); presigned GET probe failed (HTTP 404)',
+        /HEAD failed \(404 Not Found;.*header_signed_get=FAIL.*presigned GET probe failed \(HTTP 404\)/,
       )
       // The thrown error already carries the diagnosis; no duplicate warning.
       expect(warn).not.toHaveBeenCalled()

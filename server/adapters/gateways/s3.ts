@@ -18,6 +18,85 @@ const DEFAULT_EXPIRES_IN = 3600
 const MULTIPART_PART_SIZE = 5 * 1024 * 1024
 const SMALL_STREAM_PUT_BUFFER_SIZE = 256 * 1024
 
+// Only the host is logged; a storage endpoint could contain credentials in its
+// query string and those must never reach the Workers log stream.
+function endpointHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host
+  } catch {
+    return '(invalid)'
+  }
+}
+
+type SdkRequestError = Error & {
+  name?: string
+  $metadata?: { httpStatusCode?: number; requestId?: string }
+  $response?: { statusCode?: number; headers?: Record<string, string> }
+}
+
+const HEAD_DIAGNOSTIC_HEADERS = [
+  'location',
+  'server',
+  'content-type',
+  'content-length',
+  'connection',
+  'www-authenticate',
+  'x-amz-request-id',
+  'x-amz-id-2',
+  'x-amz-bucket-region',
+  'x-amz-error-code',
+  'x-cos-request-id',
+  'x-cos-error-code',
+  'x-cos-trace-id',
+]
+
+/**
+ * A HEAD response has no body, so the SDK cannot parse an XML error code and
+ * degrades every failing HEAD to the opaque "UnknownError". The real status,
+ * COS headers and request id are still on the error object — surface them so a
+ * production-only failure can be diagnosed from the Workers log.
+ */
+function headFailureDetail(error: unknown, storage: S3StorageCredentials): string {
+  const sdkError = error as SdkRequestError | null
+  const status = sdkError?.$metadata?.httpStatusCode ?? sdkError?.$response?.statusCode ?? '?'
+  const headers = sdkError?.$response?.headers ?? {}
+  const diagnosticHeaders =
+    Object.entries(headers)
+      .filter(([name]) => HEAD_DIAGNOSTIC_HEADERS.includes(name.toLowerCase()))
+      .map(([name, value]) => `${name}=${value}`)
+      .join(' ') || '(none)'
+  return [
+    `head_status=${status}`,
+    `head_name=${sdkError?.name ?? '?'}`,
+    `head_request_id=${sdkError?.$metadata?.requestId ?? '?'}`,
+    `head_response_headers=${diagnosticHeaders}`,
+    `endpoint=${endpointHost(storage.endpoint)}`,
+    `region=${storage.region}`,
+    `force_path_style=${storage.forcePathStyle ?? true}`,
+  ].join(' ')
+}
+
+/**
+ * When a header-signed HEAD fails, repeat the same credential/signing scheme
+ * with a 1-byte GET. GET responses carry an XML <Code>, so the SDK can name the
+ * real error (SignatureDoesNotMatch, AccessDenied, ...). This also separates
+ * "the HEAD method is rejected" from "header-signed requests are rejected".
+ * Diagnostic only: the result is logged, never used as the upload's metadata.
+ */
+async function diagnoseWithHeaderSignedGet(client: S3Client, bucket: string, key: string): Promise<string> {
+  try {
+    const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key, Range: 'bytes=0-0' }))
+    const body = result.Body as { destroy?: () => void; cancel?: () => Promise<void> } | undefined
+    body?.destroy?.()
+    return `header_signed_get=OK(status=${result.$metadata.httpStatusCode})`
+  } catch (error) {
+    const sdkError = error as SdkRequestError | null
+    const status = sdkError?.$metadata?.httpStatusCode ?? sdkError?.$response?.statusCode ?? '?'
+    const message = error instanceof Error ? error.message : String(error)
+    return `header_signed_get=FAIL(status=${status} name=${sdkError?.name ?? '?'} message=${message.slice(0, 160)})`
+  }
+}
+
 export class S3Service implements S3Gateway {
   createClient(storage: S3StorageCredentials): S3Client {
     return new S3Client({
@@ -182,6 +261,11 @@ export class S3Service implements S3Gateway {
     key: string,
   ): Promise<{ size: number; contentType?: string; etag: string }> {
     const client = this.createClient(storage)
+    // Keep the SDK's header-signed HEAD as the primary path. The same command
+    // succeeds under Node's HTTP handler AND under workerd (verified against
+    // real COS with scripts/diagnose-cos-head.ts / diagnose-cos-handler.ts), so
+    // a query-signed HEAD is not needed. When it does fail, record everything
+    // the opaque "UnknownError" hides before falling back.
     try {
       const result = await client.send(new HeadObjectCommand({ Bucket: storage.bucket, Key: key }))
       return {
@@ -191,12 +275,11 @@ export class S3Service implements S3Gateway {
       }
     } catch (headError) {
       const headMessage = headError instanceof Error ? headError.message : String(headError)
-      // A signed HEAD can fail for reasons unrelated to object existence: a
-      // missing HeadObject permission, a path-style/region signature mismatch,
-      // or a gateway in front of the storage endpoint that rejects or caches
-      // HEAD. Probe with a presigned GET instead: same endpoint, query-signed
-      // like the browser's PUT, and a fresh signature per call so a cached 404
-      // can never be reused.
+      const detail = headFailureDetail(headError, storage)
+      // A 1-byte GET with the same header signature has a body, so COS can
+      // return a named XML error. Diagnostic only — never used as metadata.
+      const comparison = await diagnoseWithHeaderSignedGet(client, storage.bucket, key)
+      // Last resort: a query-signed GET, the method every proxy forwards.
       try {
         const url = await getSignedUrl(client, new GetObjectCommand({ Bucket: storage.bucket, Key: key }), {
           expiresIn: 60,
@@ -213,15 +296,16 @@ export class S3Service implements S3Gateway {
         // Headers are all we need; stop the body before the object streams.
         await response.body?.cancel()
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        // The probe proves the object exists, so the upload succeeds — but keep
-        // the original HEAD error visible instead of silently swallowing it.
         console.warn(
-          `s3.head.fallback bucket=${storage.bucket} key=${key} head_error=${headMessage.slice(0, 300)} probe_size=${probe.size}`,
+          `s3.head.fallback bucket=${storage.bucket} key=${key} ` +
+            `head_error=${headMessage.slice(0, 200)} ${detail} ${comparison} probe_size=${probe.size}`,
         )
         return probe
       } catch (probeError) {
         const probeMessage = probeError instanceof Error ? probeError.message : String(probeError)
-        throw new Error(`HEAD failed (${headMessage}); presigned GET probe failed (${probeMessage})`)
+        throw new Error(
+          `HEAD failed (${headMessage}; ${detail}; ${comparison}); presigned GET probe failed (${probeMessage})`,
+        )
       }
     }
   }
