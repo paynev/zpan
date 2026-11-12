@@ -2,7 +2,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { Storage } from '@shared/types'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { S3StorageCredentials } from '../../usecases/ports'
-import { S3Service } from './s3.js'
+import { cosCanonicalRequest, describeCosErrorXml, diffSignedHeaders, S3Service } from './s3.js'
 
 const mockSend = vi.fn()
 
@@ -422,6 +422,9 @@ describe('S3Service', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('s3.head.fallback bucket=my-bucket key=sheet.xlsx'))
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('head_error=UnknownError'))
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('header_signed_get=FAIL'))
+      // Handler-only test doubles cannot be instrumented; the replay is skipped
+      // rather than emitting a misleading unsigned request.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('signed_get_replay=UNAVAILABLE'))
     })
 
     it('records the real SDK status, COS headers and a header-signed GET comparison', async () => {
@@ -478,6 +481,54 @@ describe('S3Service', () => {
       )
       // The thrown error already carries the diagnosis; no duplicate warning.
       expect(warn).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('COS XML error diagnostics', () => {
+    it('reads the misspelled <CononicalRequest> so the signed headers COS used are visible', () => {
+      const xml = `<?xml version='1.0' encoding='utf-8' ?>
+<Error>
+  <Code>SignatureDoesNotMatch</Code>
+  <Message>The Signature you specified is invalid.</Message>
+  <CononicalRequest>GET
+/3haZvLYymDSZ2kGtXxdKXl/file.pdf
+host:zpan-1251773322.cos.ap-shanghai.myqcloud.com
+x-amz-date:20261111T154856Z
+
+host;x-amz-date
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</CononicalRequest>
+  <RequestId>NmFmNDhiZTVfY2I2Zjc0MGJfNzY0Yl8xZDhlNGMyNg==</RequestId>
+</Error>`
+      const line = describeCosErrorXml(xml, 403)
+      expect(line).toContain('cos_error_status=403')
+      expect(line).toContain('Code="SignatureDoesNotMatch"')
+      expect(line).toContain('CononicalRequest=')
+      expect(line).toContain('host:zpan-1251773322.cos.ap-shanghai.myqcloud.com')
+      expect(line).toContain('host;x-amz-date')
+      expect(line).not.toContain('\n')
+    })
+
+    it('pinpoints the header whose value differs between SDK signing and COS', () => {
+      const xml = `<Error><Code>SignatureDoesNotMatch</Code><CononicalRequest>GET
+/file.pdf
+host:zpan-1251773322.cos.ap-shanghai.myqcloud.com
+x-amz-date:20261112T022417Z
+x-amz-content-sha256:e3b0
+
+host;x-amz-date;x-amz-content-sha256
+e3b0</CononicalRequest></Error>`
+      const canonical = cosCanonicalRequest(xml)
+      const signed =
+        'host=zpan-1251773322.cos.ap-shanghai.myqcloud.com|x-amz-date=20261112T022417Z|x-amz-content-sha256=e3b0'
+      expect(canonical).toContain('host:zpan-1251773322.cos.ap-shanghai.myqcloud.com')
+      expect(diffSignedHeaders(canonical, signed)).toBe('none')
+
+      const rewritten = canonical.replace('20261112T022417Z', '20261112T022418Z')
+      expect(diffSignedHeaders(rewritten, signed)).toContain('x-amz-date:sdk=')
+      expect(diffSignedHeaders(rewritten, signed)).toContain('cos="20261112T022418Z"')
+      expect(diffSignedHeaders(canonical, `${signed}|x-amz-checksum-mode=ENABLED`)).toContain(
+        'x-amz-checksum-mode:missing_at_cos',
+      )
     })
   })
 

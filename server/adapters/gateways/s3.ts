@@ -76,12 +76,184 @@ function headFailureDetail(error: unknown, storage: S3StorageCredentials): strin
   ].join(' ')
 }
 
+const SIGNED_REQUEST_CAPTURE_SENTINEL = 'zpan:signed-request-captured'
+
+type SignedRequestSnapshot = {
+  method: string
+  url: string
+  headers: Record<string, string>
+  signedHeaders: string
+  signedHost: string
+  signedValues: string
+}
+
+/**
+ * workerd has no DOMParser (see deleteObjects), so the SDK cannot deserialize
+ * COS's XML error body: a 403 degrades to "ReferenceError: DOMParser is not
+ * defined" and the real <Code>/<CanonicalRequest> is lost. Capture the request
+ * right after SigV4 signing, then replay it with a plain fetch() whose body we
+ * read ourselves. A dedicated client is used, so the capture middleware never
+ * touches the presigner that builds the fallback URL.
+ */
+async function captureSignedGet(client: S3Client, bucket: string, key: string): Promise<SignedRequestSnapshot | null> {
+  const stack = (
+    client as unknown as {
+      middlewareStack?: { add?: (middleware: unknown, options: Record<string, unknown>) => void }
+    }
+  ).middlewareStack
+  // Handler-only clients and test doubles cannot be instrumented.
+  if (typeof stack?.add !== 'function') return null
+
+  let captured: SignedRequestSnapshot | null = null
+  stack.add(
+    () => async (args: unknown) => {
+      const request = (args as { request?: Record<string, unknown> }).request
+      const hostname = typeof request?.hostname === 'string' ? request.hostname : ''
+      const headers = (request?.headers ?? {}) as Record<string, string>
+      const authorization = Object.entries(headers).find(([name]) => name.toLowerCase() === 'authorization')?.[1]
+      // Never replay an unsigned request: that would produce a misleading error.
+      if (!hostname || !authorization) throw new Error(SIGNED_REQUEST_CAPTURE_SENTINEL)
+
+      const query = (request?.query ?? {}) as Record<string, string | string[]>
+      const params = new URLSearchParams()
+      for (const [name, value] of Object.entries(query)) {
+        if (Array.isArray(value)) for (const item of value) params.append(name, item)
+        else if (value != null) params.append(name, String(value))
+      }
+      const queryString = params.toString()
+      const port = typeof request?.port === 'number' ? `:${request.port}` : ''
+      const protocol = typeof request?.protocol === 'string' ? request.protocol : 'https:'
+      const path = typeof request?.path === 'string' ? request.path : '/'
+      // SignedHeaders is semicolon-separated, so stop at the comma before Signature=.
+      const signedHeaders = /SignedHeaders=([^,\s]+)/.exec(authorization)?.[1] ?? '?'
+      // Log the VALUE of every signed header (never the signature or any token).
+      // COS's <CononicalRequest> echoes what it actually received; comparing the
+      // two lists pinpoints the header rewritten on the Cloudflare egress path.
+      const signedValues = signedHeaders
+        .split(';')
+        .map((name) => {
+          const sensitive = name.toLowerCase().includes('security-token') || name.toLowerCase().includes('secret')
+          const value =
+            Object.entries(headers).find(([n]) => n.toLowerCase() === name.toLowerCase())?.[1] ?? '(missing)'
+          return `${name}=${sensitive ? '<redacted>' : value}`
+        })
+        .join('|')
+        .slice(0, 900)
+      captured = {
+        method: typeof request?.method === 'string' ? request.method : 'GET',
+        url: `${protocol}//${hostname}${port}${path}${queryString ? `?${queryString}` : ''}`,
+        headers,
+        signedHeaders,
+        signedValues,
+        signedHost: Object.entries(headers).find(([name]) => name.toLowerCase() === 'host')?.[1] ?? '?',
+      }
+      throw new Error(SIGNED_REQUEST_CAPTURE_SENTINEL)
+    },
+    { step: 'finalizeRequest', name: 'zpanCaptureSignedGet', priority: 'low' },
+  )
+
+  try {
+    await client.send(new GetObjectCommand({ Bucket: bucket, Key: key, Range: 'bytes=0-0' }))
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== SIGNED_REQUEST_CAPTURE_SENTINEL) return null
+  }
+  return captured
+}
+
+/**
+ * COS misspells CanonicalRequest as <CononicalRequest>; accept both spellings.
+ * That field lists the exact headers COS used to recompute the signature.
+ */
+export function cosCanonicalRequest(body: string): string {
+  return xmlTag(body, 'CononicalRequest') ?? xmlTag(body, 'CanonicalRequest') ?? ''
+}
+
+/**
+ * Compare the signed header values the SDK produced with those COS echoes back
+ * in <CononicalRequest>. A mismatch here IS the root cause of a production-only
+ * SignatureDoesNotMatch: something on the egress path rewrote that header.
+ */
+export function diffSignedHeaders(canonical: string, signedValues: string): string {
+  const atCos = new Map<string, string>()
+  for (const line of canonical.split(/\r?\n/)) {
+    const match = /^([a-z0-9-]+):(.*)$/i.exec(line.trim())
+    if (match) atCos.set(match[1].toLowerCase(), match[2].trim())
+  }
+  const atSdk = new Map<string, string>()
+  for (const pair of signedValues.split('|')) {
+    const eq = pair.indexOf('=')
+    if (eq > 0) atSdk.set(pair.slice(0, eq).toLowerCase(), pair.slice(eq + 1))
+  }
+  const diffs: string[] = []
+  for (const [name, value] of atSdk) {
+    const received = atCos.get(name)
+    if (received === undefined) diffs.push(`${name}:missing_at_cos`)
+    else if (received !== value) {
+      diffs.push(`${name}:sdk=${JSON.stringify(value.slice(0, 100))} cos=${JSON.stringify(received.slice(0, 100))}`)
+    }
+  }
+  for (const name of atCos.keys()) if (!atSdk.has(name)) diffs.push(`${name}:extra_at_cos`)
+  return diffs.length ? diffs.join(',') : 'none'
+}
+
+/** Flatten a COS XML error into one log-safe line. No credentials are logged. */
+export function describeCosErrorXml(body: string, status: number): string {
+  const field = (tag: string, limit: number): string => {
+    const value = xmlTag(body, tag)
+    return value ? `${tag}=${JSON.stringify(value.replace(/\s+/g, ' ').trim().slice(0, limit))}` : ''
+  }
+  const canonical = cosCanonicalRequest(body)
+  return [
+    `cos_error_status=${status}`,
+    field('Code', 80),
+    field('Message', 240),
+    field('StringToSign', 320),
+    canonical ? `CononicalRequest=${JSON.stringify(canonical.replace(/\s+/g, ' ').trim().slice(0, 1500))}` : '',
+    field('RequestId', 80),
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/**
+ * Replay the header-signed GET as a raw fetch(). If COS still returns 403 we
+ * finally see its XML <Code> (SignatureDoesNotMatch / AccessDenied / ...).
+ * If it succeeds, the difference lives in the SDK's request construction, not
+ * in the signature or the COS endpoint. Diagnostic only.
+ */
+async function diagnoseSignedGetReplay(client: S3Client, bucket: string, key: string): Promise<string> {
+  try {
+    const signed = await captureSignedGet(client, bucket, key)
+    if (!signed) return 'signed_get_replay=UNAVAILABLE'
+    const headers = new Headers()
+    for (const [name, value] of Object.entries(signed.headers)) {
+      // workerd owns these; setting them on a Request is ignored or throws.
+      if (name.toLowerCase() === 'host' || name.toLowerCase() === 'content-length') continue
+      headers.set(name, value)
+    }
+    const response = await fetch(signed.url, { method: signed.method, headers })
+    const body = await response.text()
+    const shape =
+      `signed_headers=${signed.signedHeaders} signed_host=${JSON.stringify(signed.signedHost)} ` +
+      `signed_values=${JSON.stringify(signed.signedValues)}`
+    if (response.ok) return `signed_get_replay=OK(status=${response.status}) ${shape}`
+    const canonical = cosCanonicalRequest(body)
+    const diff = canonical
+      ? `header_diff=${diffSignedHeaders(canonical, signed.signedValues)}`
+      : 'header_diff=NO_CANONICAL'
+    return `signed_get_replay=HTTP(${response.status}) ${shape} ${describeCosErrorXml(body, response.status)} ${diff}`
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return `signed_get_replay=ERROR(${JSON.stringify(message.slice(0, 160))})`
+  }
+}
+
 /**
  * When a header-signed HEAD fails, repeat the same credential/signing scheme
- * with a 1-byte GET. GET responses carry an XML <Code>, so the SDK can name the
- * real error (SignatureDoesNotMatch, AccessDenied, ...). This also separates
- * "the HEAD method is rejected" from "header-signed requests are rejected".
- * Diagnostic only: the result is logged, never used as the upload's metadata.
+ * with a 1-byte GET. Under Node the SDK names the XML error; under workerd it
+ * cannot, so also replay the signed request with a raw fetch() to recover the
+ * body. This separates "the HEAD method is rejected" from "header-signed
+ * requests are rejected". Diagnostic only: never used as upload metadata.
  */
 async function diagnoseWithHeaderSignedGet(client: S3Client, bucket: string, key: string): Promise<string> {
   try {
@@ -93,7 +265,8 @@ async function diagnoseWithHeaderSignedGet(client: S3Client, bucket: string, key
     const sdkError = error as SdkRequestError | null
     const status = sdkError?.$metadata?.httpStatusCode ?? sdkError?.$response?.statusCode ?? '?'
     const message = error instanceof Error ? error.message : String(error)
-    return `header_signed_get=FAIL(status=${status} name=${sdkError?.name ?? '?'} message=${message.slice(0, 160)})`
+    const replay = await diagnoseSignedGetReplay(client, bucket, key)
+    return `header_signed_get=FAIL(status=${status} name=${sdkError?.name ?? '?'} message=${message.slice(0, 160)}) ${replay}`
   }
 }
 
@@ -276,9 +449,9 @@ export class S3Service implements S3Gateway {
     } catch (headError) {
       const headMessage = headError instanceof Error ? headError.message : String(headError)
       const detail = headFailureDetail(headError, storage)
-      // A 1-byte GET with the same header signature has a body, so COS can
-      // return a named XML error. Diagnostic only — never used as metadata.
-      const comparison = await diagnoseWithHeaderSignedGet(client, storage.bucket, key)
+      // A dedicated client: the diagnostic middleware must never be attached to
+      // the client that presigns the fallback URL below.
+      const comparison = await diagnoseWithHeaderSignedGet(this.createClient(storage), storage.bucket, key)
       // Last resort: a query-signed GET, the method every proxy forwards.
       try {
         const url = await getSignedUrl(client, new GetObjectCommand({ Bucket: storage.bucket, Key: key }), {
