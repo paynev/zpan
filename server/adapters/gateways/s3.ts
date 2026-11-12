@@ -95,7 +95,10 @@ type SignedRequestSnapshot = {
  * read ourselves. A dedicated client is used, so the capture middleware never
  * touches the presigner that builds the fallback URL.
  */
-async function captureSignedGet(client: S3Client, bucket: string, key: string): Promise<SignedRequestSnapshot | null> {
+async function captureSignedRequest(
+  client: S3Client,
+  command: GetObjectCommand | HeadObjectCommand,
+): Promise<SignedRequestSnapshot | null> {
   const stack = (
     client as unknown as {
       middlewareStack?: { add?: (middleware: unknown, options: Record<string, unknown>) => void }
@@ -153,11 +156,41 @@ async function captureSignedGet(client: S3Client, bucket: string, key: string): 
   )
 
   try {
-    await client.send(new GetObjectCommand({ Bucket: bucket, Key: key, Range: 'bytes=0-0' }))
+    await client.send(command)
   } catch (error) {
     if (!(error instanceof Error) || error.message !== SIGNED_REQUEST_CAPTURE_SENTINEL) return null
   }
   return captured
+}
+
+function captureSignedGet(client: S3Client, bucket: string, key: string): Promise<SignedRequestSnapshot | null> {
+  return captureSignedRequest(client, new GetObjectCommand({ Bucket: bucket, Key: key, Range: 'bytes=0-0' }))
+}
+
+/**
+ * Send an already-signed request with a plain fetch(). The SDK's
+ * FetchHttpHandler builds `new Request(url, { headers: new Headers(...) })`,
+ * which on workerd treats the explicit Host header differently; COS then
+ * recomputes a different canonical host and rejects the signature. Letting the
+ * runtime derive Host from the URL (and leaving Content-Length alone) is the
+ * exact path proven to return 206 in production.
+ */
+function sendSignedRequest(signed: SignedRequestSnapshot): Promise<Response> {
+  const headers = new Headers()
+  for (const [name, value] of Object.entries(signed.headers)) {
+    if (name.toLowerCase() === 'host' || name.toLowerCase() === 'content-length') continue
+    headers.set(name, value)
+  }
+  return fetch(signed.url, { method: signed.method, headers })
+}
+
+/** HEAD has no body; the object metadata lives entirely in the response headers. */
+export function headMetadataFromResponse(response: Response): { size: number; contentType?: string; etag: string } {
+  return {
+    size: Number(response.headers.get('content-length') ?? 0) || 0,
+    contentType: response.headers.get('content-type') ?? undefined,
+    etag: (response.headers.get('etag') ?? '').replace(/"/g, ''),
+  }
 }
 
 /**
@@ -225,13 +258,7 @@ async function diagnoseSignedGetReplay(client: S3Client, bucket: string, key: st
   try {
     const signed = await captureSignedGet(client, bucket, key)
     if (!signed) return 'signed_get_replay=UNAVAILABLE'
-    const headers = new Headers()
-    for (const [name, value] of Object.entries(signed.headers)) {
-      // workerd owns these; setting them on a Request is ignored or throws.
-      if (name.toLowerCase() === 'host' || name.toLowerCase() === 'content-length') continue
-      headers.set(name, value)
-    }
-    const response = await fetch(signed.url, { method: signed.method, headers })
+    const response = await sendSignedRequest(signed)
     const body = await response.text()
     const shape =
       `signed_headers=${signed.signedHeaders} signed_host=${JSON.stringify(signed.signedHost)} ` +
@@ -434,11 +461,34 @@ export class S3Service implements S3Gateway {
     key: string,
   ): Promise<{ size: number; contentType?: string; etag: string }> {
     const client = this.createClient(storage)
-    // Keep the SDK's header-signed HEAD as the primary path. The same command
-    // succeeds under Node's HTTP handler AND under workerd (verified against
-    // real COS with scripts/diagnose-cos-head.ts / diagnose-cos-handler.ts), so
-    // a query-signed HEAD is not needed. When it does fail, record everything
-    // the opaque "UnknownError" hides before falling back.
+
+    // Primary path: the SAME SigV4 header-signed HEAD, but sent with a plain
+    // fetch() instead of the SDK's FetchHttpHandler. Production proved the
+    // handler is the problem: replaying the identical signed request returns
+    // 206, while client.send(HeadObjectCommand) gets 403 SignatureDoesNotMatch.
+    // FetchHttpHandler wraps every header (including an explicit Host) in
+    // `new Request()`; workerd treats that differently, so COS recomputes a
+    // canonical host that no longer matches the signature. Letting the runtime
+    // derive Host from the URL is the whole difference. This is NOT a presigned
+    // HEAD — the signature is still in the Authorization header.
+    const signedHead = await captureSignedRequest(
+      this.createClient(storage),
+      new HeadObjectCommand({ Bucket: storage.bucket, Key: key }),
+    )
+    if (signedHead) {
+      try {
+        const response = await sendSignedRequest(signedHead)
+        if (response.ok) {
+          if (response.body) await response.body.cancel().catch(() => {})
+          return headMetadataFromResponse(response)
+        }
+      } catch {
+        // Fall through: the legacy path below records the full diagnosis.
+      }
+    }
+
+    // Legacy SDK path, kept for runtimes that cannot be instrumented (and as
+    // the diagnostic path). Its failure still falls back to a query-signed GET.
     try {
       const result = await client.send(new HeadObjectCommand({ Bucket: storage.bucket, Key: key }))
       return {

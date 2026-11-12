@@ -2,7 +2,13 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { Storage } from '@shared/types'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { S3StorageCredentials } from '../../usecases/ports'
-import { cosCanonicalRequest, describeCosErrorXml, diffSignedHeaders, S3Service } from './s3.js'
+import {
+  cosCanonicalRequest,
+  describeCosErrorXml,
+  diffSignedHeaders,
+  headMetadataFromResponse,
+  S3Service,
+} from './s3.js'
 
 const mockSend = vi.fn()
 
@@ -529,6 +535,32 @@ e3b0</CononicalRequest></Error>`
       expect(diffSignedHeaders(canonical, `${signed}|x-amz-checksum-mode=ENABLED`)).toContain(
         'x-amz-checksum-mode:missing_at_cos',
       )
+    })
+  })
+
+  describe('header-signed HEAD sent via raw fetch', () => {
+    it('reads size, content type and the quote-stripped etag from response headers', () => {
+      const response = new Response(null, {
+        status: 200,
+        headers: {
+          'content-length': '26349',
+          'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          etag: '"abc123"',
+        },
+      })
+      expect(headMetadataFromResponse(response)).toEqual({
+        size: 26349,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        etag: 'abc123',
+      })
+    })
+
+    it('does not invent metadata the storage did not return', () => {
+      expect(headMetadataFromResponse(new Response(null, { status: 200 }))).toEqual({
+        size: 0,
+        contentType: undefined,
+        etag: '',
+      })
     })
   })
 
